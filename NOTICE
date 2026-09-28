@@ -1,0 +1,17 @@
+CAD MCP prototype
+New original code is licensed under Apache-2.0; see LICENSE.
+
+Includes adaptations from beiming183-cloud/AutoCAD-MCP:
+Copyright (c) 2024 AutoCAD MCP Server Contributors
+MIT License retained in licenses/beiming-MIT.txt.
+See docs/provenance.md for source files, commit and modifications.
+
+Uses ModelContextProtocol C# SDK 1.4.1.
+Its upstream license includes Apache-2.0 and MIT transition terms;
+see licenses/mcp-sdk-LICENSE.txt. SDK documentation is not bundled.
+
+Microsoft package licenses and third-party notices are preserved under
+licenses/dependencies. Resolved versions and hashes are in lock files.
+
+Autodesk assemblies, SPDS binaries, Codex and Claude Code are external
+user-installed components and are not redistributed with this prototype.

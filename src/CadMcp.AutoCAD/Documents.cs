@@ -1,0 +1,64 @@
+// Adapted from beiming183-cloud/AutoCAD-MCP DocumentRegistry.cs (MIT).
+// Copyright (c) 2024 AutoCAD MCP Server Contributors. See licenses/beiming-MIT.txt.
+// Changes: read-only contract, explicit event disposal, no mutation event suppression.
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.DatabaseServices;
+using CadMcp.Core;
+using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
+
+namespace CadMcp.AutoCAD;
+
+internal sealed class DocumentState
+{
+    public string Id { get; } = Guid.NewGuid().ToString("N");
+    public long Revision { get; set; }
+}
+internal sealed class Documents : IDisposable
+{
+    private readonly Dictionary<Document, DocumentState> states = new();
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
+    public Documents()
+    {
+        App.DocumentManager.DocumentCreated += Created;
+        App.DocumentManager.DocumentToBeDestroyed += Destroyed;
+        foreach (Document d in App.DocumentManager) Register(d);
+    }
+    private void Created(object sender, DocumentCollectionEventArgs e) => Register(e.Document);
+    private void Destroyed(object sender, DocumentCollectionEventArgs e) => Remove(e.Document);
+    private void Changed(object sender, ObjectEventArgs e) => Touch((Database)sender);
+    private void Erased(object sender, ObjectErasedEventArgs e) => Touch((Database)sender);
+    private void Touch(Database db)
+    {
+        foreach (var pair in states) if (ReferenceEquals(pair.Key.Database, db)) pair.Value.Revision++;
+    }
+    public DocumentState Register(Document d)
+    {
+        if (states.TryGetValue(d, out var state)) return state;
+        state = new(); states.Add(d, state);
+        d.Database.ObjectAppended += Changed; d.Database.ObjectModified += Changed; d.Database.ObjectErased += Erased;
+        return state;
+    }
+    private void Remove(Document d)
+    {
+        d.Database.ObjectAppended -= Changed; d.Database.ObjectModified -= Changed; d.Database.ObjectErased -= Erased;
+        states.Remove(d);
+    }
+    public Document Active(Request r)
+    {
+        if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
+        var d = App.DocumentManager.MdiActiveDocument ?? throw new CadFault("NO_DOCUMENT", "No active drawing");
+        var state = Register(d);
+        if (r.Operation != "cad_context")
+        {
+            if (r.DocumentId != state.Id) throw new CadFault("DOCUMENT_MISMATCH", "Requested drawing is not active");
+            if (r.ExpectedRevision != state.Revision) throw new CadFault("REVISION_CONFLICT", "Refresh document context");
+        }
+        return d;
+    }
+    public void Dispose()
+    {
+        App.DocumentManager.DocumentCreated -= Created;
+        App.DocumentManager.DocumentToBeDestroyed -= Destroyed;
+        foreach (var d in states.Keys.ToArray()) Remove(d);
+    }
+}

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
+    <ProjectReference Include="../CadMcp.Providers/CadMcp.Providers.csproj" />
+    <Reference Include="AcMgd"><HintPath>$(AutoCADDir)\AcMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcCoreMgd"><HintPath>$(AutoCADDir)\AcCoreMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcDbMgd"><HintPath>$(AutoCADDir)\acdbmgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcWindows"><HintPath>$(AutoCADDir)\AcWindows.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AdWindows"><HintPath>$(AutoCADDir)\AdWindows.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
