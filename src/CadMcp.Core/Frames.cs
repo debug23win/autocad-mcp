@@ -13,13 +13,13 @@ public static class Frames
     public static async Task<byte[]?> ReadAsync(Stream stream, CancellationToken ct)
     {
         var header = new byte[4];
-        int first = await stream.ReadAsync(header.AsMemory(0, 1), ct);
+        int first = await stream.ReadAsync(header, 0, 1, ct);
         if (first == 0) return null;
-        await stream.ReadExactlyAsync(header.AsMemory(1), ct);
+        await ReadFully(stream, header, 1, 3, ct);
         int length = BinaryPrimitives.ReadInt32LittleEndian(header);
         if (length <= 0 || length > MaximumBytes) throw new InvalidDataException("Invalid frame length");
         var body = new byte[length];
-        await stream.ReadExactlyAsync(body, ct);
+        await ReadFully(stream, body, 0, body.Length, ct);
         return body;
     }
     public static async Task WriteAsync(Stream stream, byte[] body, CancellationToken ct)
@@ -27,9 +27,13 @@ public static class Frames
         if (body.Length == 0 || body.Length > MaximumBytes) throw new InvalidDataException("Frame exceeds limit");
         var header = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(header, body.Length);
-        await stream.WriteAsync(header, ct);
-        await stream.WriteAsync(body, ct);
+        await stream.WriteAsync(header, 0, header.Length, ct);
+        await stream.WriteAsync(body, 0, body.Length, ct);
         await stream.FlushAsync(ct);
+    }
+    private static async Task ReadFully(Stream stream, byte[] buffer, int offset, int count, CancellationToken ct)
+    {
+        while (count > 0) { int n = await stream.ReadAsync(buffer, offset, count, ct); if (n == 0) throw new EndOfStreamException(); offset += n; count -= n; }
     }
 }
 
@@ -39,8 +43,8 @@ public static class PipeClient
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        await using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-        await pipe.ConnectAsync(timeout.Token);
+        using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(30000, timeout.Token);
         request = request with { Deadline = request.Deadline ?? DateTimeOffset.UtcNow.AddSeconds(25), Data = request.Data.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : request.Data };
         await Frames.WriteAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request, Wire.Json), timeout.Token);
         var data = await Frames.ReadAsync(pipe, timeout.Token) ?? throw new EndOfStreamException();
@@ -62,8 +66,7 @@ public sealed class PipeServer(string name, Func<Request, CancellationToken, Tas
         {
             try
             {
-                await using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                using var pipe = CreatePipe();
                 await pipe.WaitForConnectionAsync(stop.Token);
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -90,6 +93,10 @@ public sealed class PipeServer(string name, Func<Request, CancellationToken, Tas
                 try { await Task.Delay(100, stop.Token); } catch (OperationCanceledException) { break; }
             }
         }
+    }
+    private NamedPipeServerStream CreatePipe()
+    {
+        return new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     }
     public void Dispose() { stop.Cancel(); /* listener releases pipe asynchronously; do not block the CAD thread */ }
 }

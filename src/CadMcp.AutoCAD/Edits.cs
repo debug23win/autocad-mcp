@@ -1,0 +1,330 @@
+using System.Text.Json;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Colors;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
+using CadMcp.Core;
+
+namespace CadMcp.AutoCAD;
+
+// Native creation/transaction approach adapted from beiming183-cloud/AutoCAD-MCP CadDispatcher.cs (MIT).
+// Copyright (c) 2024 AutoCAD MCP Server Contributors. See licenses/beiming-MIT.txt.
+// Changes: WCS contract, current space, 2D objects, blocks/attributes, edits, strict validation and bounded readback.
+internal static class Edits
+{
+    private static Point3d Point(JsonElement op, string field)
+    { var p = EditPlan.Point(op.GetProperty(field)); return new(p[0], p[1], p[2]); }
+    private static double N(JsonElement op, string field, double? fallback = null) => EditPlan.Numeric(op, field, fallback);
+    private static double Angle(JsonElement op, string field, double fallback = 0) => N(op, field, fallback) * Math.PI / 180;
+    private static string S(JsonElement op, string field) => EditPlan.RequiredText(op, field);
+    private static bool Bool(JsonElement op, string field, bool fallback = false) => op.TryGetProperty(field, out var v) ? v.GetBoolean() : fallback;
+    private static void Equal(Point3d a, Point3d b)
+    { if (a.DistanceTo(b) < 1e-10) throw new CadFault("DEGENERATE_GEOMETRY", "Points must differ"); }
+    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct)
+    {
+        using var undoGroup = new UndoGroup(doc);
+        using var tr = doc.Database.TransactionManager.StartTransaction();
+        var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForWrite);
+        var aliases = new Dictionary<string, ObjectId>(StringComparer.Ordinal);
+        var touched = new HashSet<ObjectId>();
+        var results = new List<object>();
+        int index = 0;
+        foreach (var op in operations)
+        {
+            ct.ThrowIfCancellationRequested();
+            string kind = S(op, "op");
+            if (kind == "layer")
+            {
+                var name = S(op, "name");
+                var layers = (LayerTable)tr.GetObject(doc.Database.LayerTableId, OpenMode.ForRead);
+                LayerTableRecord record;
+                bool created = !layers.Has(name);
+                if (created)
+                {
+                    SymbolUtilityServices.ValidateSymbolName(name, false);
+                    layers.UpgradeOpen(); record = new() { Name = name }; layers.Add(record); tr.AddNewlyCreatedDBObject(record, true);
+                }
+                else record = (LayerTableRecord)tr.GetObject(layers[name], OpenMode.ForWrite);
+                if (record.IsDependent) throw new CadFault("XREF_LAYER", "Cannot edit a dependent layer");
+                if (op.TryGetProperty("color_index", out var color))
+                {
+                    var c = color.GetInt32();
+                    if (c is < 1 or > 255) throw new CadFault("INVALID_COLOR", "Layer ACI must be 1..255");
+                    record.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(ColorMethod.ByAci, (short)c);
+                }
+                if (op.TryGetProperty("locked", out var locked)) record.IsLocked = locked.GetBoolean();
+                if (op.TryGetProperty("off", out var off)) record.IsOff = off.GetBoolean();
+                results.Add(new { index = index++, op = kind, created, name = record.Name, color_index = record.Color.ColorIndex, locked = record.IsLocked, off = record.IsOff });
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Layer operations cannot be entity targets");
+                continue;
+            }
+            Entity entity;
+            string? sourceHandle = null;
+            if (kind is "move" or "copy" or "rotate" or "scale" or "mirror" or "erase" or "set")
+            {
+                var sourceId = Resolve(doc.Database, tr, op, aliases);
+                entity = Editable(doc.Database, tr, sourceId, kind != "copy");
+                sourceHandle = entity.Handle.ToString();
+                if (kind == "copy")
+                {
+                    var mapping = new IdMapping();
+                    doc.Database.DeepCloneObjects(new ObjectIdCollection([sourceId]), space.ObjectId, mapping, false);
+                    entity = (Entity)tr.GetObject(mapping[sourceId].Value, OpenMode.ForWrite);
+                    if (op.TryGetProperty("layer", out var layer)) entity.LayerId = Layer(doc.Database, tr, layer.GetString()!);
+                    RequireUnlocked(tr, entity);
+                }
+                touched.Add(entity.ObjectId);
+                switch (kind)
+                {
+                    case "move": case "copy":
+                        Transform(entity, Matrix3d.Displacement(Point(op, "displacement") - Point3d.Origin), tr); break;
+                    case "rotate": Transform(entity, Matrix3d.Rotation(Angle(op, "angle_deg"), Vector3d.ZAxis, Point(op, "center")), tr); break;
+                    case "scale": Transform(entity, Matrix3d.Scaling(N(op, "factor"), Point(op, "center")), tr); break;
+                    case "mirror":
+                        var first = Point(op, "first"); var second = Point(op, "second"); Equal(first, second);
+                        if (Math.Abs(first.Z - second.Z) > 1e-8) throw new CadFault("INVALID_MIRROR", "Mirror line must lie in a WCS XY plane");
+                        // A vertical plane through the requested XY line mirrors 2D and 3D entities correctly.
+                        using (var plane = new Plane(first, (second - first).CrossProduct(Vector3d.ZAxis))) Transform(entity, Matrix3d.Mirroring(plane), tr);
+                        break;
+                    case "erase": entity.Erase(); break;
+                    case "set": Set(doc.Database, tr, entity, op); break;
+                }
+            }
+            else
+            {
+                entity = Create(doc.Database, tr, op, aliases);
+                try
+                {
+                    entity.SetDatabaseDefaults(doc.Database);
+                    entity.LayerId = Layer(doc.Database, tr, op.Text("layer") ?? "0");
+                    if (op.TryGetProperty("color_index", out var c)) entity.ColorIndex = c.GetInt32();
+                    space.AppendEntity(entity); tr.AddNewlyCreatedDBObject(entity, true);
+                }
+                catch { if (entity.ObjectId.IsNull) entity.Dispose(); throw; }
+                if (entity is BlockReference block) Attributes(doc.Database, tr, block, op, true);
+                if (entity is Hatch hatch) SetupHatch(doc.Database, tr, hatch, op, aliases);
+                if (entity is Dimension dimension) dimension.RecomputeDimensionBlock(true);
+                touched.Add(entity.ObjectId);
+            }
+            if (op.TryGetProperty("id", out var id)) aliases.Add(id.GetString()!, entity.ObjectId);
+            results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = entity.Handle.ToString(), source_handle = sourceHandle, erased = entity.IsErased });
+        }
+        // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
+        var readback = touched.Select(id =>
+        {
+            var entity = (Entity)tr.GetObject(id, OpenMode.ForRead, true);
+            return entity.IsErased ? Wire.Element(new { handle = entity.Handle.ToString(), erased = true }) : Reader.Read(entity, tr);
+        }).ToArray();
+        var data = new { transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback,
+            undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_AutoLISP_or_vendor_API" } };
+        if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
+        ct.ThrowIfCancellationRequested();
+        tr.Commit();
+        // A display failure after commit must never be reported as an uncommitted transaction.
+        try { doc.Editor.Regen(); } catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Committed edit; redraw failed: " + e.Message); }
+        return data;
+    }
+    private static void Transform(Entity entity, Matrix3d transform, Transaction tr)
+    {
+        var attributes = new List<(AttributeReference Attribute, Point3d Position)>();
+        if (entity is BlockReference block)
+            foreach (ObjectId id in block.AttributeCollection)
+            {
+                var attribute = (AttributeReference)tr.GetObject(id, OpenMode.ForWrite);
+                attributes.Add((attribute, attribute.Position));
+            }
+        entity.TransformBy(transform);
+        foreach (var (attribute, position) in attributes)
+        {
+            // Some transform paths move subentities themselves; compare before applying to avoid a double translation.
+            var expected = position.TransformBy(transform);
+            if (!attribute.Position.IsEqualTo(expected, new Tolerance(1e-8, 1e-8))) attribute.TransformBy(transform);
+            if (!attribute.Position.IsEqualTo(expected, new Tolerance(1e-8, 1e-8))) throw new CadFault("ATTRIBUTE_READBACK", "Block attribute transform did not match the requested transform");
+        }
+    }
+    private static Entity Create(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases)
+    {
+        switch (S(op, "op"))
+        {
+            case "line": Equal(Point(op, "start"), Point(op, "end")); return new Line(Point(op, "start"), Point(op, "end"));
+            case "circle": return new Circle(Point(op, "center"), Vector3d.ZAxis, N(op, "radius"));
+            case "arc":
+                var a = Angle(op, "start_angle_deg"); var b = Angle(op, "end_angle_deg");
+                if (Math.Abs(a - b) < 1e-10) throw new CadFault("DEGENERATE_ARC", "Arc angles must differ");
+                return new Arc(Point(op, "center"), Vector3d.ZAxis, N(op, "radius"), a, b);
+            case "polyline":
+                var points = op.GetProperty("points").EnumerateArray().Select(EditPlan.Point).ToArray();
+                var bulges = op.TryGetProperty("bulges", out var bs) ? bs.EnumerateArray().Select(x => x.GetDouble()).ToArray() : new double[points.Length];
+                if (bulges.Length != points.Length) throw new CadFault("INVALID_BULGES", "One bulge per vertex is required");
+                var poly = new Polyline(points.Length) { Elevation = points[0][2], Closed = Bool(op, "closed") };
+                for (int i = 0; i < points.Length; i++) poly.AddVertexAt(i, new(points[i][0], points[i][1]), bulges[i], N(op, "width", 0), N(op, "width", 0));
+                return poly;
+            case "rectangle":
+                var p = Point(op, "first"); var q = Point(op, "second");
+                if (Math.Abs(p.Z - q.Z) > 1e-8 || Math.Abs(p.X - q.X) < 1e-10 || Math.Abs(p.Y - q.Y) < 1e-10) throw new CadFault("DEGENERATE_RECTANGLE", "Opposite corners need different X/Y and the same Z");
+                var rect = new Polyline(4) { Elevation = p.Z, Closed = true };
+                rect.AddVertexAt(0, new(p.X, p.Y), 0, 0, 0); rect.AddVertexAt(1, new(q.X, p.Y), 0, 0, 0);
+                rect.AddVertexAt(2, new(q.X, q.Y), 0, 0, 0); rect.AddVertexAt(3, new(p.X, q.Y), 0, 0, 0); return rect;
+            case "text":
+                return new DBText { Position = Point(op, "position"), TextString = op.GetProperty("text").GetString()!, Height = N(op, "height"), Rotation = Angle(op, "rotation_deg"), TextStyleId = TextStyle(db, tr, op.Text("style")) };
+            case "mtext":
+                return new MText { Location = Point(op, "position"), Contents = op.GetProperty("text").GetString()!, TextHeight = N(op, "height"), Width = N(op, "width", 0), Rotation = Angle(op, "rotation_deg"), TextStyleId = TextStyle(db, tr, op.Text("style")), Attachment = AttachmentPoint.TopLeft };
+            case "block":
+                var table = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead); var name = S(op, "name");
+                if (!table.Has(name)) throw new CadFault("BLOCK_NOT_FOUND", name + "; read cad_catalog or create the definition with AutoLISP");
+                var definition = (BlockTableRecord)tr.GetObject(table[name], OpenMode.ForRead);
+                if (definition.IsLayout || definition.IsFromExternalReference || definition.IsDependent) throw new CadFault("UNSUPPORTED_BLOCK", "Expected a local block definition");
+                var scale = new[] { 1d, 1d, 1d };
+                if (op.TryGetProperty("scale", out var s)) scale = s.ValueKind == JsonValueKind.Array ? EditPlan.Point(s) : [s.GetDouble(), s.GetDouble(), s.GetDouble()];
+                return new BlockReference(Point(op, "position"), table[name]) { Rotation = Angle(op, "rotation_deg"), ScaleFactors = new(scale[0], scale[1], scale[2]) };
+            case "dimension_aligned":
+                var dimStyles = (DimStyleTable)tr.GetObject(db.DimStyleTableId, OpenMode.ForRead);
+                var dimStyle = op.Text("style") is { } style ? dimStyles.Has(style) ? dimStyles[style] : throw new CadFault("STYLE_NOT_FOUND", style) : db.Dimstyle;
+                Equal(Point(op, "first"), Point(op, "second"));
+                return new AlignedDimension(Point(op, "first"), Point(op, "second"), Point(op, "position"), op.Text("text") ?? "", dimStyle);
+            case "hatch": return new Hatch();
+            case "box":
+                if (N(op, "width") <= 0) throw new CadFault("INVALID_PARAMETER", "Box width must be positive");
+                var box = new Solid3d(); box.CreateBox(N(op, "length"), N(op, "width"), N(op, "height"));
+                var boxBounds = box.GeometricExtents;
+                var boxCenter = new Point3d((boxBounds.MinPoint.X + boxBounds.MaxPoint.X) / 2, (boxBounds.MinPoint.Y + boxBounds.MaxPoint.Y) / 2, (boxBounds.MinPoint.Z + boxBounds.MaxPoint.Z) / 2);
+                box.TransformBy(Matrix3d.Displacement(Point(op, "center") - boxCenter)); return box;
+            case "cylinder":
+                var solid = new Solid3d(); solid.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), N(op, "radius"));
+                var center = Point(op, "center");
+                // Derive placement from the actual solid extents rather than assuming the factory origin.
+                var bounds = solid.GeometricExtents;
+                solid.TransformBy(Matrix3d.Displacement(new(center.X - (bounds.MinPoint.X + bounds.MaxPoint.X) / 2,
+                    center.Y - (bounds.MinPoint.Y + bounds.MaxPoint.Y) / 2, center.Z - bounds.MinPoint.Z))); return solid;
+            default: throw new CadFault("INVALID_OPERATION", S(op, "op"));
+        }
+    }
+    private static ObjectId Layer(Database db, Transaction tr, string name)
+    {
+        var layers = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+        if (!layers.Has(name)) throw new CadFault("LAYER_NOT_FOUND", name + "; add a layer operation first");
+        var layer = (LayerTableRecord)tr.GetObject(layers[name], OpenMode.ForRead);
+        if (layer.IsLocked || layer.IsDependent) throw new CadFault("LAYER_NOT_EDITABLE", name + " is locked or dependent");
+        return layer.ObjectId;
+    }
+    private static ObjectId TextStyle(Database db, Transaction tr, string? name)
+    {
+        if (name is null) return db.Textstyle;
+        var table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+        return table.Has(name) ? table[name] : throw new CadFault("STYLE_NOT_FOUND", name);
+    }
+    internal static ObjectId Resolve(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases)
+    {
+        if (op.Text("target") is { } target) return aliases.TryGetValue(target, out var id) ? id : throw new CadFault("UNKNOWN_TARGET", target);
+        return Handle(db, S(op, "handle"));
+    }
+    private static ObjectId Handle(Database db, string value)
+    {
+        if (!long.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out var h) || !db.TryGetObjectId(new Handle(h), out var id) || id.IsNull || id.IsErased)
+            throw new CadFault("ENTITY_NOT_FOUND", value);
+        return id;
+    }
+    private static void RequireUnlocked(Transaction tr, Entity e)
+    { if (((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked) throw new CadFault("LAYER_LOCKED", e.Layer); }
+    private static Entity Editable(Database db, Transaction tr, ObjectId id, bool write)
+    {
+        if (id.IsErased) throw new CadFault("ENTITY_ERASED", id.Handle.ToString());
+        if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != db.CurrentSpaceId) throw new CadFault("UNSUPPORTED_SCOPE", "Only current-space top-level entities can be edited");
+        if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
+            throw new CadFault("SPECIAL_OBJECT", "Special objects need a vendor API or explicitly targeted AutoLISP");
+        if (e is BlockReference block && ((BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead)).IsFromExternalReference)
+            throw new CadFault("XREF_OBJECT", "This path does not edit external references");
+        if (write) { RequireUnlocked(tr, e); e.UpgradeOpen(); }
+        return e;
+    }
+    private static void Set(Database db, Transaction tr, Entity entity, JsonElement op)
+    {
+        foreach (var p in op.EnumerateObject())
+        {
+            switch (p.Name)
+            {
+                case "op": case "id": case "handle": case "target": break;
+                case "layer": entity.LayerId = Layer(db, tr, p.Value.GetString()!); break;
+                case "color_index": entity.ColorIndex = p.Value.GetInt32(); break;
+                case "visible": entity.Visible = p.Value.GetBoolean(); break;
+                case "linetype":
+                    var types = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                    if (!types.Has(p.Value.GetString()!)) throw new CadFault("LINETYPE_NOT_FOUND", p.Value.GetString()!);
+                    entity.LinetypeId = types[p.Value.GetString()!]; break;
+                case "linetype_scale": entity.LinetypeScale = p.Value.GetDouble(); break;
+                case "lineweight":
+                    int weight = p.Value.GetInt32();
+                    if (!Enum.IsDefined(typeof(LineWeight), weight)) throw new CadFault("INVALID_LINEWEIGHT", "Expected a supported LineWeight value in hundredths of mm, or -1/-2/-3");
+                    entity.LineWeight = (LineWeight)weight; break;
+                case "attributes" when entity is BlockReference block: Attributes(db, tr, block, op, false); break;
+                case "text" when entity is DBText text: text.TextString = p.Value.GetString()!; break;
+                case "text" when entity is MText mtext: mtext.Contents = p.Value.GetString()!; break;
+                case "text" when entity is Dimension dimension: dimension.DimensionText = p.Value.GetString()!; dimension.RecomputeDimensionBlock(true); break;
+                case "position" when entity is DBText text: text.Position = Point(op, "position"); text.AdjustAlignment(db); break;
+                case "position" when entity is MText text: text.Location = Point(op, "position"); break;
+                case "position" when entity is BlockReference block: block.Position = Point(op, "position"); TransformAttributes(tr, block); break;
+                case "height" when entity is DBText text: text.Height = p.Value.GetDouble(); break;
+                case "height" when entity is MText text: text.TextHeight = p.Value.GetDouble(); break;
+                case "width" when entity is MText text: text.Width = p.Value.GetDouble(); break;
+                case "rotation_deg" when entity is DBText text: text.Rotation = Angle(op, "rotation_deg"); break;
+                case "rotation_deg" when entity is MText text: text.Rotation = Angle(op, "rotation_deg"); break;
+                case "rotation_deg" when entity is BlockReference block: block.Rotation = Angle(op, "rotation_deg"); TransformAttributes(tr, block); break;
+                case "start" when entity is Line line: line.StartPoint = Point(op, "start"); break;
+                case "end" when entity is Line line: line.EndPoint = Point(op, "end"); break;
+                case "center" when entity is Circle circle: circle.Center = Point(op, "center"); break;
+                case "center" when entity is Arc arc: arc.Center = Point(op, "center"); break;
+                case "radius" when entity is Circle circle: circle.Radius = p.Value.GetDouble(); break;
+                case "radius" when entity is Arc arc: arc.Radius = p.Value.GetDouble(); break;
+                case "closed" when entity is Polyline poly: poly.Closed = p.Value.GetBoolean(); break;
+                default: throw new CadFault("PROPERTY_NOT_SUPPORTED", p.Name + " on " + entity.GetType().Name);
+            }
+        }
+    }
+    private static void TransformAttributes(Transaction tr, BlockReference block)
+    {
+        // Position/rotation through TransformBy is preferable: changing only the reference does not move existing attributes.
+        if (block.AttributeCollection.Count > 0) throw new CadFault("ATTRIBUTE_TRANSFORM", "Use move/rotate for attributed blocks; set position/rotation would leave attributes behind");
+    }
+    private static void Attributes(Database db, Transaction tr, BlockReference block, JsonElement op, bool create)
+    {
+        var requested = op.TryGetProperty("attributes", out var a) ? a.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!, StringComparer.OrdinalIgnoreCase) : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var applied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (create)
+        {
+            var definition = (BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead);
+            foreach (ObjectId id in definition)
+            {
+                if (tr.GetObject(id, OpenMode.ForRead) is not AttributeDefinition ad || ad.Constant) continue;
+                var ar = new AttributeReference(); ar.SetAttributeFromBlock(ad, block.BlockTransform);
+                ar.TextString = requested.TryGetValue(ad.Tag, out var value) ? value : ad.TextString;
+                block.AttributeCollection.AppendAttribute(ar); tr.AddNewlyCreatedDBObject(ar, true);
+                if (requested.ContainsKey(ad.Tag)) applied.Add(ad.Tag);
+            }
+        }
+        else
+        {
+            foreach (ObjectId id in block.AttributeCollection)
+            {
+                var ar = (AttributeReference)tr.GetObject(id, OpenMode.ForRead);
+                if (!requested.TryGetValue(ar.Tag, out var value)) continue;
+                ar.UpgradeOpen(); ar.TextString = value; if (ar.IsMTextAttribute) ar.UpdateMTextAttribute(); applied.Add(ar.Tag);
+            }
+        }
+        if (requested.Keys.Any(tag => !applied.Contains(tag))) throw new CadFault("ATTRIBUTE_NOT_FOUND", string.Join(", ", requested.Keys.Where(tag => !applied.Contains(tag))));
+    }
+    private static void SetupHatch(Database db, Transaction tr, Hatch hatch, JsonElement op, Dictionary<string, ObjectId> aliases)
+    {
+        hatch.SetHatchPattern(HatchPatternType.PreDefined, op.Text("pattern") ?? "SOLID");
+        hatch.PatternScale = N(op, "scale", 1); hatch.PatternAngle = Angle(op, "angle_deg"); hatch.Associative = true;
+        bool first = true;
+        foreach (var boundary in op.GetProperty("boundaries").EnumerateArray())
+        {
+            string key = boundary.GetString()!;
+            var id = aliases.TryGetValue(key, out var alias) ? alias : Handle(db, key);
+            var e = Editable(db, tr, id, false);
+            if (e is not Circle && (e is not Polyline p || !p.Closed)) throw new CadFault("INVALID_HATCH_BOUNDARY", "Expected a closed polyline or circle");
+            hatch.AppendLoop(first ? HatchLoopTypes.Outermost : HatchLoopTypes.Default, new ObjectIdCollection([id])); first = false;
+        }
+        hatch.EvaluateHatch(true);
+    }
+}

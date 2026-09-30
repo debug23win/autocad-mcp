@@ -15,7 +15,8 @@ internal static class Reader
             ["handle"] = e.Handle.ToString(), ["type"] = e.GetType().Name,
             ["class_name"] = e.GetRXClass().Name, ["dxf_name"] = e.GetRXClass().DxfName,
             ["layer"] = e.Layer, ["visible"] = e.Visible,
-            ["access"] = "partial", ["coordinate_system"] = "WCS", ["owner_handle"] = e.OwnerId.Handle.ToString()
+            ["color_index"] = e.ColorIndex, ["linetype"] = e.Linetype, ["linetype_scale"] = e.LinetypeScale, ["lineweight"] = (int)e.LineWeight,
+            ["access"] = "partial", ["coordinate_system"] = "WCS", ["angle_units"] = "radians", ["owner_handle"] = e.OwnerId.IsNull ? null : e.OwnerId.Handle.ToString()
         };
         try { var b = e.GeometricExtents; item["bounds"] = new { min = P(b.MinPoint), max = P(b.MaxPoint) }; }
         catch (Autodesk.AutoCAD.Runtime.Exception) { item["bounds_unavailable"] = true; }
@@ -37,22 +38,43 @@ internal static class Reader
                 item["normal"] = new[] { poly.Normal.X, poly.Normal.Y, poly.Normal.Z }; item["vertices_truncated"] = poly.NumberOfVertices > 2000;
                 item["access"] = poly.NumberOfVertices <= 2000 ? "structured" : "partial"; break;
             case DBText text:
-                item["text"] = text.TextString; item["position"] = P(text.Position); item["rotation"] = text.Rotation; item["access"] = "structured"; break;
+                item["text"] = text.TextString; item["position"] = P(text.Position); item["rotation"] = text.Rotation; item["height"] = text.Height; item["access"] = "structured"; break;
             case MText text:
-                item["text"] = text.Text; item["raw_text"] = text.Contents; item["position"] = P(text.Location); item["access"] = "structured"; break;
+                item["text"] = text.Text; item["raw_text"] = text.Contents; item["position"] = P(text.Location); item["height"] = text.TextHeight; item["width"] = text.Width; item["rotation"] = text.Rotation; item["access"] = "structured"; break;
             case Dimension dim:
                 item["measurement"] = dim.Measurement; item["text_override"] = dim.DimensionText; item["text"] = dim.DimensionText;
-                item["limitations"] = new[] { "dimension_geometry_not_expanded" }; break;
+                item["dimension_style"] = ((DimStyleTableRecord)tr.GetObject(dim.DimensionStyle, OpenMode.ForRead)).Name;
+                item["text_position"] = P(dim.TextPosition);
+                var points = new Dictionary<string, object>();
+                foreach (var name in new[] { "XLine1Point", "XLine2Point", "DimLinePoint", "Center", "CenterPoint", "ChordPoint", "FarChordPoint", "ArcPoint", "XLine1Start", "XLine1End", "XLine2Start", "XLine2End" })
+                    if (dim.GetType().GetProperty(name)?.GetValue(dim) is Point3d point) points[name] = P(point);
+                item["geometry"] = points; item["limitations"] = new[] { "formatted_dimension_text_requires_style_evaluation" }; break;
             case BlockReference block:
                 var definition = (BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead);
                 item["name"] = definition.Name; item["is_xref"] = definition.IsFromExternalReference;
                 item["transform"] = block.BlockTransform.ToArray(); item["position"] = P(block.Position);
+                item["rotation"] = block.Rotation; item["scale"] = new[] { block.ScaleFactors.X, block.ScaleFactors.Y, block.ScaleFactors.Z };
                 item["dynamic"] = block.IsDynamicBlock;
+                if (block.IsDynamicBlock)
+                {
+                    item["effective_name"] = ((BlockTableRecord)tr.GetObject(block.DynamicBlockTableRecord, OpenMode.ForRead)).Name;
+                    item["dynamic_properties"] = block.DynamicBlockReferencePropertyCollection.Cast<DynamicBlockReferenceProperty>().Take(100)
+                        .Select(p => new { name = p.PropertyName, value = p.Value is double or int or short or string ? p.Value : p.Value?.ToString(), read_only = p.ReadOnly,
+                            units = p.UnitsType.ToString(), allowed_values = p.GetAllowedValues().Take(100).Select(v => v is double or int or short or string ? v : v?.ToString()).ToArray() }).ToArray();
+                }
                 var attributes = new Dictionary<string, string>();
+                var attributeDetails = new List<object>();
                 foreach (ObjectId id in block.AttributeCollection)
-                    if (tr.GetObject(id, OpenMode.ForRead) is AttributeReference a) attributes[a.Tag + ":" + a.Handle] = a.TextString;
+                    if (tr.GetObject(id, OpenMode.ForRead) is AttributeReference a)
+                    { attributes[a.Tag + ":" + a.Handle] = a.TextString; if (attributeDetails.Count < 100) attributeDetails.Add(new { tag = a.Tag, handle = a.Handle.ToString(), text = a.TextString, position = P(a.Position) }); }
                 item["attributes"] = attributes; item["text"] = string.Join(" ", attributes.Values);
-                item["limitations"] = new[] { "nested_geometry_not_expanded", "dynamic_properties_not_read" }; break;
+                item["attribute_details"] = attributeDetails; item["attribute_details_truncated"] = attributes.Count > 100;
+                item["limitations"] = new[] { "use_cad_search_expand_blocks_for_nested_geometry" }; break;
+            case Solid3d solid:
+                item["volume"] = solid.MassProperties.Volume; item["access"] = "partial"; item["limitations"] = new[] { "solid_topology_not_expanded" }; break;
+            case Hatch hatch:
+                item["pattern"] = hatch.PatternName; item["pattern_scale"] = hatch.PatternScale; item["pattern_angle"] = hatch.PatternAngle;
+                item["loops"] = hatch.NumberOfLoops; item["access"] = "partial"; item["limitations"] = new[] { "hatch_boundary_geometry_not_expanded" }; break;
             default:
                 item["limitations"] = new[] { "specialized_properties_unavailable", "requires_visual_or_vendor_adapter" }; break;
         }

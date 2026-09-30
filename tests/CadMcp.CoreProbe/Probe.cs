@@ -1,0 +1,145 @@
+using System.Text.Json;
+using System.IO;
+using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
+using CadMcp.Core;
+using CadMcp.AutoCAD;
+using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
+
+[assembly: CommandClass(typeof(CadMcp.CoreProbe.Probe))]
+namespace CadMcp.CoreProbe;
+public static class Probe
+{
+    private static Documents? lispDocuments;
+    private static Dispatcher? lispDispatcher;
+    private static string? lispDocumentId;
+    private static Response Invoke(Request request)
+    {
+        try { return (Response)typeof(Dispatcher).GetMethod("Execute", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(lispDispatcher, [request, CancellationToken.None])!; }
+        catch (System.Reflection.TargetInvocationException error) { throw error.InnerException ?? error; }
+    }
+    [LispFunction("CADMCPBEGIN")]
+    public static string? Begin(ResultBuffer args) => lispDispatcher?.BeginLisp((string)args.AsArray()[0].Value);
+    [LispFunction("CADMCPFINISH")]
+    public static int Finish(ResultBuffer args)
+    { var a = args.AsArray(); lispDispatcher?.FinishLisp((string)a[0].Value, Convert.ToInt32(a[1].Value) == 1, (string)a[2].Value); return 0; }
+    [CommandMethod("CADMCPCORELISP")]
+    public static void StartLisp()
+    {
+        var output = Environment.GetEnvironmentVariable("CADMCP_PROBE_OUTPUT"); if (output is null) return;
+        try
+        {
+            lispDocuments = new(); lispDispatcher = new(lispDocuments);
+            var doc = App.DocumentManager.MdiActiveDocument; var state = lispDocuments.Register(doc); lispDocumentId = state.Id;
+            var reply = Invoke(new("lisp-test", "cad_lisp", lispDocuments.SessionId, state.Id, state.Revision,
+                Wire.Element(new { operation_id = "core_lisp", code = "(+ 1 2)" }), DateTimeOffset.UtcNow.AddSeconds(25)));
+            if (reply.Status != "queued") throw new System.Exception("LISP was not queued");
+        }
+        catch (System.Exception error) { File.WriteAllText(output + ".lisp", JsonSerializer.Serialize(new { failure = error.ToString() })); }
+    }
+    [CommandMethod("CADMCPCORELISPVERIFY")]
+    public static void VerifyLisp()
+    {
+        var output = Environment.GetEnvironmentVariable("CADMCP_PROBE_OUTPUT"); if (output is null || lispDocuments is null) return;
+        try
+        {
+            var reply = Invoke(new("lisp-status", "cad_operation_status", lispDocuments.SessionId, lispDocumentId,
+                Data: Wire.Element(new { operation_id = "core_lisp" })));
+            var data = Wire.Element(reply.Data!);
+            if (data.Text("state") != "completed" || data.GetProperty("result").GetProperty("data").Text("return_value") != "3")
+                throw new System.Exception("Real AutoLISP result was not completed: " + data.GetRawText());
+            File.WriteAllText(output + ".lisp", JsonSerializer.Serialize(new { checks = new[] { "Production AutoLISP wrapper, managed callbacks and durable journal complete with result 3" }, failure = (string?)null }));
+        }
+        catch (System.Exception error) { File.WriteAllText(output + ".lisp", JsonSerializer.Serialize(new { failure = error.ToString() })); }
+        finally { lispDispatcher?.Dispose(); lispDocuments.Dispose(); lispDispatcher = null; lispDocuments = null; }
+    }
+    [CommandMethod("CADMCPCOREPROBE")]
+    public static void Run()
+    {
+        var output = Environment.GetEnvironmentVariable("CADMCP_PROBE_OUTPUT"); if (string.IsNullOrEmpty(output)) return;
+        var checks = new List<string>(); string? failure = null;
+        try
+        {
+            var doc = App.DocumentManager.MdiActiveDocument;
+            void Assert(bool condition, string message) { if (!condition) throw new System.Exception(message); checks.Add(message); }
+            using var documents = new Documents();
+            var state = documents.Register(doc);
+            var plan = EditPlan.Parse("""
+                [{"op":"layer","name":"CADMCP_TEST","color_index":3},
+                 {"op":"line","id":"line","start":[0,0,0],"end":[100,0,0],"layer":"CADMCP_TEST"},
+                 {"op":"circle","center":[50,50,0],"radius":10},
+                 {"op":"polyline","points":[[0,100],[50,100],[50,150]]},
+                 {"op":"rectangle","id":"rect","first":[100,100],"second":[150,150]},
+                 {"op":"text","position":[0,50],"text":"Сеть ✓","height":2.5},
+                 {"op":"mtext","position":[0,60],"text":"Колодец","height":2.5,"width":30},
+                 {"op":"arc","center":[100,50],"radius":20,"start_angle_deg":0,"end_angle_deg":90},
+                 {"op":"dimension_aligned","first":[0,0],"second":[100,0],"position":[0,-10]},
+                 {"op":"hatch","boundaries":["rect"]},
+                 {"op":"box","center":[200,0,0],"length":10,"width":20,"height":30},
+                 {"op":"cylinder","center":[250,0,0],"radius":10,"height":20}]
+                """);
+            var result = Wire.Element(Edits.Execute(doc, plan, default));
+            Assert(result.GetProperty("entities").GetArrayLength() == 11, "Creation/readback of 11 entities: lines, text, dimension, hatch, solids");
+            var entities = result.GetProperty("entities").EnumerateArray().ToArray();
+            Assert(entities.Any(e => e.Text("text") == "Сеть ✓"), "Unicode text retained");
+            var line = entities.First(e => e.Text("type") == "Line").Text("handle")!;
+            var dimension = entities.First(e => e.Text("type") == "AlignedDimension");
+            Assert(dimension.GetProperty("geometry").GetProperty("XLine1Point")[0].GetDouble() == 0 && Math.Abs(dimension.GetProperty("measurement").GetDouble() - 100) < 1e-8, "Dimension geometry and measurement read back");
+            var changed = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
+                new { op = "move", handle = line, displacement = new[] { 10, 20, 0 } },
+                new { op = "copy", id = "copy", handle = line, displacement = new[] { 0, 10, 0 } },
+                new { op = "rotate", target = "copy", center = new[] { 0, 0, 0 }, angle_deg = 90 },
+                new { op = "scale", target = "copy", center = new[] { 0, 0, 0 }, factor = 2 },
+                new { op = "mirror", target = "copy", first = new[] { 0, 0, 0 }, second = new[] { 100, 0, 0 } },
+                new { op = "set", handle = line, color_index = 1 }, new { op = "erase", target = "copy" } })), default));
+            Assert(changed.GetProperty("entities").EnumerateArray().Any(e => e.Text("handle") == line && e.GetProperty("start")[0].GetDouble() == 10 && e.GetProperty("start")[1].GetDouble() == 20), "Move and property edit verified in native database");
+            Assert(changed.GetProperty("entities").EnumerateArray().Any(e => e.TryGetProperty("erased", out var erased) && erased.GetBoolean()), "Copy, rotate, scale, mirror and delete committed");
+            JsonElement Search(object options)
+            { using var tr = doc.Database.TransactionManager.StartOpenCloseTransaction(); return Wire.Element(DrawingSearch.Read(doc, tr, Wire.Element(options), default)); }
+            int before = Search(new { scope = "all", limit = 100 }).GetProperty("entities").GetArrayLength();
+            try
+            {
+                Edits.Execute(doc, EditPlan.Parse("[{\"op\":\"line\",\"start\":[777,777],\"end\":[888,888]},{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1],\"layer\":\"MISSING_LAYER\"}]"), default);
+                throw new System.Exception("Expected missing layer fault");
+            }
+            catch (CadFault error) when (error.Code == "LAYER_NOT_FOUND") { }
+            Assert(Search(new { scope = "all", limit = 100 }).GetProperty("entities").GetArrayLength() == before, "Failed second edit rolls back first entity");
+            try { documents.Active(new("stale", "cad_edit", documents.SessionId, state.Id, state.Revision - 1)); throw new System.Exception("Expected revision conflict"); }
+            catch (CadFault error) when (error.Code == "REVISION_CONFLICT") { checks.Add("Stale document revision rejected by actual worker registry"); }
+            using (var tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                var table = (BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForWrite);
+                var leaf = new BlockTableRecord { Name = "CADMCP_LEAF" }; table.Add(leaf); tr.AddNewlyCreatedDBObject(leaf, true);
+                var nestedLine = new Line(new(1, 2, 0), new(4, 2, 0)); leaf.AppendEntity(nestedLine); tr.AddNewlyCreatedDBObject(nestedLine, true);
+                var attributeDefinition = new AttributeDefinition(new(1, 2, 0), "Nested", "TAG", "", doc.Database.Textstyle) { Height = 2.5 }; leaf.AppendEntity(attributeDefinition); tr.AddNewlyCreatedDBObject(attributeDefinition, true);
+                var branch = new BlockTableRecord { Name = "CADMCP_BRANCH" }; table.Add(branch); tr.AddNewlyCreatedDBObject(branch, true);
+                var child = new BlockReference(new(10, 20, 0), leaf.ObjectId); branch.AppendEntity(child); tr.AddNewlyCreatedDBObject(child, true);
+                var attribute = new AttributeReference(); attribute.SetAttributeFromBlock(attributeDefinition, child.BlockTransform); child.AttributeCollection.AppendAttribute(attribute); tr.AddNewlyCreatedDBObject(attribute, true);
+                var model = (BlockTableRecord)tr.GetObject(table[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                foreach (var point in new[] { new Point3d(100, 200, 0), new Point3d(1000, 2000, 0) })
+                { var insert = new BlockReference(point, branch.ObjectId); model.AppendEntity(insert); tr.AddNewlyCreatedDBObject(insert, true); }
+                for (int i = 0; i < 2500; i++)
+                { var e = new Line(new(i, 500, 0), new(i, 501, 0)); model.AppendEntity(e); tr.AddNewlyCreatedDBObject(e, true); }
+                var late = new DBText { Position = new(9000, 9000, 0), TextString = "CADMCP_LATE_2500", Height = 2.5 }; model.AppendEntity(late); tr.AddNewlyCreatedDBObject(late, true);
+                tr.Commit();
+            }
+            var nested = Search(new { scope = "model", type = "Line", expand_blocks = true, details = true, bounds = new { min = new[] { 110, 221, -1 }, max = new[] { 115, 223, 1 } } });
+            var nestedItem = nested.GetProperty("entities").EnumerateArray().Single();
+            Assert(nestedItem.GetProperty("start")[0].GetDouble() == 111 && nestedItem.GetProperty("start")[1].GetDouble() == 222 && nestedItem.GetProperty("depth").GetInt32() == 2, "Nested block geometry transformed to WCS and isolated by bounds");
+            var nestedBlock = Search(new { scope = "model", type = "BlockReference", expand_blocks = true, details = true }).GetProperty("entities").EnumerateArray().First(e => e.GetProperty("depth").GetInt32() == 1);
+            Assert(nestedBlock.GetProperty("attribute_details")[0].GetProperty("position")[0].GetDouble() == 111 && nestedBlock.GetProperty("attribute_details")[0].GetProperty("position")[1].GetDouble() == 222, "Nested attribute positions returned in WCS");
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var lateSearch = Search(new { scope = "model", text = "CADMCP_LATE_2500", limit = 10 }); watch.Stop();
+            Assert(lateSearch.GetProperty("entities").GetArrayLength() == 1 && lateSearch.GetProperty("visited").GetInt32() > 2500, "Search reaches entities beyond snapshot limit of 2000");
+            checks.Add("Targeted search of 2500+ entities: " + watch.ElapsedMilliseconds + " ms");
+            var page = Search(new { scope = "model", type = "Line", offset = 2400, limit = 100 });
+            Assert(page.GetProperty("entities").GetArrayLength() == 100 && page.GetProperty("pagination").GetProperty("next_offset").GetInt32() == 2500, "Large database pagination stays bounded and stable");
+            var detail = Search(new { scope = "model", type = "AlignedDimension", details = true });
+            Assert(detail.GetProperty("entities")[0].TryGetProperty("geometry", out _), "Search returns full dimension detail on demand");
+            Assert(Search(new { scope = "selection" }).GetProperty("entities").GetArrayLength() == 0, "Empty selection safely returns no objects");
+        }
+        catch (System.Exception error) { failure = error.ToString(); }
+        File.WriteAllText(output, JsonSerializer.Serialize(new { checks, failure }, new JsonSerializerOptions { WriteIndented = true }));
+    }
+}

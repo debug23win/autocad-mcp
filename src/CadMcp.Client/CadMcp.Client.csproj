@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><OutputType>WinExe</OutputType><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
+    <ProjectReference Include="../CadMcp.Providers/CadMcp.Providers.csproj" />
+    <Compile Include="../CadMcp.AutoCAD/ChatPanel.cs;../CadMcp.AutoCAD/GlobalUsings.cs" />
+  </ItemGroup>
+</Project>

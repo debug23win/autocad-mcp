@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="AutoCAD" Name="CAD MCP AutoCAD 2025–2027 Preview"
+ AppVersion="0.3.1" Description="Drawing inspection, editing and AI chat for AutoCAD, Map 3D and Civil 3D 2025–2027"
+ ProductCode="{3ED331B7-C33B-4CD1-B7BC-AB40A5433322}" UpgradeCode="{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}">
+  <CompanyDetails Name="CAD MCP contributors" Url="https://github.com/debug23win/autocad-mcp" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD|Map|Civil3D" SeriesMin="R25.0" SeriesMax="R25.1" />
+    <ComponentEntry AppName="CadMcp.AutoCAD" AppType=".Net" ModuleName="./Contents/Win64/CadMcp.AutoCAD.dll"
+     AppDescription="CAD MCP preview" LoadOnAutoCADStartup="True">
+      <Commands GroupName="CADMCP"><Command Local="CADMCPCHAT" Global="CADMCPCHAT" /></Commands>
+    </ComponentEntry>
+  </Components>
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD|Map|Civil3D" SeriesMin="R26.0" SeriesMax="R26.0" />
+    <ComponentEntry AppName="CadMcp.AutoCAD2027" AppType=".Net" ModuleName="./Contents/Net10/CadMcp.AutoCAD2027.dll"
+     AppDescription="CAD MCP preview (.NET 10)" LoadOnAutoCADStartup="True">
+      <Commands GroupName="CADMCP"><Command Local="CADMCPCHAT" Global="CADMCPCHAT" /></Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

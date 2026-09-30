@@ -1,5 +1,20 @@
 # Происхождение кода и аудит этапа 3А
 
+## Дополнение версии 0.2.0
+
+| Источник | Применение |
+|---|---|
+| [beiming183-cloud/AutoCAD-MCP CadDispatcher.cs](https://github.com/beiming183-cloud/AutoCAD-MCP/blob/11f7c47e5038796a20451b38b23032e625b5aa26/native/AutoCADMcp.Plugin/CadDispatcher.cs), MIT | Адаптирован подход транзакций и создания геометрии в Edits.cs; добавлены 2D-объекты, атрибуты, трансформации, строгий контракт и чтение конечного результата |
+| [felixalmesberger/AUTOCAD-MCP](https://github.com/felixalmesberger/AUTOCAD-MCP/tree/ae430dce5125aa4966ebd97d5396b41154597b6f), MIT | Адаптирован подход AutoLISP evaluator из AcadExecutor.cs в LispScript.cs; файловый маркер заменён callbacks и журналом состояний |
+| [debug23win/ClaudeRevit](https://github.com/debug23win/ClaudeRevit/tree/25a25ba925dbff48e33e0700233a7fbe53c7863e), MIT | Адаптирован atomic-save подход HistoryStore.cs в ChatStateStore.cs; остальные выводы описаны в clauderevit-analysis.md |
+| [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP/tree/cdb10638963898b3ea9b10cdd96a2c9bc495f184), MIT | Изучены COM backend и контракты; использованы принципы проверяемого результата и явного неподдерживаемого свойства. Python-код не включён |
+| [puran-water/autocad-mcp](https://github.com/puran-water/autocad-mcp/tree/95476a33a1c246308326eb4709d6379ef2efdbc1), MIT | Изучены File IPC, диспетчер и execute_lisp; использована идентификация отдельных операций. LT/File IPC backend в эту сборку не включён |
+| [Slacker-LLC/autocad-mcp](https://github.com/Slacker-LLC/autocad-mcp/tree/2723b4fae13ac7bc91274fcd502528b92da7a6a5), Apache-2.0 | Изучены move/copy/delete, проверки координат и единиц. Реализованы собственные нативные аналоги; Python-код не включён |
+
+Для адаптированных компонентов сохранены полные MIT-лицензии и уведомления в исходниках/NOTICE. Это объединение выбранных механизмов в согласованном объёме, а не импорт всех функций каждого проекта.
+
+Следующие разделы описывают первоначальный этап 3А и являются историческими.
+
 Новый код: Apache-2.0, согласовано пользователем 28 сентября 2026.
 
 ## Фактические заимствования

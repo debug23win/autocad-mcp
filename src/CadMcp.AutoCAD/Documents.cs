@@ -8,8 +8,9 @@ using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 namespace CadMcp.AutoCAD;
 
-internal sealed class DocumentState
+internal sealed class DocumentState(Database database)
 {
+    public Database Database { get; } = database;
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public long Revision { get; set; }
 }
@@ -29,21 +30,25 @@ internal sealed class Documents : IDisposable
     private void Erased(object sender, ObjectErasedEventArgs e) => Touch((Database)sender);
     private void Touch(Database db)
     {
-        foreach (var pair in states) if (ReferenceEquals(pair.Key.Database, db)) pair.Value.Revision++;
+        // Document.Database may return a different managed wrapper on each access.
+        // Match the native database identity, retaining the wrapper subscribed to events.
+        foreach (var state in states.Values)
+            if (ReferenceEquals(state.Database, db) || state.Database.UnmanagedObject == db.UnmanagedObject) state.Revision++;
     }
     public DocumentState Register(Document d)
     {
         if (states.TryGetValue(d, out var state)) return state;
-        state = new(); states.Add(d, state);
-        d.Database.ObjectAppended += Changed; d.Database.ObjectModified += Changed; d.Database.ObjectErased += Erased;
+        state = new(d.Database); states.Add(d, state);
+        state.Database.ObjectAppended += Changed; state.Database.ObjectModified += Changed; state.Database.ObjectErased += Erased;
         return state;
     }
     private void Remove(Document d)
     {
-        d.Database.ObjectAppended -= Changed; d.Database.ObjectModified -= Changed; d.Database.ObjectErased -= Erased;
+        if (!states.TryGetValue(d, out var state)) return;
+        state.Database.ObjectAppended -= Changed; state.Database.ObjectModified -= Changed; state.Database.ObjectErased -= Erased;
         states.Remove(d);
     }
-    public Document Active(Request r)
+    public Document Active(Request r, bool checkRevision = true)
     {
         if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
         var d = App.DocumentManager.MdiActiveDocument ?? throw new CadFault("NO_DOCUMENT", "No active drawing");
@@ -51,7 +56,7 @@ internal sealed class Documents : IDisposable
         if (r.Operation != "cad_context")
         {
             if (r.DocumentId != state.Id) throw new CadFault("DOCUMENT_MISMATCH", "Requested drawing is not active");
-            if (r.ExpectedRevision != state.Revision) throw new CadFault("REVISION_CONFLICT", "Refresh document context");
+            if (checkRevision && r.ExpectedRevision != state.Revision) throw new CadFault("REVISION_CONFLICT", "Refresh document context");
         }
         return d;
     }

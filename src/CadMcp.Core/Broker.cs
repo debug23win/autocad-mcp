@@ -21,6 +21,7 @@ public sealed class Broker(string descriptorRoot)
     }
     public async Task<Response> DispatchAsync(Request request, CancellationToken ct)
     {
+        if (request.Operation == "broker_ping") return new(request.RequestId, "completed", new { version = "0.3.1-preview" });
         if (request.Operation == "cad_sessions")
         {
             var reachable = new List<object>();

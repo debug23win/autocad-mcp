@@ -1,0 +1,47 @@
+{
+  "version": "0.159.0",
+  "source": "https://github.com/openai/codex/releases/tag/rust-v0.159.0",
+  "executable_sha256": "0e2a4cd6ac1b329e64ec74745e38b71a3d4fa701102c86f49cf605d23a02c4df",
+  "archives": [
+    {
+      "name": "codex-app-server-package-x86_64-pc-windows-msvc.tar.gz",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.159.0/codex-app-server-package-x86_64-pc-windows-msvc.tar.gz",
+      "sha256": "119fd070466a7f18f9f02607f5beed197a583c5d61d974b5bcc58aeecd5a12bd"
+    },
+    {
+      "name": "codex-x86_64-pc-windows-msvc.exe.tar.gz",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.159.0/codex-x86_64-pc-windows-msvc.exe.tar.gz",
+      "sha256": "419f5d4f7a8bc9075f6c299bbfd2d221e9ea5a93961b7f7c4196e42ee8888e17"
+    }
+  ],
+  "files": [
+    {
+      "path": "codex-package.json",
+      "sha256": "4f145d5e5dcd409a9b4d1ff337fbc50190b2a05534f3620c41399adb9b2a9e05"
+    },
+    {
+      "path": "bin/codex-app-server.exe",
+      "sha256": "68cc2280bfd6fd682f3399790526b35aae29c9395ff2bc4efd652a768fc97ac5"
+    },
+    {
+      "path": "bin/codex-code-mode-host.exe",
+      "sha256": "cba41f9b6a4ae902b8524c0ee9cb6f2bd863fb556c913fb9d9269d4d78dbd8ac"
+    },
+    {
+      "path": "bin/codex.exe",
+      "sha256": "0e2a4cd6ac1b329e64ec74745e38b71a3d4fa701102c86f49cf605d23a02c4df"
+    },
+    {
+      "path": "codex-path/rg.exe",
+      "sha256": "14231169855ec5205cf5a1b6f1db358ff4aed4247c86b69ce8aae647c77f6680"
+    },
+    {
+      "path": "codex-resources/codex-command-runner.exe",
+      "sha256": "656f63bd224996b0abbd746a351f00bd44b708c3cf106e3ba62d97f8d2cfb457"
+    },
+    {
+      "path": "codex-resources/codex-windows-sandbox-setup.exe",
+      "sha256": "627c754d900b6f7becd295c3e2d7cd7b76978b42b475792c8acbbf0cf95ace70"
+    }
+  ]
+}

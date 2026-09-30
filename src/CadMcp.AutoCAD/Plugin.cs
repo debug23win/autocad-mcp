@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Windows.Input;
 using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Windows;
 using Autodesk.Windows;
 using CadMcp.Core;
@@ -30,7 +31,7 @@ public sealed class Plugin : IExtensionApplication
             Directory.CreateDirectory(Wire.WorkerRoot);
             descriptorPath = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
             var temp = descriptorPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.1.0"), Wire.Json));
+            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.3.1-preview"), Wire.Json));
             File.Move(temp, descriptorPath, true);
             App.Idle += AddRibbon;
         }
@@ -53,11 +54,24 @@ public sealed class Plugin : IExtensionApplication
     {
         if (palette is null)
         {
-            palette = new PaletteSet("CAD MCP — прототип чтения");
-            panel = new ChatPanel(); palette.AddVisual("Чат", panel);
+            palette = new PaletteSet("CAD MCP — ассистент чертежей");
+            panel = new ChatPanel { CadSessionId = documents?.SessionId }; palette.AddVisual("Чат", panel);
             palette.MinimumSize = new System.Drawing.Size(360, 480);
         }
         palette.Visible = true;
+    }
+    [LispFunction("CADMCPBEGIN")]
+    public static string? BeginLisp(ResultBuffer args)
+    {
+        try { return dispatcher?.BeginLisp((string)args.AsArray()[0].Value); }
+        catch (System.Exception) { return null; }
+    }
+    [LispFunction("CADMCPFINISH")]
+    public static int FinishLisp(ResultBuffer args)
+    {
+        var values = args.AsArray();
+        if (values.Length == 3) dispatcher?.FinishLisp((string)values[0].Value, Convert.ToInt32(values[1].Value) == 1, (string)values[2].Value);
+        return 0;
     }
     public void Terminate()
     {
