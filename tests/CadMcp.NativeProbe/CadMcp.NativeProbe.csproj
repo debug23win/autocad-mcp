@@ -10,6 +10,7 @@
     <Compile Include="../../src/CadMcp.AutoCAD/Documents.cs" Link="Documents.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Dispatcher.cs" Link="Dispatcher.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Edits.cs" Link="Edits.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/Exports.cs" Link="Exports.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Reader.cs" Link="Reader.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Catalog.cs" Link="Catalog.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingSearch.cs" Link="DrawingSearch.cs" />

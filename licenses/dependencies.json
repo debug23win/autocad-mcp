@@ -345,5 +345,40 @@
     "notice_files": [
       "licenses/dependencies/System.Text.Json-10.0.6-THIRD-PARTY-NOTICES.TXT"
     ]
+  },
+  {
+    "id": "Microsoft.Web.WebView2",
+    "version": "1.0.4258.31",
+    "declared_license": "Microsoft WebView2 SDK license",
+    "content_hash": "sHVZ2MQrHT1J3q5/6csn0fIP27rzpTO/RRC+wPQDrZheB7T4t2n+vVbY6SdCKr4WRV9s/gmBM3PPMWWJtoDzMg==",
+    "notice_files": ["licenses/dependencies/WebView2-1.0.4258.31-LICENSE.txt", "licenses/dependencies/WebView2-1.0.4258.31-NOTICE.txt"]
+  },
+  {
+    "id": "DocumentFormat.OpenXml",
+    "version": "3.1.1",
+    "declared_license": "MIT",
+    "content_hash": "2z9QBzeTLNNKWM9SaOSDMegfQk/7hDuElOsmF77pKZMkFRP/GHA/W/4yOAQD9kn15N/FsFxHn3QVYkatuZghiA==",
+    "notice_files": ["licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"]
+  },
+  {
+    "id": "DocumentFormat.OpenXml.Framework",
+    "version": "3.1.1",
+    "declared_license": "MIT",
+    "content_hash": "6APEp/ElZV58S/4v8mf4Ke3ONEDORs64MqdD64Z7wWpcHANB9oovQsGIwtqjnKihulOj7T0a6IxHIHOfMqKOng==",
+    "notice_files": ["licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"]
+  },
+  {
+    "id": "Markdig",
+    "version": "1.3.2",
+    "declared_license": "BSD-2-Clause",
+    "content_hash": "fZgOC/3CswUrndjDTac70aQpYdtxbW5+5bRumR7vzvI2HJbkmgKisB1c9oT+GA6v0jB/JDR9BLa9FiPzQmaK6A==",
+    "notice_files": ["licenses/dependencies/Markdig-1.3.2-LICENSE.txt"]
+  },
+  {
+    "id": "System.IO.Packaging",
+    "version": "8.0.1",
+    "declared_license": "MIT",
+    "content_hash": "KYkIOAvPexQOLDxPO2g0BVoWInnQhPpkFzRqvNrNrMhVT6kqhVr0zEb6KCHlptLFukxnZrjuMVAnxK7pOGUYrw==",
+    "notice_files": ["licenses/dependencies/System.IO.Packaging-8.0.1-LICENSE.txt", "licenses/dependencies/System.IO.Packaging-8.0.1-NOTICE.txt"]
   }
 ]

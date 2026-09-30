@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' https: data:; connect-src 'none';">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="katex.min.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { --bg:#f5f6f8; --fg:#20232a; --muted:#5d6572; --card:#fff; --border:#d7dce3; --accent:#0867b4; --user:#e7f1fc;
+      margin:0; padding:14px; background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI",Arial,sans-serif; }
+    body.dark { --bg:#25282d; --fg:#eff2f5; --muted:#bac2cd; --card:#30343a; --border:#4c535d; --accent:#8bc5ff; --user:#263d55; }
+    main { max-width:980px; margin:auto; padding-bottom:24px; }
+    .message { background:var(--card); border:1px solid var(--border); border-radius:10px; margin:0 0 12px; padding:12px 14px; overflow-wrap:anywhere; }
+    .message.user { background:var(--user); }
+    .message.assistant { cursor:pointer; }
+    .message.assistant.selected { border:2px solid var(--accent); padding:11px 13px; }
+    .message.progress { border-style:dashed; }
+    header { font-weight:650; margin-bottom:8px; color:var(--accent); }
+    header small { color:var(--muted); font-weight:400; }
+    p { margin:0 0 10px; } p:last-child { margin-bottom:0; }
+    pre { overflow:auto; padding:10px; border-radius:6px; background:var(--bg); }
+    code { font-family:Consolas,monospace; }
+    blockquote { margin:8px 0; padding-left:10px; border-left:3px solid var(--accent); color:var(--muted); }
+    table { border-collapse:collapse; display:block; overflow:auto; max-width:100%; }
+    th,td { border:1px solid var(--border); padding:5px 8px; }
+    a { color:var(--accent); }
+    img { max-width:100%; max-height:600px; height:auto; border-radius:6px; }
+    figure { margin:8px 0; } figcaption { color:var(--muted); font-size:12px; }
+    .images { display:flex; flex-wrap:wrap; gap:10px; }
+    .images figure { max-width:100%; }
+    .reasoning,.steps { margin-top:12px; padding-top:10px; border-top:1px solid var(--border); color:var(--muted); }
+    .reasoning strong,.steps strong { color:var(--fg); }
+    .steps ul { margin:5px 0 0; padding-left:20px; }
+    .katex-display { overflow-x:auto; overflow-y:hidden; }
+    #empty { color:var(--muted); text-align:center; margin:40px 10px; }
+  </style>
+  <script defer src="katex.min.js"></script>
+  <script defer src="auto-render.min.js"></script>
+  <script defer src="chat.js"></script>
+</head>
+<body><main id="conversation"><p id="empty">Напишите запрос о чертеже или прикрепите файлы.</p></main></body>
+</html>

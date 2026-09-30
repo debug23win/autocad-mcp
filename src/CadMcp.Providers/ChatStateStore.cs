@@ -4,7 +4,8 @@ namespace CadMcp.Providers;
 
 public sealed record ChatState(int Provider, string CodexExecutable, string ClaudeExecutable, string Host, string Directory,
     string? SessionId, string Transcript, string? AdapterKey = null,
-    string? CodexModel = null, string? CodexReasoningEffort = null);
+    string? CodexModel = null, string? CodexReasoningEffort = null,
+    IReadOnlyList<ChatLine>? Messages = null);
 
 // Atomic-save approach adapted from debug23win/ClaudeRevit HistoryStore.cs (MIT).
 // Copyright (c) 2026 Alexandre Roubaud. See licenses/ClaudeRevit-MIT.txt.
@@ -41,6 +42,17 @@ public sealed class ChatStateStore(string root)
     {
         System.IO.Directory.CreateDirectory(root);
         if (state.Transcript.Length > 500000) state = state with { Transcript = "[Earlier transcript omitted; CLI session retains its own history]\n" + state.Transcript[^500000..] };
+        if (state.Messages is { } messages)
+        {
+            var recent = messages.TakeLast(200).Select(line => line with {
+                Text = line.Text.Length > 100000 ? line.Text[^100000..] : line.Text,
+                ReasoningSummary = line.ReasoningSummary is { Length: > 20000 } summary ? summary[^20000..] : line.ReasoningSummary,
+                Steps = line.Steps?.TakeLast(100).ToArray()
+            }).ToList();
+            state = state with { Messages = recent };
+            while (recent.Count > 1 && JsonSerializer.SerializeToUtf8Bytes(state).Length > 3 * 1024 * 1024)
+            { recent.RemoveAt(0); state = state with { Messages = recent }; }
+        }
         string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {

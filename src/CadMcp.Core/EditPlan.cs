@@ -10,12 +10,16 @@ public static class EditPlan
         ["layer"] = "name color_index locked off",
         ["line"] = "start end layer color_index",
         ["circle"] = "center radius layer color_index",
+        ["point"] = "position layer color_index",
+        ["ellipse"] = "center major_axis radius_ratio start_angle_deg end_angle_deg layer color_index",
         ["arc"] = "center radius start_angle_deg end_angle_deg layer color_index",
         ["polyline"] = "points closed bulges width layer color_index",
         ["rectangle"] = "first second layer color_index",
         ["text"] = "position text height rotation_deg style layer color_index",
         ["mtext"] = "position text height width rotation_deg style layer color_index",
         ["block"] = "name position scale rotation_deg attributes layer color_index",
+        ["block_define"] = "name base_point handles",
+        ["layout_create"] = "name",
         ["dimension_aligned"] = "first second position text style layer color_index",
         ["hatch"] = "boundaries pattern scale angle_deg layer color_index",
         ["box"] = "center length width height layer color_index",
@@ -57,10 +61,11 @@ public static class EditPlan
                     throw new CadFault("INVALID_TARGET", "Expected handle or target");
             var required = kind switch
             {
-                "layer" => "name", "line" => "start end", "circle" => "center radius",
+                "layer" or "layout_create" => "name", "line" => "start end", "circle" => "center radius", "point" => "position",
+                "ellipse" => "center major_axis radius_ratio",
                 "arc" => "center radius start_angle_deg end_angle_deg", "polyline" => "points",
                 "rectangle" => "first second", "text" or "mtext" => "position text height",
-                "block" => "name position", "dimension_aligned" => "first second position",
+                "block" => "name position", "block_define" => "name base_point handles", "dimension_aligned" => "first second position",
                 "hatch" => "boundaries", "box" => "center length width height", "cylinder" => "center radius height",
                 "move" or "copy" => "displacement", "rotate" => "center angle_deg", "scale" => "center factor",
                 "mirror" => "first second", _ => ""
@@ -98,7 +103,14 @@ public static class EditPlan
     }
     private static void ValidateValue(string key, JsonElement v)
     {
-        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "displacement") { Point(v); return; }
+        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "displacement" or "base_point" or "major_axis") { Point(v); return; }
+        if (key == "handles")
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 100 ||
+                v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || !long.TryParse(x.GetString(), System.Globalization.NumberStyles.HexNumber, null, out var h) || h <= 0))
+                throw new CadFault("INVALID_HANDLES", "Expected 1..100 hexadecimal entity handles");
+            return;
+        }
         if (key == "points")
         {
             if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 2 or > 2000) throw new CadFault("INVALID_POINTS", "Expected 2..2000 vertices");
@@ -120,11 +132,12 @@ public static class EditPlan
         { if (v.ValueKind != JsonValueKind.Array || v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || double.IsNaN(x.GetDouble()) || double.IsInfinity(x.GetDouble()))) throw new CadFault("INVALID_BULGES", "Expected finite numbers"); return; }
         if (key == "scale" && v.ValueKind == JsonValueKind.Array)
         { if (v.GetArrayLength() != 3 || Point(v).Any(x => x <= 0)) throw new CadFault("INVALID_SCALE", "Scale must contain three positive factors"); return; }
-        if (key is "radius" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "linetype_scale" or "lineweight" or "color_index")
+        if (key is "radius" or "radius_ratio" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "linetype_scale" or "lineweight" or "color_index")
         {
             if (v.ValueKind != JsonValueKind.Number || !v.TryGetDouble(out var n) || !(!double.IsNaN(n) && !double.IsInfinity(n))) throw new CadFault("INVALID_PARAMETER", key + " must be finite");
             if (key is "radius" or "height" or "length" or "factor" or "scale" or "linetype_scale" && n <= 0) throw new CadFault("INVALID_PARAMETER", key + " must be positive");
             if (key == "width" && n < 0) throw new CadFault("INVALID_PARAMETER", "width must be nonnegative");
+            if (key == "radius_ratio" && (n <= 0 || n > 1)) throw new CadFault("INVALID_PARAMETER", "radius_ratio must be >0 and <=1");
             if (key == "color_index" && (n != Math.Truncate(n) || n < 0 || n > 256)) throw new CadFault("INVALID_COLOR", "ACI color must be an integer 0..256");
             return;
         }

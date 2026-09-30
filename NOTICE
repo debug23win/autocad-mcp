@@ -15,7 +15,7 @@ licenses/dependencies. Resolved versions and hashes are in lock files.
 
 Autodesk assemblies, SPDS binaries and Claude Code remain external
 user-installed components and are not redistributed.
-The 0.3.2 Windows installer bundles the unmodified official OpenAI Codex
+The 0.4.0 Windows installer bundles the unmodified official OpenAI Codex
 0.159.0 executable. Copyright 2025 OpenAI, Apache-2.0.
 Its official app-server package and CLI helpers retain their original layout.
 LICENSE, NOTICE and Ratatui MIT license are in Contents/Tools/Codex.
@@ -26,3 +26,9 @@ Additional adapted components in version 0.2.0:
 - AutoCAD-MCP CadDispatcher.cs native transaction/creation approach, MIT, Copyright (c) 2024 AutoCAD MCP Server Contributors; adapted in Edits.cs. See licenses/beiming-MIT.txt.
 - felixalmesberger/AUTOCAD-MCP AcadExecutor.cs evaluator approach, MIT, Copyright (c) 2026 Felix Almesberger; adapted in LispScript.cs. See licenses/felixalmesberger-MIT.txt.
 - debug23win/ClaudeRevit HistoryStore.cs atomic-save approach, MIT, Copyright (c) 2026 Alexandre Roubaud; adapted in ChatStateStore.cs. See licenses/ClaudeRevit-MIT.txt.
+
+The 0.4.0 chat UI includes KaTeX 0.18.9 (MIT), Markdig 1.3.2 (BSD-2-Clause),
+Open XML SDK 3.1.1 (MIT), Microsoft WebView2 SDK 1.0.4258.31 and
+System.IO.Packaging 8.0.1. Notices and licenses are in licenses/dependencies
+and licenses/KaTeX-MIT.txt. The Microsoft Edge WebView2 runtime is supplied by
+the user's Windows installation and is not bundled.

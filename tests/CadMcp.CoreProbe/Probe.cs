@@ -121,6 +121,23 @@ public static class Probe
             var entities = result.GetProperty("entities").EnumerateArray().ToArray();
             Assert(entities.Any(e => e.Text("text") == "Сеть ✓"), "Unicode text retained");
             var line = entities.First(e => e.Text("type") == "Line").Text("handle")!;
+            var circle = entities.First(e => e.Text("type") == "Circle").Text("handle")!;
+            var extended = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
+                new { op = "point", position = new[] { 300, 0, 0 } },
+                new { op = "ellipse", center = new[] { 320, 0, 0 }, major_axis = new[] { 20, 0, 0 }, radius_ratio = 0.5 },
+                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } },
+                new { op = "layout_create", name = "CADMCP_A3" } })), default));
+            Assert(extended.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Ellipse"), "Native ellipse and point created with structured readback");
+            using (var catalogTransaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var nativeCatalog = Wire.Element(Catalog.Read(doc.Database, catalogTransaction));
+                Assert(nativeCatalog.GetProperty("layouts").EnumerateArray().Any(x => x.Text("name") == "CADMCP_A3") &&
+                    nativeCatalog.GetProperty("blocks").EnumerateArray().Any(x => x.Text("name") == "CADMCP_NATIVE_BLOCK"), "Native block definition and layout persisted");
+            }
+            var nativeDxf = Wire.Element(Exports.Execute(doc, "dxf", output + ".dxf", null, null, default));
+            Assert(nativeDxf.GetProperty("bytes").GetInt64() > 0 && File.Exists(output + ".dxf"), "Native DXF export verified by file size and SHA-256");
+            var nativePdf = Wire.Element(Exports.Execute(doc, "pdf", output + ".pdf", "CADMCP_A3", null, default));
+            Assert(nativePdf.GetProperty("bytes").GetInt64() > 0 && File.Exists(output + ".pdf"), "Native PDF layout export verified by file size and SHA-256");
             var dimension = entities.First(e => e.Text("type") == "AlignedDimension");
             Assert(dimension.GetProperty("geometry").GetProperty("XLine1Point")[0].GetDouble() == 0 && Math.Abs(dimension.GetProperty("measurement").GetDouble() - 100) < 1e-8, "Dimension geometry and measurement read back");
             var changed = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
@@ -142,6 +159,17 @@ public static class Probe
             }
             catch (CadFault error) when (error.Code == "LAYER_NOT_FOUND") { }
             Assert(Search(new { scope = "all", limit = 100 }).GetProperty("entities").GetArrayLength() == before, "Failed second edit rolls back first entity");
+            try
+            {
+                Edits.Execute(doc, EditPlan.Parse("[{\"op\":\"layout_create\",\"name\":\"CADMCP_ROLLBACK_LAYOUT\"},{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1],\"layer\":\"MISSING_LAYER\"}]"), default);
+                throw new System.Exception("Expected layout rollback fault");
+            }
+            catch (CadFault error) when (error.Code == "LAYER_NOT_FOUND") { }
+            using (var rollbackTransaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var layoutDictionary = (DBDictionary)rollbackTransaction.GetObject(doc.Database.LayoutDictionaryId, OpenMode.ForRead);
+                Assert(!layoutDictionary.Contains("CADMCP_ROLLBACK_LAYOUT"), "Failed batch rolls back native layout creation");
+            }
             try { documents.Active(new("stale", "cad_edit", documents.SessionId, state.Id, state.Revision - 1)); throw new System.Exception("Expected revision conflict"); }
             catch (CadFault error) when (error.Code == "REVISION_CONFLICT") { checks.Add("Stale document revision rejected by actual worker registry"); }
             using (var tr = doc.Database.TransactionManager.StartTransaction())

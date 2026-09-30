@@ -76,6 +76,9 @@ if (args.Contains("app-server"))
                 e.GetProperty("params").GetProperty("effort").GetString() != (explicitSelection ? "high" : "medium")) throw new Exception("Wrong requested model or effort on wire");
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
             Console.WriteLine("{\"id\":3,\"result\":{}}");
+            Console.WriteLine("{\"method\":\"item/reasoning/summaryTextDelta\",\"params\":{\"delta\":\"Проверяю размеры чертежа\",\"itemId\":\"r1\",\"summaryIndex\":0,\"threadId\":\"test-thread\",\"turnId\":\"t1\"}}");
+            Console.WriteLine("{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"tool\":\"cad_search\"}}}");
+            Console.WriteLine("{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"tool\":\"cad_search\",\"status\":\"completed\"}}}");
             Console.WriteLine("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"Сеть ✓\"}}");
             Console.WriteLine("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"completed\"}}}");
         }
@@ -123,6 +126,30 @@ await Test("reject oversized/truncated frame", async () =>
     await Throws<InvalidDataException>(() => Frames.ReadAsync(new MemoryStream(BitConverter.GetBytes(Frames.MaximumBytes + 1)), default));
     await Throws<EndOfStreamException>(() => Frames.ReadAsync(new MemoryStream([3, 0, 0, 0, 1]), default));
     await Throws<EndOfStreamException>(() => Frames.ReadAsync(new MemoryStream([3, 0]), default));
+});
+await Test("HTML chat escapes input and Word export embeds images", async () =>
+{
+    var folder = Path.Combine(Path.GetTempPath(), "cad-chat-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        var png = Path.Combine(folder, "view.png");
+        File.WriteAllBytes(png, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6wAAAABJRU5ErkJggg=="));
+        var lines = new[] { new ChatLine("user", "<script>alert(1)</script>\n\nФото", Images: new[] { new ChatImage("view.png", png, 1, 1) }),
+            new ChatLine("assistant", "Площадь $A=ab$ и **размер** 3,05 м", Steps: new[] { "Завершено: cad_search" }, ReasoningSummary: "Сверяю геометрию") };
+        var html = ChatMarkup.ConversationHtml(lines, folder);
+        Assert(!html.Contains("<script>") && html.Contains("&lt;script&gt;"), "HTML injection escaped incorrectly");
+        Assert(html.Contains("https://cadmcp-assets.local/view.png"), "Image lost: " + html);
+        Assert(html.Contains("class=\"math\"") && html.Contains("A=ab"), "Math lost: " + html);
+        var path = Path.Combine(folder, "chat.docx");
+        ChatWordExporter.Save(path, lines);
+        using var document = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(path, false);
+        Assert(document.MainDocumentPart!.ImageParts.Count() == 1, "Word image not embedded");
+        Assert(document.MainDocumentPart.Document.Body!.InnerText.Contains("3,05 м"), "Word text missing");
+        Assert(!new DocumentFormat.OpenXml.Validation.OpenXmlValidator().Validate(document).Any(), "Invalid Word document");
+    }
+    finally { Directory.Delete(folder, true); }
+    await Task.CompletedTask;
 });
 await Test("snapshot revision and document isolation", async () =>
 {
@@ -178,6 +205,19 @@ await Test("edit plan supports aliases, Unicode and explicit units", () =>
         """);
     Assert(plan.Length == 4 && EditPlan.Point(plan[2].GetProperty("displacement"))[2] == 0, "Plan contract incorrect");
     return Task.CompletedTask;
+});
+await Test("native geometry, blocks and layouts validate before touching DWG", async () =>
+{
+    var plan = EditPlan.Parse("""
+        [{"op":"point","position":[1,2]},
+         {"op":"ellipse","center":[0,0],"major_axis":[10,0],"radius_ratio":0.5},
+         {"op":"block_define","name":"STAIRS","base_point":[0,0],"handles":["A","B"]},
+         {"op":"layout_create","name":"План А3"}]
+        """);
+    Assert(plan.Length == 4, "New C# operation contract is missing");
+    foreach (var invalid in new[] { "[{\"op\":\"ellipse\",\"center\":[0,0],\"major_axis\":[10,0],\"radius_ratio\":2}]",
+        "[{\"op\":\"block_define\",\"name\":\"X\",\"base_point\":[0,0],\"handles\":[\"NOT_HEX\"]}]" })
+        await Throws<CadFault>(() => Task.FromResult(EditPlan.Parse(invalid)));
 });
 await Test("reject ambiguous and invalid edit plans before mutation", async () =>
 {
@@ -369,7 +409,12 @@ foreach (var name in new[] { "Codex", "Claude" })
         await foreach (var e in provider.SendAsync("Read", timeout.Token)) events.Add(e);
         Assert(string.Concat(events.Where(e => e.Kind == "text").Select(e => e.Text)) == "Сеть ✓", "Lost/duplicated text");
         Assert(provider.SessionId is not null && events.Any(e => e.Kind == "completed"), "Session missing");
-        if (name == "Codex") Assert(events.Any(e => e.Kind == "model" && e.Text == "available-model"), "Catalog selection missing");
+        if (name == "Codex")
+        {
+            Assert(events.Any(e => e.Kind == "model" && e.Text == "available-model"), "Catalog selection missing");
+            Assert(events.Any(e => e.Kind == "reasoning_summary" && e.Text.Contains("размеры")), "Reasoning summary missing");
+            Assert(events.Count(e => e.Kind == "step" && e.Text.Contains("cad_search")) == 2, "Tool progress missing");
+        }
         events.Clear();
         await foreach (var e in provider.SendAsync("Resume", timeout.Token)) events.Add(e);
         Assert(events.Any(e => e.Kind == "completed"), "Resume failed");
@@ -428,7 +473,7 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 14 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") && names.Contains("cad_lisp") && names.Contains("cad_operation_status") && names.Contains("cad_render"), "Wrong tools");
+        Assert(names.Length == 15 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") && names.Contains("cad_export") && names.Contains("cad_lisp") && names.Contains("cad_operation_status") && names.Contains("cad_render"), "Wrong tools");
         var call = await Rpc(new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "cad_sessions", arguments = new { } } }, 3);
         Assert(call.GetProperty("content")[0].GetProperty("text").GetString()!.Contains("fixture"), "Tool did not reach broker");
         var render = await Rpc(new { jsonrpc = "2.0", id = 4, method = "tools/call", @params = new { name = "cad_render", arguments = new { session_id = "s", document_id = "d", expected_revision = 1 } } }, 4);

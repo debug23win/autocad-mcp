@@ -96,7 +96,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 { streamed = true; yield return new("text", text.GetString() ?? ""); }
                 if (type == "assistant" && e.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var blocks))
                     foreach (var block in blocks.EnumerateArray())
-                        if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_use" && block.TryGetProperty("name", out var tool)) yield return new("status", tool.GetString() ?? "CAD tool");
+                        if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_use" && block.TryGetProperty("name", out var tool))
+                            yield return new("step", "Выполняю " + (tool.GetString() ?? "CAD tool"));
                 if (type == "user") yield return new("cad_result", e.GetRawText());
                 if (type == "result")
                 {
@@ -125,6 +126,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         // keep the filesystem sandbox and other servers' policies unchanged.
         "-c", "mcp_servers.cad.default_tools_approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_edit.approval_mode=\"approve\"",
+        "-c", "mcp_servers.cad.tools.cad_export.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_lisp.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"", "app-server"];
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
@@ -140,7 +142,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.3.2-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.4.0-preview" } } });
             while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 using var doc = JsonDocument.Parse(line); var e = doc.RootElement;
@@ -202,10 +204,23 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         throw new IOException("Codex requires an interactive action: " + name);
                     }
                     if (name == "item/agentMessage/delta") yield return new("text", e.GetProperty("params").GetProperty("delta").GetString() ?? "");
-                    if (name == "item/started" && e.GetProperty("params").TryGetProperty("item", out var item) && item.TryGetProperty("type", out var itemType) && itemType.GetString() == "mcpToolCall")
-                        yield return new("status", item.TryGetProperty("tool", out var tool) ? tool.GetString() ?? "CAD tool" : "CAD tool");
-                    if (name == "item/completed" && e.GetProperty("params").TryGetProperty("item", out var completedItem) && completedItem.TryGetProperty("type", out var completedType) && completedType.GetString() == "mcpToolCall")
+                    // Codex exposes a summary of reasoning, never the private reasoning text.
+                    if (name == "item/reasoning/summaryTextDelta")
+                        yield return new("reasoning_summary", e.GetProperty("params").GetProperty("delta").GetString() ?? "");
+                    if (name == "item/started" && e.GetProperty("params").TryGetProperty("item", out var item))
+                    {
+                        string? type = item.TryGetProperty("type", out var itemType) ? itemType.GetString() : null;
+                        if (type == "mcpToolCall")
+                            yield return new("step", "Выполняю " + (item.TryGetProperty("tool", out var tool) ? tool.GetString() ?? "CAD tool" : "CAD tool"));
+                    }
+                    if (name == "item/completed" && e.GetProperty("params").TryGetProperty("item", out var completedItem) &&
+                        completedItem.TryGetProperty("type", out var completedType) && completedType.GetString() == "mcpToolCall")
+                    {
+                        var tool = completedItem.TryGetProperty("tool", out var toolName) ? toolName.GetString() ?? "CAD tool" : "CAD tool";
+                        var result = completedItem.TryGetProperty("status", out var toolStatus) ? toolStatus.GetString() : null;
+                        yield return new("step", (result == "failed" ? "Ошибка: " : "Завершено: ") + tool);
                         yield return new("cad_result", completedItem.GetRawText());
+                    }
                     if (name == "error")
                     {
                         var parameters = e.GetProperty("params");

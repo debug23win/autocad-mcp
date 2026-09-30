@@ -50,7 +50,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return new(r.RequestId, "completed", new { state = entry?.State ?? "not_found", result = entry?.Result,
                 persistence = journal.Persistence, retry = "Never automatically retry an unknown mutation; inspect drawing first" }, documents.SessionId, r.DocumentId);
         }
-        if (r.Operation is "cad_edit" or "cad_lisp") return Mutate(r, ct);
+        if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export") return Mutate(r, ct);
         bool readOnly = r.Operation is "cad_context" or "cad_catalog" or "cad_render" or "cad_snapshot" or
             "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get";
         var doc = documents.Active(r, checkRevision: !readOnly); var state = documents.Register(doc);
@@ -65,13 +65,16 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     data = new { name = doc.Name, acad_version = Convert.ToString(App.GetSystemVariable("ACADVER")), runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                         units = doc.Database.Insunits.ToString(), space = doc.Database.CurrentSpaceId == ((BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForRead))[BlockTableRecord.ModelSpace] ? "model" : "paper",
                         selection = Selection(doc),
+                        vertical_managed_assemblies_loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name)
+                            .Where(n => n is not null && (n.StartsWith("Aecc", StringComparison.OrdinalIgnoreCase) || n.StartsWith("AcM", StringComparison.OrdinalIgnoreCase)))
+                            .Distinct().Take(50).ToArray(),
                         ucs_to_wcs = doc.Editor.CurrentUserCoordinateSystem.ToArray(),
                         view = new { width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
-                        capabilities = new[] { "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_catalog", "cad_edit", "cad_lisp", "cad_operation_status" },
+                        capabilities = new[] { "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_catalog", "cad_edit", "cad_export", "cad_lisp", "cad_operation_status" },
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
                         cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
                             ignored_read_side_effect_events = state.ReadSideEffectEvents },
-                        limitations = new[] { "preview_render_unverified", "SPDS_special_properties_unverified", "native_edits_current_space_only" } };
+                        limitations = new[] { "preview_render_unverified", "Civil3D_Map3D_SPDS_special_geometry_partial", "native_edits_current_space_only" } };
                 break;
             case "cad_catalog":
                 bool catalogHit = catalogCache.TryGet(state.Id, "catalog", state.Revision, out var catalog);
@@ -200,7 +203,15 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         documents.Active(r);
         JsonElement[]? operations = null;
         string? code = null;
+        string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         if (r.Operation == "cad_edit") operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json"));
+        else if (r.Operation == "cad_export")
+        {
+            exportFormat = EditPlan.RequiredText(r.Data, "format");
+            exportPath = EditPlan.RequiredText(r.Data, "path");
+            exportLayout = r.Data.Text("layout");
+            exportMedia = r.Data.Text("media_name");
+        }
         else
         {
             code = EditPlan.RequiredText(r.Data, "code");
@@ -219,7 +230,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 return new(r.RequestId, "queued", new { operation_id = id, state = "queued", requires_poll = "cad_operation_status", rollback = "not_atomic", cancellation = "Esc in AutoCAD; queued scripts are not cancelled by stopping the model" }, documents.SessionId, state.Id, state.Revision);
             }
             journal.Running(id);
-            var data = Edits.Execute(doc, operations!, ct);
+            var data = exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
+                : Edits.Execute(doc, operations!, ct);
             var response = new Response(r.RequestId, "completed", new { operation_id = id, result = data }, documents.SessionId, state.Id, state.Revision);
             return journal.Complete(id, response);
         }

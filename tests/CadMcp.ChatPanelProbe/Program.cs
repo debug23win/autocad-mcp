@@ -5,6 +5,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CadMcp.AutoCAD;
 using CadMcp.Providers;
+using Microsoft.Web.WebView2.Wpf;
+using Microsoft.Web.WebView2.Core;
 using ComboBox = System.Windows.Controls.ComboBox;
 using Button = System.Windows.Controls.Button;
 using Size = System.Windows.Size;
@@ -49,13 +51,53 @@ internal static class Program
         remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert(chips.Children.Count == 1, "Attachment remove button did not work");
         typeof(ChatPanel).GetMethod("AddAttachments", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, new object[] { new[] { note } });
-        panel.Background = System.Windows.Media.Brushes.White;
         panel.Measure(new Size(480, 850)); panel.Arrange(new Rect(0, 0, 480, 850)); panel.UpdateLayout();
         var image = new RenderTargetBitmap(480, 850, 96, 96, PixelFormats.Pbgra32); image.Render(panel);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
         string path = Path.Combine(root, "panel.png");
         using (var file = File.Create(path)) encoder.Save(file);
+        panel.DarkThemeProvider = () => true;
+        typeof(ChatPanel).GetMethod("ApplyTheme", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, null);
+        panel.UpdateLayout();
+        var darkImage = new RenderTargetBitmap(480, 850, 96, 96, PixelFormats.Pbgra32); darkImage.Render(panel);
+        var darkEncoder = new PngBitmapEncoder(); darkEncoder.Frames.Add(BitmapFrame.Create(darkImage));
+        string darkPath = Path.Combine(root, "panel-dark.png");
+        using (var file = File.Create(darkPath)) darkEncoder.Save(file);
         Console.WriteLine("PASS real WPF model/effort selection, attachment chips/removal, persistence and provider controls");
         Console.WriteLine("UI image: " + path);
+        Console.WriteLine("Dark UI image: " + darkPath);
+        var browserProbe = new ChatBrowser(Path.Combine(root, "browser-data"));
+        browserProbe.Update(new[]
+        {
+            new ChatLine("user", "Покажи формулу $A=ab$ и фото", Images: new[] { browserProbe.SaveImage(ChatAttachments.Inspect(path)) }),
+            new ChatLine("assistant", "Площадь **проверена**: $$A=3{,}05\\cdot 4=12{,}2\\,\\mathrm{м}^2$$",
+                Steps: new[] { "Завершено: cad_search" }, ReasoningSummary: "Сверяю размеры")
+        }, true, 1);
+        Exception? browserError = null;
+        var app = new System.Windows.Application();
+        var window = new Window { Width = 650, Height = 500, Left = -2000, Top = -2000,
+            WindowStyle = WindowStyle.None, ShowInTaskbar = false, Content = browserProbe };
+        window.Loaded += async (_, _) =>
+        {
+            try
+            {
+                var ready = typeof(ChatBrowser).GetField("ready", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                for (int i = 0; i < 100 && !(bool)ready.GetValue(browserProbe)!; i++) await Task.Delay(100);
+                if (!(bool)ready.GetValue(browserProbe)!)
+                {
+                    var fallback = (System.Windows.Controls.TextBox)typeof(ChatBrowser).GetField("fallback", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(browserProbe)!;
+                    throw new Exception("WebView2 did not load HTML: " + fallback.Text);
+                }
+                var view = (WebView2)typeof(ChatBrowser).GetField("browser", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(browserProbe)!;
+                string htmlPath = Path.Combine(root, "html-dark.png");
+                using (var file = File.Create(htmlPath))
+                    await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, file);
+                Console.WriteLine("HTML UI image: " + htmlPath);
+            }
+            catch (Exception error) { browserError = error; }
+            finally { window.Close(); }
+        };
+        app.Run(window);
+        if (browserError is not null) throw browserError;
     }
 }

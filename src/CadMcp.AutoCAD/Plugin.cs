@@ -31,7 +31,7 @@ public sealed class Plugin : IExtensionApplication
             Directory.CreateDirectory(Wire.WorkerRoot);
             descriptorPath = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
             var temp = descriptorPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.3.2-preview"), Wire.Json));
+            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.4.0-preview"), Wire.Json));
             File.Move(temp, descriptorPath, true);
             App.Idle += AddRibbon;
         }
@@ -55,7 +55,12 @@ public sealed class Plugin : IExtensionApplication
         if (palette is null)
         {
             palette = new PaletteSet("CAD MCP — ассистент чертежей");
-            panel = new ChatPanel { CadSessionId = documents?.SessionId }; palette.AddVisual("Чат", panel);
+            panel = new ChatPanel
+            {
+                CadSessionId = documents?.SessionId,
+                DarkThemeProvider = () => Convert.ToInt32(App.GetSystemVariable("COLORTHEME")) == 0
+            };
+            palette.AddVisual("Чат", panel);
             palette.MinimumSize = new System.Drawing.Size(360, 480);
         }
         palette.Visible = true;

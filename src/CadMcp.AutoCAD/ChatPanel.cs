@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using CadMcp.Providers;
 using CadMcp.Core;
 using Button = System.Windows.Controls.Button;
@@ -11,6 +12,9 @@ using Orientation = System.Windows.Controls.Orientation;
 using UserControl = System.Windows.Controls.UserControl;
 using DataFormats = System.Windows.DataFormats;
 using DragDropEffects = System.Windows.DragDropEffects;
+using Color = System.Windows.Media.Color;
+using SystemColors = System.Windows.SystemColors;
+using Brushes = System.Windows.Media.Brushes;
 
 namespace CadMcp.AutoCAD;
 
@@ -28,15 +32,23 @@ internal sealed class ChatPanel : UserControl
     private readonly List<ChatAttachment> attachments = new();
     private readonly WrapPanel attachmentItems = new();
     private readonly Button attach = new() { Content = "Прикрепить файл" };
-    private readonly TextBox transcript = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly ChatBrowser transcript = new();
+    private readonly List<ChatLine> messages = new();
     private readonly Button send = new() { Content = "Отправить" };
     private readonly TextBlock activity = new() { Text = "Готово", TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock drawing = new() { Text = "Чертёж: подключение ещё не проверено", TextWrapping = TextWrapping.Wrap };
-    private readonly System.Windows.Controls.ListBox objects = new() { DisplayMemberPath = "Label", MaxHeight = 90 };
     private readonly System.Windows.Threading.DispatcherTimer contextTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly System.Windows.Threading.DispatcherTimer progressTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Response? cadContext;
     private bool readingContext;
     public string? CadSessionId { get; set; }
+    public Func<bool>? DarkThemeProvider { get; set; }
+    private bool darkTheme;
+    private int selectedAnswer = -1;
+    private int currentAssistantIndex = -1;
+    private DateTimeOffset turnStarted, lastSignal;
+    private string currentActivity = "Готово";
+    private readonly SolidColorBrush panelBrush = new(), controlBrush = new(), foregroundBrush = new(), borderBrush = new();
     private readonly ChatStateStore store;
     private readonly StringBuilder streamedText = new();
     private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
@@ -65,6 +77,7 @@ internal sealed class ChatPanel : UserControl
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state); }
         catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
+        InstallThemeStyles();
         var root = new DockPanel { Margin = new Thickness(8), AllowDrop = true }; Content = root;
         root.PreviewDragOver += (_, e) =>
         {
@@ -86,7 +99,6 @@ internal sealed class ChatPanel : UserControl
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
                 input.AppendText("\nИспользуй текущее выделение в чертеже «" + data.Text("name") + "»: " + selected.GetRawText() + ". Перед работой перечитай актуальный контекст.");
         }; cadButtons.Children.Add(selection);
-        var focus = new Button { Content = "Показать объект" }; focus.Click += async (_, _) => await FocusObject(); cadButtons.Children.Add(focus);
         foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель Codex", model), ("Глубина рассуждений", reasoning) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
@@ -124,18 +136,24 @@ internal sealed class ChatPanel : UserControl
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; if (provider.SelectedIndex == 0) await RefreshModels(); } };
-        Loaded += async (_, _) => { contextTimer.Start(); await RefreshCad(); };
+        Loaded += async (_, _) => { ApplyTheme(); contextTimer.Start(); await RefreshCad(); };
         Unloaded += (_, _) => contextTimer.Stop();
-        contextTimer.Tick += async (_, _) => { if (running is null) await RefreshCad(); };
+        contextTimer.Tick += async (_, _) => { ApplyTheme(); if (running is null) await RefreshCad(); };
         ApplyModels(catalog);
         SetBusy(false);
         settings.Children.Add(activity);
         flushTimer.Tick += (_, _) => FlushText();
+        progressTimer.Tick += (_, _) => UpdateProgress();
+        transcript.Selected += index => { selectedAnswer = index; activity.Text = "Ответ выбран для сохранения в Word"; };
+        transcript.OpenLink += url =>
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var address) && address.Scheme is "http" or "https")
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(address.AbsoluteUri) { UseShellExecute = true });
+        };
         var bottom = new StackPanel(); DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
         bottom.Children.Add(new TextBlock { Text = "Перетащите файлы в это окно или нажмите «Прикрепить файл»" });
         bottom.Children.Add(new ScrollViewer { Content = attachmentItems, MaxHeight = 85, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         bottom.Children.Add(input);
-        bottom.Children.Add(objects);
         input.PreviewKeyDown += async (_, e) =>
         {
             if (e.Key == System.Windows.Input.Key.Enter && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
@@ -150,10 +168,14 @@ internal sealed class ChatPanel : UserControl
         };
         row.Children.Add(send); send.Click += async (_, _) => await Send();
         var stop = new Button { Content = "Стоп" }; stop.Click += (_, _) => Stop(); row.Children.Add(stop);
-        var clear = new Button { Content = "Новый диалог" }; clear.Click += (_, _) => { if (running is null) { adapter = null; restored = null; transcript.Clear(); attachments.Clear(); RefreshAttachments(); Persist(); } }; row.Children.Add(clear);
+        var clear = new Button { Content = "Новый диалог" }; clear.Click += (_, _) => { if (running is null) { adapter = null; restored = null; messages.Clear(); selectedAnswer = -1; RenderChat(); attachments.Clear(); RefreshAttachments(); Persist(); } }; row.Children.Add(clear);
         var save = new Button { Content = "Сохранить историю" }; save.Click += (_, _) => SaveHistory(); row.Children.Add(save);
+        var saveWord = new Button { Content = "Диалог в Word" }; saveWord.Click += (_, _) => SaveWord(false); row.Children.Add(saveWord);
+        var saveAnswer = new Button { Content = "Ответ в Word" }; saveAnswer.Click += (_, _) => SaveWord(true); row.Children.Add(saveAnswer);
         var load = new Button { Content = "Открыть историю" }; load.Click += (_, _) => LoadHistory(); bottom.Children.Add(load);
         root.Children.Add(transcript);
+        ApplyTheme();
+        RenderChat();
     }
     public void Stop() { running?.Cancel(); FlushText(); Persist(); }
     private void AddAttachments(IEnumerable<string> paths)
@@ -169,7 +191,7 @@ internal sealed class ChatPanel : UserControl
                 if (attachments.Count >= ChatAttachments.MaximumCount) throw new InvalidDataException("Можно приложить не более 10 файлов");
                 attachments.Add(item); added++;
             }
-            catch (System.Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            catch (System.Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             { errors.Add(error.Message); }
         }
         RefreshAttachments();
@@ -203,12 +225,11 @@ internal sealed class ChatPanel : UserControl
             if (CadSessionId is null)
             {
                 var descriptors = new Broker(Wire.WorkerRoot).Discover();
-                if (descriptors.Count != 1) { cadContext = null; objects.ItemsSource = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
+                if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
                 CadSessionId = descriptors[0].SessionId;
             }
             var context = await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId), timeout.Token);
             if (context.Error is { } error) throw new IOException(error.Message);
-            if (cadContext?.DocumentId != context.DocumentId) objects.ItemsSource = null;
             cadContext = context;
             if (context.Data is JsonElement data)
             {
@@ -217,21 +238,8 @@ internal sealed class ChatPanel : UserControl
                     drawing.Text += " · CAD-скрипт ещё выполняется: " + pending.GetString();
             }
         }
-        catch (System.Exception error) { cadContext = null; objects.ItemsSource = null; drawing.Text = "AutoCAD занят или недоступен: " + error.Message; }
+        catch (System.Exception error) { cadContext = null; drawing.Text = "AutoCAD занят или недоступен: " + error.Message; }
         finally { readingContext = false; }
-    }
-    private async Task FocusObject()
-    {
-        if (running is not null || objects.SelectedItem is not CadCard card || card.Erased) return;
-        await RefreshCad();
-        if (cadContext is not { } context || context.SessionId != card.Session || context.DocumentId != card.Document) { activity.Text = "Этот объект относится к другому чертежу"; return; }
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            var reply = await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_focus", card.Session, card.Document, context.Revision, Wire.Element(new { handle = card.FocusHandle })), timeout.Token);
-            activity.Text = reply.Error is null ? "Объект выделен в AutoCAD" : reply.Error.Message;
-        }
-        catch (System.Exception error) { LogError(error); activity.Text = error.Message; }
     }
     private async Task RunAccount(bool diagnostic)
     {
@@ -309,9 +317,12 @@ internal sealed class ChatPanel : UserControl
     private async Task Send()
     {
         if (running is not null || (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0)) return;
-        if (!File.Exists(host.Text) || !Directory.Exists(directory.Text)) { transcript.AppendText("\nУкажите существующие MCP host и рабочую папку.\n"); return; }
+        if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
+        { activity.Text = "Укажите существующие MCP host и рабочую папку."; return; }
         running = new(); SetBusy(true);
-        activity.Text = "Подключение…"; flushTimer.Start();
+        turnStarted = lastSignal = DateTimeOffset.Now;
+        currentActivity = "Подключение";
+        activity.Text = "Подключение…"; flushTimer.Start(); progressTimer.Start();
         try
         {
             var files = ChatAttachments.Capture(attachments);
@@ -329,29 +340,70 @@ internal sealed class ChatPanel : UserControl
                 restored = null;
             }
             var prompt = string.IsNullOrWhiteSpace(input.Text) ? "Изучи приложенные файлы и скажи, чем можешь помочь." : input.Text;
-            input.Clear(); transcript.AppendText("\nВы: " + prompt + (files.Count == 0 ? "" : " · вложения: " + string.Join(", ", files.Select(f => f.Name))) + "\nАссистент: ");
+            var images = files.Where(f => f.Kind == AttachmentKind.Image).Select(transcript.SaveImage).ToArray();
+            messages.Add(new ChatLine("user", prompt, Images: images));
+            currentAssistantIndex = messages.Count;
+            messages.Add(new ChatLine("assistant", ""));
+            input.Clear(); RenderChat();
             if (cadContext is { } target) prompt += "\nPanel target (verify fresh with CAD tools): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
+                lastSignal = DateTimeOffset.Now;
                 if (item.Kind == "text") streamedText.Append(item.Text);
-                if (item.Kind == "model") { FlushText(); transcript.AppendText("[" + item.Text); activity.Text = "Модель: " + item.Text; }
-                if (item.Kind == "effort") { FlushText(); transcript.AppendText(" · " + EffortLabel(item.Text) + "]\n"); activity.Text += ", " + EffortLabel(item.Text); }
-                if (item.Kind == "status") activity.Text = "Работа: " + item.Text;
-                if (item.Kind == "cad_result") { var cards = CadCards.Parse(item.Text); if (cards.Count != 0) objects.ItemsSource = cards; }
+                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); currentActivity = "Модель: " + item.Text; }
+                if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
+                if (item.Kind == "reasoning_summary") UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
+                if (item.Kind == "step")
+                {
+                    FlushText();
+                    UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>()).Append(item.Text).ToArray() });
+                    currentActivity = item.Text;
+                }
+                if (item.Kind == "status") currentActivity = item.Text;
                 if (item.Kind == "session") Persist();
+                UpdateProgress();
             }
-            FlushText(); transcript.AppendText("\n"); attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
+            FlushText(); attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
         }
-        catch (OperationCanceledException) { FlushText(); transcript.AppendText("\nОстановлено. Уже принятые CAD-запросы могут завершиться. Для AutoLISP проверьте состояние; Esc в AutoCAD прерывает выполняемый скрипт.\n"); activity.Text = "Остановлено"; }
-        catch (System.Exception e) { LogError(e); FlushText(); transcript.AppendText("\nОшибка: " + e.Message + "\n"); activity.Text = "Ошибка; подробности в журнале"; }
-        finally { flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; SetBusy(false); }
+        catch (OperationCanceledException)
+        {
+            FlushText(); UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>())
+                .Append("Остановлено. Уже принятые CAD-запросы могут завершиться.").ToArray() }); activity.Text = "Остановлено";
+        }
+        catch (System.Exception e)
+        {
+            LogError(e); FlushText(); UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>())
+                .Append("Ошибка: " + e.Message).ToArray() }); activity.Text = "Ошибка; подробности в журнале";
+        }
+        finally { progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
     }
     private void FlushText()
-    { if (streamedText.Length == 0) return; transcript.AppendText(streamedText.ToString()); streamedText.Clear(); transcript.ScrollToEnd(); }
+    {
+        if (streamedText.Length == 0) return;
+        string text = streamedText.ToString(); streamedText.Clear();
+        UpdateAssistant(line => line with { Text = line.Text + text });
+    }
+    private void UpdateAssistant(Func<ChatLine, ChatLine> update)
+    {
+        if (currentAssistantIndex < 0 || currentAssistantIndex >= messages.Count) return;
+        messages[currentAssistantIndex] = update(messages[currentAssistantIndex]);
+        RenderChat();
+    }
+    private void RenderChat() => transcript.Update(messages, darkTheme, selectedAnswer);
+    private void UpdateProgress()
+    {
+        if (running is null || !progressTimer.IsEnabled) return;
+        int elapsed = (int)(DateTimeOffset.Now - turnStarted).TotalSeconds;
+        int silence = (int)(DateTimeOffset.Now - lastSignal).TotalSeconds;
+        activity.Text = currentActivity + " · " + elapsed + " с" +
+            (silence >= 15 ? " · нет новых событий " + silence + " с; можно остановить" : "");
+    }
     private ChatState State()
     {
         if (provider.SelectedIndex == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
-        return new(provider.SelectedIndex, codexExecutable, claudeExecutable, host.Text, directory.Text, adapter?.SessionId ?? restored?.SessionId, transcript.Text, adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort);
+        return new(provider.SelectedIndex, codexExecutable, claudeExecutable, host.Text, directory.Text,
+            adapter?.SessionId ?? restored?.SessionId, ChatMarkup.PlainTranscript(messages),
+            adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort, messages.ToArray());
     }
     private void Persist()
     { try { store.Save(State()); } catch (System.Exception e) { activity.Text = "История не сохранена: " + e.Message; } }
@@ -366,7 +418,10 @@ internal sealed class ChatPanel : UserControl
         executable.Text = state.Provider == 0 ? codexExecutable : claudeExecutable;
         if (File.Exists(state.Host)) host.Text = state.Host;
         if (Directory.Exists(state.Directory)) directory.Text = state.Directory;
-        transcript.Text = state.Transcript; restored = state; adapter = null; adapterKey = null; attachments.Clear(); RefreshAttachments();
+        messages.Clear();
+        if (state.Messages is { Count: > 0 }) messages.AddRange(state.Messages);
+        else if (!string.IsNullOrWhiteSpace(state.Transcript)) messages.Add(new ChatLine("history", state.Transcript));
+        selectedAnswer = -1; RenderChat(); restored = state; adapter = null; adapterKey = null; attachments.Clear(); RefreshAttachments();
         chosenModel = state.CodexModel; chosenEffort = state.CodexReasoningEffort;
         ApplyModels(Array.Empty<CodexModel>());
         activity.Text = "История восстановлена; актуальный чертёж будет прочитан заново";
@@ -392,5 +447,58 @@ internal sealed class ChatPanel : UserControl
             if (provider.SelectedIndex == 0) _ = RefreshModels();
         }
         catch (System.Exception e) { activity.Text = "История не открыта: " + e.Message; }
+    }
+    private void SaveWord(bool answerOnly)
+    {
+        IReadOnlyList<ChatLine> selected = messages;
+        if (answerOnly)
+        {
+            int index = selectedAnswer >= 0 && selectedAnswer < messages.Count && messages[selectedAnswer].Role == "assistant"
+                ? selectedAnswer : messages.FindLastIndex(line => line.Role == "assistant");
+            if (index < 0) { activity.Text = "В диалоге пока нет ответа для сохранения"; return; }
+            selected = new[] { messages[index] };
+        }
+        if (selected.Count == 0) { activity.Text = "Диалог пока пуст"; return; }
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Filter = "Документ Word (*.docx)|*.docx",
+            FileName = answerOnly ? "cad-mcp-answer.docx" : "cad-mcp-chat.docx"
+        };
+        if (dialog.ShowDialog() != true) return;
+        try { ChatWordExporter.Save(dialog.FileName, selected); activity.Text = "Сохранено в Word: " + dialog.FileName; }
+        catch (System.Exception error) { LogError(error); activity.Text = "Не удалось сохранить Word: " + error.Message; }
+    }
+    private void InstallThemeStyles()
+    {
+        Background = panelBrush;
+        Foreground = foregroundBrush;
+    }
+    private void ApplyTheme()
+    {
+        bool next;
+        try { next = DarkThemeProvider?.Invoke() ?? SystemColors.WindowColor.R < 128; }
+        catch (System.Exception) { next = SystemColors.WindowColor.R < 128; }
+        if (darkTheme == next && panelBrush.Color.A != 0) return;
+        darkTheme = next;
+        panelBrush.Color = next ? Color.FromRgb(37, 40, 45) : Color.FromRgb(245, 246, 248);
+        controlBrush.Color = next ? Color.FromRgb(47, 52, 59) : Colors.White;
+        foregroundBrush.Color = next ? Color.FromRgb(239, 242, 245) : Color.FromRgb(32, 35, 42);
+        borderBrush.Color = next ? Color.FromRgb(82, 89, 99) : Color.FromRgb(190, 197, 207);
+        void Paint(DependencyObject node)
+        {
+            if (node is ChatBrowser) return;
+            if (node is System.Windows.Controls.Control control && node != this)
+            {
+                control.Background = controlBrush;
+                control.Foreground = foregroundBrush;
+                control.BorderBrush = borderBrush;
+                // Windows' default ComboBox template keeps a light selection field
+                // even when hosted in a dark AutoCAD palette.
+                if (control is ComboBox && next) control.Foreground = Brushes.Black;
+            }
+            foreach (var child in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>()) Paint(child);
+        }
+        Paint(this);
+        RenderChat();
     }
 }

@@ -74,6 +74,18 @@ public static class NativeProbe
             var entities = createdData.GetProperty("entities").EnumerateArray().ToArray();
             Assert(entities.Any(e => e.Text("text") == "Сеть ✓"), "Unicode text retained in DWG");
             var line = entities.First(e => e.Text("type") == "Line").Text("handle")!;
+            var circle = entities.First(e => e.Text("type") == "Circle").Text("handle")!;
+            var native = Data(await Call("cad_edit", new { operation_id = "native_extended", operations_json = JsonSerializer.Serialize(new object[] {
+                new { op = "point", position = new[] { 310, 10, 0 } },
+                new { op = "ellipse", center = new[] { 330, 10, 0 }, major_axis = new[] { 12, 0, 0 }, radius_ratio = 0.5 },
+                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } },
+                new { op = "layout_create", name = "CADMCP_A3" } }) }));
+            Assert(native.GetProperty("result").GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Ellipse"), "Native C# ellipse read back");
+            var nativeCatalog = Data(await Call("cad_catalog", new { }));
+            Assert(nativeCatalog.GetProperty("layouts").EnumerateArray().Any(x => x.Text("name") == "CADMCP_A3") &&
+                nativeCatalog.GetProperty("blocks").EnumerateArray().Any(x => x.Text("name") == "CADMCP_NATIVE_BLOCK"), "Native C# block definition and layout created");
+            var exported = Data(await Call("cad_export", new { operation_id = "native_dxf", format = "dxf", path = output + ".dxf" }));
+            Assert(exported.GetProperty("result").GetProperty("bytes").GetInt64() > 0 && File.Exists(output + ".dxf"), "Native C# DXF export verified");
             var replay = Data(await dispatcher.Enqueue(original with { RequestId = "retry" }, timeout.Token));
             Assert(replay.GetProperty("replayed").GetBoolean(), "Exact retry replayed without duplicate entities");
             var changed = Data(await Call("cad_edit", new { operation_id = "move", operations_json = JsonSerializer.Serialize(new object[] {

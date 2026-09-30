@@ -26,6 +26,12 @@ internal static class Reader
                 item["start"] = P(line.StartPoint); item["end"] = P(line.EndPoint); item["length"] = line.Length; item["access"] = "structured"; break;
             case Circle circle:
                 item["center"] = P(circle.Center); item["radius"] = circle.Radius; item["normal"] = new[] { circle.Normal.X, circle.Normal.Y, circle.Normal.Z }; item["access"] = "structured"; break;
+            case DBPoint point:
+                item["position"] = P(point.Position); item["access"] = "structured"; break;
+            case Ellipse ellipse:
+                item["center"] = P(ellipse.Center); item["major_axis"] = new[] { ellipse.MajorAxis.X, ellipse.MajorAxis.Y, ellipse.MajorAxis.Z };
+                item["radius_ratio"] = ellipse.RadiusRatio; item["start_angle"] = ellipse.StartAngle; item["end_angle"] = ellipse.EndAngle;
+                item["access"] = "structured"; break;
             case Arc arc:
                 item["center"] = P(arc.Center); item["radius"] = arc.Radius; item["start"] = P(arc.StartPoint); item["end"] = P(arc.EndPoint);
                 item["length"] = arc.Length; item["start_angle"] = arc.StartAngle; item["end_angle"] = arc.EndAngle;
@@ -76,10 +82,39 @@ internal static class Reader
                 item["pattern"] = hatch.PatternName; item["pattern_scale"] = hatch.PatternScale; item["pattern_angle"] = hatch.PatternAngle;
                 item["loops"] = hatch.NumberOfLoops; item["access"] = "partial"; item["limitations"] = new[] { "hatch_boundary_geometry_not_expanded" }; break;
             default:
-                item["limitations"] = new[] { "specialized_properties_unavailable", "requires_visual_or_vendor_adapter" }; break;
+                item["vendor_assembly"] = e.GetType().Assembly.GetName().Name;
+                var specialized = ReadSpecializedMetadata(e);
+                if (specialized.Count > 0) item["specialized_properties"] = specialized;
+                item["limitations"] = new[] { "specialized_geometry_unavailable", "requires_visual_or_vendor_adapter" }; break;
         }
         var layer = (LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead);
         item["layer_off"] = layer.IsOff; item["layer_frozen"] = layer.IsFrozen;
         return Wire.Element(item);
+    }
+
+    private static Dictionary<string, object> ReadSpecializedMetadata(Entity entity)
+    {
+        // Civil 3D, Map 3D and SPDS entities stay read-only here. Access only bounded, scalar
+        // public properties; never invoke methods or enumerate vendor-owned collections.
+        string[] names = ["Name", "Description", "StyleName", "SurfaceName", "AlignmentName", "ProfileName",
+            "StartingStation", "EndingStation", "StartStation", "EndStation", "Length", "Area", "Elevation",
+            "MinimumElevation", "MaximumElevation", "NumberOfPoints", "NumberOfTriangles", "IsReferenceObject"];
+        var result = new Dictionary<string, object>(StringComparer.Ordinal);
+        var type = entity.GetType();
+        foreach (var name in names)
+        {
+            var property = type.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (property?.GetMethod is null || property.GetIndexParameters().Length != 0) continue;
+            try
+            {
+                object? value = property.GetValue(entity);
+                if (value is string text && text.Length <= 500) result[name] = text;
+                else if (value is bool or int or long or double or float or decimal or short &&
+                    (value is not double d || double.IsFinite(d)) && (value is not float f || float.IsFinite(f))) result[name] = value;
+                else if (value is Enum) result[name] = value.ToString()!;
+            }
+            catch (System.Exception) { /* Vendor property may require a separate context; report only reliable values. */ }
+        }
+        return result;
     }
 }

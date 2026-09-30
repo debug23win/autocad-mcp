@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$IsccPath,
     [string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025',
-    [Parameter(Mandatory=$true)][string]$CodexDir,
+    [string]$CodexDir,
+    [string]$CodexPayloadDir,
     [Parameter(Mandatory=$true)][string]$DotNet2027
 )
 $ErrorActionPreference = 'Stop'
@@ -15,13 +16,16 @@ try {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $payload = Join-Path $repoRoot "artifacts/installer-$stamp/payload"
     $codexAssets = Get-Content -LiteralPath (Join-Path $repoRoot 'installer/codex-assets.json') -Raw | ConvertFrom-Json
-    $codexExe = Join-Path $CodexDir 'codex-x86_64-pc-windows-msvc.exe'
-    foreach ($required in @($codexExe, (Join-Path $CodexDir 'LICENSE'), (Join-Path $CodexDir 'NOTICE'), (Join-Path $CodexDir 'release.json'), (Join-Path $CodexDir 'ratatui-MIT.txt'), (Join-Path $CodexDir 'ripgrep-MIT.txt'))) {
+    if ([bool]$CodexDir -eq [bool]$CodexPayloadDir) { throw 'Supply exactly one of CodexDir or CodexPayloadDir' }
+    $codexSource = if ($CodexPayloadDir) { $CodexPayloadDir } else { $CodexDir }
+    $codexPackageRoot = if ($CodexPayloadDir) { $CodexPayloadDir } else { Join-Path $CodexDir 'package' }
+    $codexExe = if ($CodexPayloadDir) { Join-Path $CodexPayloadDir 'bin/codex.exe' } else { Join-Path $CodexDir 'codex-x86_64-pc-windows-msvc.exe' }
+    foreach ($required in @($codexExe, (Join-Path $codexSource 'LICENSE'), (Join-Path $codexSource 'NOTICE'), (Join-Path $codexSource 'release.json'), (Join-Path $codexSource 'ratatui-MIT.txt'), (Join-Path $codexSource 'ripgrep-MIT.txt'))) {
         if (!(Test-Path -LiteralPath $required)) { throw "Missing official Codex file: $required" }
     }
     if ((Get-FileHash -LiteralPath $codexExe -Algorithm SHA256).Hash -ne $codexAssets.executable_sha256) { throw 'Codex executable checksum mismatch' }
     foreach ($file in $codexAssets.files) {
-        $filePath = Join-Path (Join-Path $CodexDir 'package') $file.path
+        $filePath = Join-Path $codexPackageRoot $file.path
         if ((Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash -ne $file.sha256) { throw "Codex package checksum mismatch: $($file.path)" }
     }
     $cliVersion = & $codexExe --version
@@ -33,26 +37,41 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
     dotnet publish src/CadMcp.Client/CadMcp.Client.csproj -c Release -r win-x64 --self-contained true -p:RuntimeFrameworkVersion=8.0.31 -p:PublishSingleFile=false -p:PublishTrimmed=false --no-restore -o "$payload/Contents/Client" -m:1 /nodeReuse:false
     if ($LASTEXITCODE -ne 0) { throw 'Client publish failed' }
-    & $DotNet2027 build src/CadMcp.AutoCAD2027/CadMcp.AutoCAD2027.csproj -c Release --no-restore -m:1 /nodeReuse:false
+    & $DotNet2027 build src/CadMcp.AutoCAD2027/CadMcp.AutoCAD2027.csproj -c Release --no-restore -p:BuildProjectReferences=false -m:1 /nodeReuse:false
     if ($LASTEXITCODE -ne 0) { throw 'Official SDK 2027 build failed' }
     $native2027 = Join-Path $repoRoot 'src/CadMcp.AutoCAD2027/bin/Release/net10.0-windows'
     foreach ($name in @('CadMcp.AutoCAD2027.dll','CadMcp.Core.dll','CadMcp.AutoCAD2027.deps.json')) {
         Copy-Item -LiteralPath (Join-Path $native2027 $name) -Destination "$payload/Contents/Net10"
     }
     $native = Join-Path $repoRoot 'src/CadMcp.AutoCAD/bin/Release/net8.0-windows'
-    foreach ($name in @('CadMcp.AutoCAD.dll','CadMcp.Core.dll','CadMcp.Providers.dll','CadMcp.AutoCAD.deps.json')) {
-        Copy-Item -LiteralPath (Join-Path $native $name) -Destination "$payload/Contents/Win64"
-    }
+    Get-ChildItem -LiteralPath $native -File -Filter '*.dll' |
+        Where-Object { $_.Name -notmatch '^(AcMgd|AcCoreMgd|AcDbMgd|AcWindows|AdWindows)\.dll$' } |
+        Copy-Item -Destination "$payload/Contents/Win64"
+    Copy-Item -LiteralPath (Join-Path $native 'CadMcp.AutoCAD.deps.json') -Destination "$payload/Contents/Win64"
+    Copy-Item -LiteralPath (Join-Path $native 'Resources') -Destination "$payload/Contents/Win64" -Recurse
+    Copy-Item -LiteralPath (Join-Path $native 'runtimes') -Destination "$payload/Contents/Win64" -Recurse
     Copy-Item -LiteralPath installer/PackageContents.xml -Destination $payload
     Copy-Item -LiteralPath installer/INSTALL.txt -Destination $payload
     $codexPayload = Join-Path $payload 'Contents/Tools/Codex'
     New-Item -ItemType Directory -Force -Path $codexPayload | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $CodexDir 'package') | Copy-Item -Destination $codexPayload -Recurse
-    Copy-Item -LiteralPath $codexExe -Destination (Join-Path $codexPayload 'bin/codex.exe')
-    foreach ($name in @('LICENSE','NOTICE','release.json','ratatui-MIT.txt','ripgrep-MIT.txt')) {
-        Copy-Item -LiteralPath (Join-Path $CodexDir $name) -Destination $codexPayload
+    if ($CodexPayloadDir) {
+        $sourceRoot = (Resolve-Path -LiteralPath $CodexPayloadDir).Path
+        if ([IO.Path]::GetPathRoot($sourceRoot) -ne [IO.Path]::GetPathRoot($codexPayload)) { throw 'Hardlink reuse requires the same volume' }
+        Get-ChildItem -LiteralPath $sourceRoot -File -Recurse | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath($sourceRoot, $_.FullName)
+            $target = Join-Path $codexPayload $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            try { New-Item -ItemType HardLink -Path $target -Target $_.FullName | Out-Null }
+            catch { Copy-Item -LiteralPath $_.FullName -Destination $target }
+        }
+    } else {
+        Get-ChildItem -LiteralPath (Join-Path $CodexDir 'package') | Copy-Item -Destination $codexPayload -Recurse
+        Copy-Item -LiteralPath $codexExe -Destination (Join-Path $codexPayload 'bin/codex.exe')
+        foreach ($name in @('LICENSE','NOTICE','release.json','ratatui-MIT.txt','ripgrep-MIT.txt')) {
+            Copy-Item -LiteralPath (Join-Path $CodexDir $name) -Destination $codexPayload
+        }
+        Copy-Item -LiteralPath 'installer/codex-assets.json' -Destination (Join-Path $codexPayload 'pinned-assets.json')
     }
-    Copy-Item -LiteralPath 'installer/codex-assets.json' -Destination (Join-Path $codexPayload 'pinned-assets.json')
     foreach ($name in @('README.md','LICENSE','NOTICE','licenses','docs')) {
         Copy-Item -LiteralPath $name -Destination $payload -Recurse
     }
@@ -72,5 +91,5 @@ try {
     $output = Split-Path -Parent $repoRoot
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.3.2-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.4.0-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }

@@ -58,6 +58,39 @@ internal static class Edits
                 if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Layer operations cannot be entity targets");
                 continue;
             }
+            if (kind == "block_define")
+            {
+                var name = S(op, "name");
+                var table = (BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForRead);
+                SymbolUtilityServices.ValidateSymbolName(name, false);
+                if (table.Has(name)) throw new CadFault("BLOCK_EXISTS", name);
+                var sources = op.GetProperty("handles").EnumerateArray().Select(x => Handle(doc.Database, x.GetString()!)).ToArray();
+                if (sources.Distinct().Count() != sources.Length) throw new CadFault("DUPLICATE_SOURCE", "Block source handles must be unique");
+                foreach (var source in sources) Editable(doc.Database, tr, source, false);
+                table.UpgradeOpen();
+                var definition = new BlockTableRecord { Name = name, Origin = Point(op, "base_point") };
+                table.Add(definition); tr.AddNewlyCreatedDBObject(definition, true);
+                var mapping = new IdMapping();
+                doc.Database.DeepCloneObjects(new ObjectIdCollection(sources), definition.ObjectId, mapping, false);
+                var cloned = sources.Select(source => mapping[source].Value).ToArray();
+                foreach (var clone in cloned) touched.Add(clone);
+                results.Add(new { index = index++, op = kind, name, handle = definition.Handle.ToString(),
+                    source_handles = sources.Select(x => x.Handle.ToString()).ToArray(),
+                    entity_handles = cloned.Select(x => x.Handle.ToString()).ToArray() });
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Block definitions cannot be entity targets");
+                continue;
+            }
+            if (kind == "layout_create")
+            {
+                var name = S(op, "name");
+                SymbolUtilityServices.ValidateSymbolName(name, false);
+                var layouts = (DBDictionary)tr.GetObject(doc.Database.LayoutDictionaryId, OpenMode.ForRead);
+                if (layouts.Contains(name)) throw new CadFault("LAYOUT_EXISTS", name);
+                var layoutId = LayoutManager.Current.CreateLayout(name);
+                results.Add(new { index = index++, op = kind, name, handle = layoutId.Handle.ToString() });
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Layouts cannot be entity targets");
+                continue;
+            }
             Entity entity;
             string? sourceHandle = null;
             if (kind is "move" or "copy" or "rotate" or "scale" or "mirror" or "erase" or "set")
@@ -116,7 +149,7 @@ internal static class Edits
             return entity.IsErased ? Wire.Element(new { handle = entity.Handle.ToString(), erased = true }) : Reader.Read(entity, tr);
         }).ToArray();
         var data = new { transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback,
-            undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_AutoLISP_or_vendor_API" } };
+            undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_vendor_API" } };
         if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
         ct.ThrowIfCancellationRequested();
         tr.Commit();
@@ -148,6 +181,14 @@ internal static class Edits
         {
             case "line": Equal(Point(op, "start"), Point(op, "end")); return new Line(Point(op, "start"), Point(op, "end"));
             case "circle": return new Circle(Point(op, "center"), Vector3d.ZAxis, N(op, "radius"));
+            case "point": return new DBPoint(Point(op, "position"));
+            case "ellipse":
+                var major = Point(op, "major_axis") - Point3d.Origin;
+                if (major.Length < 1e-10) throw new CadFault("DEGENERATE_ELLIPSE", "major_axis must be a nonzero vector");
+                if (Math.Abs(major.Z) > 1e-8) throw new CadFault("INVALID_ELLIPSE", "Only WCS XY ellipses are supported");
+                var start = Angle(op, "start_angle_deg"); var end = Angle(op, "end_angle_deg", 360);
+                if (Math.Abs(start - end) < 1e-10) throw new CadFault("DEGENERATE_ELLIPSE", "Ellipse parameters must differ");
+                return new Ellipse(Point(op, "center"), Vector3d.ZAxis, major, N(op, "radius_ratio"), start, end);
             case "arc":
                 var a = Angle(op, "start_angle_deg"); var b = Angle(op, "end_angle_deg");
                 if (Math.Abs(a - b) < 1e-10) throw new CadFault("DEGENERATE_ARC", "Arc angles must differ");
@@ -171,7 +212,7 @@ internal static class Edits
                 return new MText { Location = Point(op, "position"), Contents = op.GetProperty("text").GetString()!, TextHeight = N(op, "height"), Width = N(op, "width", 0), Rotation = Angle(op, "rotation_deg"), TextStyleId = TextStyle(db, tr, op.Text("style")), Attachment = AttachmentPoint.TopLeft };
             case "block":
                 var table = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead); var name = S(op, "name");
-                if (!table.Has(name)) throw new CadFault("BLOCK_NOT_FOUND", name + "; read cad_catalog or create the definition with AutoLISP");
+                if (!table.Has(name)) throw new CadFault("BLOCK_NOT_FOUND", name + "; read cad_catalog or create the definition with block_define");
                 var definition = (BlockTableRecord)tr.GetObject(table[name], OpenMode.ForRead);
                 if (definition.IsLayout || definition.IsFromExternalReference || definition.IsDependent) throw new CadFault("UNSUPPORTED_BLOCK", "Expected a local block definition");
                 var scale = new[] { 1d, 1d, 1d };
@@ -230,7 +271,7 @@ internal static class Edits
     {
         if (id.IsErased) throw new CadFault("ENTITY_ERASED", id.Handle.ToString());
         if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != db.CurrentSpaceId) throw new CadFault("UNSUPPORTED_SCOPE", "Only current-space top-level entities can be edited");
-        if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
+        if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or DBPoint or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
             throw new CadFault("SPECIAL_OBJECT", "Special objects need a vendor API or explicitly targeted AutoLISP");
         if (e is BlockReference block && ((BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead)).IsFromExternalReference)
             throw new CadFault("XREF_OBJECT", "This path does not edit external references");
