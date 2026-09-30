@@ -26,6 +26,7 @@ if (args.Contains("--live-codex-approval-test"))
 if (args.Contains("app-server"))
 {
     string? threadModel = null;
+    int writerErrors = 0;
     foreach (var tool in new[] { "cad_edit", "cad_lisp", "cad_focus" })
         if (!args.Contains($"mcp_servers.cad.tools.{tool}.approval_mode=\"approve\""))
             throw new Exception("CAD editing permission was not configured: " + tool);
@@ -57,7 +58,9 @@ if (args.Contains("app-server"))
                 e.GetProperty("params").GetProperty("sandbox").GetString() != "read-only")
                 throw new Exception("CAD permission fix widened filesystem permissions");
         }
-        if (method is "thread/start" or "thread/resume") Console.WriteLine("{\"id\":2,\"result\":{\"thread\":{\"id\":\"test-thread\"}}}");
+        if (method == "thread/resume" && e.GetProperty("params").GetProperty("threadId").GetString() == "retry-thread" && writerErrors++ == 0)
+            Console.WriteLine("{\"id\":2,\"error\":{\"code\":-32600,\"message\":\"thread already has an active writer\"}}");
+        else if (method is "thread/start" or "thread/resume") Console.WriteLine("{\"id\":2,\"result\":{\"thread\":{\"id\":\"test-thread\"}}}");
         if (method == "turn/start")
         {
             var inputs = e.GetProperty("params").GetProperty("input");
@@ -125,10 +128,13 @@ await Test("snapshot revision and document isolation", async () =>
 {
     var store = new SnapshotStore(); var s = store.Add("d1", 4, [Wire.Element(new { handle = "A", layer = "Сеть", text = "Колодец" })], true);
     await Throws<CadFault>(() => Task.FromResult(store.Query(s.Id, "d2", 4, Wire.Element(new { }))));
-    await Throws<CadFault>(() => Task.FromResult(store.Query(s.Id, "d1", 5, Wire.Element(new { }))));
+    var historical = Wire.Element(store.Query(s.Id, "d1", 5, Wire.Element(new { })));
+    Assert(historical.GetProperty("historical").GetBoolean() && historical.GetProperty("captured_revision").GetInt64() == 4,
+        "Changed DWG did not mark the snapshot as historical");
     await Throws<CadFault>(() => Task.FromResult(store.Query(s.Id, "d1", 4, Wire.Element(new { limit = -1 }))));
     var result = Wire.Element(store.Query(s.Id, "d1", 4, Wire.Element(new { text = "колод", limit = 1 })));
     Assert(result.GetProperty("entities").GetArrayLength() == 1, "Unicode filter");
+    Assert(!result.GetProperty("historical").GetBoolean(), "Current snapshot marked historical");
     Assert(result.GetProperty("pagination").GetProperty("snapshot_truncated").GetBoolean(), "Hidden truncation");
 });
 await Test("stable pagination and bounded snapshot retention", async () =>
@@ -270,6 +276,7 @@ await Test("nested Codex subscription errors are readable", () =>
 {
     var error = JsonSerializer.SerializeToElement(new { error = new { message = JsonSerializer.Serialize(new { error = new { message = "Model is unavailable for this account" } }) } });
     Assert(CodexProvider.ErrorMessage(error) == "Model is unavailable for this account", "Nested error still raw JSON");
+    Assert(CodexProvider.FriendlyError("Selected model is at capacity. Please try a different model.").Contains("Выберите другую модель"), "Capacity error is not actionable");
     return Task.CompletedTask;
 });
 var options = new ProviderOptions(Environment.ProcessPath!, @"C:\CAD test\host.exe", Environment.CurrentDirectory);
@@ -325,6 +332,13 @@ await Test("requested model and effort reach new and resumed Codex turns", async
     var switched = new CodexProvider(options) { SessionId = provider.SessionId };
     await foreach (var _ in switched.SendAsync("Read", default)) { }
     Assert(switched.SessionId == provider.SessionId, "Changed model created another session");
+});
+await Test("Codex retries an active writer and releases the provider process", async () =>
+{
+    var provider = new CodexProvider(options) { SessionId = "retry-thread" };
+    var events = new List<ChatEvent>();
+    await foreach (var e in provider.SendAsync("Read", default)) events.Add(e);
+    Assert(events.Any(e => e.Kind == "completed") && provider.SessionId == "test-thread", "Active writer prevented a recovered turn");
 });
 await Test("unavailable model fails instead of silently selecting a different one", async () =>
 {

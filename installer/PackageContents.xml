@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ApplicationPackage SchemaVersion="1.0" AutodeskProduct="AutoCAD" Name="CAD MCP AutoCAD 2025–2027 Preview"
- AppVersion="0.3.1" Description="Drawing inspection, editing and AI chat for AutoCAD, Map 3D and Civil 3D 2025–2027"
- ProductCode="{3ED331B7-C33B-4CD1-B7BC-AB40A5433322}" UpgradeCode="{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}">
+ AppVersion="0.3.2" Description="Drawing inspection, editing and AI chat for AutoCAD, Map 3D and Civil 3D 2025–2027"
+ ProductCode="{A923EE09-5411-4490-90A6-28F721B6C647}" UpgradeCode="{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}">
   <CompanyDetails Name="CAD MCP contributors" Url="https://github.com/debug23win/autocad-mcp" />
   <Components>
     <RuntimeRequirements OS="Win64" Platform="AutoCAD|Map|Civil3D" SeriesMin="R25.0" SeriesMax="R25.1" />

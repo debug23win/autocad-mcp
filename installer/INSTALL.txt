@@ -1,4 +1,4 @@
-CAD MCP 0.3.1-preview — AutoCAD, Map 3D, Civil 3D 2025–2027 x64
+CAD MCP 0.3.2-preview — AutoCAD, Map 3D, Civil 3D 2025–2027 x64
 
 1. Закройте AutoCAD и отдельное окно CAD MCP. В меню Пуск выберите «CAD MCP → Остановить MCP broker» (в старой версии — «CAD MCP AutoCAD 2025»). Затем запустите Setup.exe. Установка для текущего пользователя, без прав администратора.
 2. Откройте AutoCAD, Map 3D или Civil 3D 2025, 2026 или 2027. При штатном запросе доверия подтвердите конкретную DLL.

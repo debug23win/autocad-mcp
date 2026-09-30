@@ -15,7 +15,7 @@ licenses/dependencies. Resolved versions and hashes are in lock files.
 
 Autodesk assemblies, SPDS binaries and Claude Code remain external
 user-installed components and are not redistributed.
-The 0.3.1 Windows installer bundles the unmodified official OpenAI Codex
+The 0.3.2 Windows installer bundles the unmodified official OpenAI Codex
 0.159.0 executable. Copyright 2025 OpenAI, Apache-2.0.
 Its official app-server package and CLI helpers retain their original layout.
 LICENSE, NOTICE and Ratatui MIT license are in Contents/Tools/Codex.

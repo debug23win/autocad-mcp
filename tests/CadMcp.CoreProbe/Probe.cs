@@ -24,6 +24,43 @@ public static class Probe
     [LispFunction("CADMCPFINISH")]
     public static int Finish(ResultBuffer args)
     { var a = args.AsArray(); lispDispatcher?.FinishLisp((string)a[0].Value, Convert.ToInt32(a[1].Value) == 1, (string)a[2].Value); return 0; }
+    [CommandMethod("CADMCPREADPROBE")]
+    public static void ReadCurrentDrawing()
+    {
+        var output = Environment.GetEnvironmentVariable("CADMCP_PROBE_OUTPUT");
+        if (string.IsNullOrWhiteSpace(output)) return;
+        try
+        {
+            using var documents = new Documents();
+            using var dispatcher = new Dispatcher(documents);
+            lispDispatcher = dispatcher;
+            var current = App.DocumentManager.MdiActiveDocument ?? throw new System.Exception("No active drawing");
+            var state = documents.Register(current);
+            int dbmodBefore = Convert.ToInt32(App.GetSystemVariable("DBMOD"));
+            Response Call(string operation, object data, long? revision, string? document) => Invoke(new(
+                Guid.NewGuid().ToString("N"), operation, documents.SessionId, document, revision,
+                Wire.Element(data), DateTimeOffset.UtcNow.AddSeconds(25)));
+            var context = Call("cad_context", new { }, null, null);
+            var catalog = Call("cad_catalog", new { }, context.Revision, context.DocumentId);
+            var search = Call("cad_search", new { options_json = "{\"scope\":\"current\",\"limit\":5}" }, context.Revision, context.DocumentId);
+            var snapshot = Call("cad_snapshot", new { limit = 5 }, context.Revision, context.DocumentId);
+            var result = new
+            {
+                drawing = Path.GetFileName(current.Name),
+                context = new { context.Status, context.Revision, error = context.Error?.Code },
+                catalog = new { catalog.Status, catalog.Revision, error = catalog.Error?.Code },
+                search = new { search.Status, search.Revision, error = search.Error?.Code },
+                snapshot = new { snapshot.Status, snapshot.Revision, error = snapshot.Error?.Code },
+                actual_revision = state.Revision,
+                dbmod_before = dbmodBefore,
+                dbmod_after = Convert.ToInt32(App.GetSystemVariable("DBMOD")),
+                ignored_read_side_effect_events = state.ReadSideEffectEvents
+            };
+            File.WriteAllText(output, JsonSerializer.Serialize(result));
+        }
+        catch (System.Exception error) { File.WriteAllText(output, JsonSerializer.Serialize(new { failure = error.ToString() })); }
+        finally { lispDispatcher = null; }
+    }
     [CommandMethod("CADMCPCORELISP")]
     public static void StartLisp()
     {

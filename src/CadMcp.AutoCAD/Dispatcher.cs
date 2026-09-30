@@ -51,7 +51,10 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 persistence = journal.Persistence, retry = "Never automatically retry an unknown mutation; inspect drawing first" }, documents.SessionId, r.DocumentId);
         }
         if (r.Operation is "cad_edit" or "cad_lisp") return Mutate(r, ct);
-        var doc = documents.Active(r); var state = documents.Register(doc);
+        bool readOnly = r.Operation is "cad_context" or "cad_catalog" or "cad_render" or "cad_snapshot" or
+            "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get";
+        var doc = documents.Active(r, checkRevision: !readOnly); var state = documents.Register(doc);
+        using var reading = readOnly ? documents.ReadScope(doc) : null;
         using var locked = doc.LockDocument();
         using var tr = doc.Database.TransactionManager.StartOpenCloseTransaction();
         object data; string status = "completed";
@@ -66,7 +69,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         view = new { width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         capabilities = new[] { "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_catalog", "cad_edit", "cad_lisp", "cad_operation_status" },
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
-                        cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false },
+                        cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
+                            ignored_read_side_effect_events = state.ReadSideEffectEvents },
                         limitations = new[] { "preview_render_unverified", "SPDS_special_properties_unverified", "native_edits_current_space_only" } };
                 break;
             case "cad_catalog":
@@ -158,7 +162,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 break;
             default: throw new CadFault("UNSUPPORTED_OPERATION", r.Operation);
         }
-        if (r.ExpectedRevision.HasValue && r.ExpectedRevision != state.Revision)
+        if (!readOnly && r.ExpectedRevision.HasValue && r.ExpectedRevision != state.Revision)
             throw new CadFault("REVISION_CONFLICT", "Document changed during operation; discard result and refresh context");
         if (r.Operation != "cad_render" && Wire.Element(data).GetRawText().Length > 512 * 1024)
         {

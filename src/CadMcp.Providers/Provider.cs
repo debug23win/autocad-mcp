@@ -31,7 +31,20 @@ public static class ProviderProcess
     public static void Stop(Process p)
     {
         try { if (!p.HasExited) p.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+    }
+    public static async Task StopAndWaitAsync(Process p)
+    {
+        Stop(p);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await p.WaitForExitAsync(timeout.Token); }
+        catch (Exception e) when (e is OperationCanceledException or InvalidOperationException) { }
+    }
+    public static async Task FinishAsync(Process p, Task stderr)
+    {
+        await StopAndWaitAsync(p);
+        try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (TimeoutException) { }
     }
     public static async Task<string> DrainErrors(Process p)
     {
@@ -97,7 +110,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
             await p.WaitForExitAsync(ct);
             if (p.ExitCode != 0 || !completed) throw new IOException("Claude Code ended without success. " + await stderr);
         }
-        finally { ProviderProcess.Stop(p); await stderr; }
+        finally { await ProviderProcess.FinishAsync(p, stderr); }
     }
 }
 
@@ -122,14 +135,28 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         var stderr = ProviderProcess.DrainErrors(p);
         var models = new List<JsonElement>();
         string? model = null, effort = null;
+        int resumeRetries = 0;
         async Task Send(object data) { await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(data).AsMemory(), ct); await p.StandardInput.FlushAsync(ct); }
+        async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.3.1-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.3.2-preview" } } });
             while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 using var doc = JsonDocument.Parse(line); var e = doc.RootElement;
-                if (e.TryGetProperty("error", out var error)) throw new IOException("Codex: " + error);
+                if (e.TryGetProperty("error", out var error))
+                {
+                    string message = ErrorMessage(error);
+                    if (e.TryGetProperty("id", out var failedId) && failedId.ValueKind == JsonValueKind.Number && failedId.GetInt32() == 2 &&
+                        SessionId is not null && message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase) && resumeRetries < 3)
+                    {
+                        resumeRetries++;
+                        await Task.Delay(TimeSpan.FromMilliseconds(300 * resumeRetries), ct);
+                        await Resume();
+                        continue;
+                    }
+                    throw new IOException("Codex: " + FriendlyError(message));
+                }
                 if (e.TryGetProperty("id", out var id) && !e.TryGetProperty("method", out _))
                 {
                     if (id.GetInt32() == 1)
@@ -154,8 +181,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         yield return new("effort", effort!);
                         if (SessionId is null)
                             await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
-                        else
-                            await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
+                        else await Resume();
                     }
                     else if (id.GetInt32() == 2)
                     {
@@ -184,7 +210,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     {
                         var parameters = e.GetProperty("params");
                         if (parameters.TryGetProperty("willRetry", out var retry) && retry.GetBoolean()) yield return new("status", "Codex восстанавливает соединение");
-                        else throw new IOException("Codex: " + ErrorMessage(parameters));
+                        else throw new IOException("Codex: " + FriendlyError(ErrorMessage(parameters)));
                     }
                     if (name == "turn/completed")
                     {
@@ -196,7 +222,15 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
             }
             throw new IOException("Codex exited before turn completion. " + await stderr);
         }
-        finally { ProviderProcess.Stop(p); await stderr; }
+        finally { await ProviderProcess.FinishAsync(p, stderr); }
+    }
+    public static string FriendlyError(string message)
+    {
+        if (message.Contains("Selected model is at capacity", StringComparison.OrdinalIgnoreCase))
+            return "Выбранная модель сейчас перегружена. Выберите другую модель в панели или повторите позже.";
+        if (message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase))
+            return "Этот диалог Codex занят другим процессом. Закройте второе окно этого диалога или начните новый диалог.";
+        return message;
     }
     public static string ErrorMessage(JsonElement value)
     {

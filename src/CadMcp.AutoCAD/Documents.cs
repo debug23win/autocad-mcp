@@ -13,6 +13,8 @@ internal sealed class DocumentState(Database database)
     public Database Database { get; } = database;
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public long Revision { get; set; }
+    public int ReadDepth { get; set; }
+    public long ReadSideEffectEvents { get; set; }
 }
 internal sealed class Documents : IDisposable
 {
@@ -33,7 +35,29 @@ internal sealed class Documents : IDisposable
         // Document.Database may return a different managed wrapper on each access.
         // Match the native database identity, retaining the wrapper subscribed to events.
         foreach (var state in states.Values)
-            if (ReferenceEquals(state.Database, db) || state.Database.UnmanagedObject == db.UnmanagedObject) state.Revision++;
+            if (ReferenceEquals(state.Database, db) || state.Database.UnmanagedObject == db.UnmanagedObject)
+            {
+                // Some object enablers emit ObjectModified while a CAD MCP read closes
+                // its transaction. This is synchronous on the CAD thread, not a user edit.
+                if (state.ReadDepth != 0) state.ReadSideEffectEvents++;
+                else state.Revision++;
+            }
+    }
+    public IDisposable ReadScope(Document document)
+    {
+        var state = Register(document);
+        state.ReadDepth++;
+        return new ReadGuard(state);
+    }
+    private sealed class ReadGuard(DocumentState state) : IDisposable
+    {
+        private bool disposed;
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            state.ReadDepth--;
+        }
     }
     public DocumentState Register(Document d)
     {

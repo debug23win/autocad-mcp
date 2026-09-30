@@ -35,7 +35,6 @@ public sealed class SnapshotStore
     {
         if (!snapshots.TryGetValue(id, out var s) || s.DocumentId != document)
             throw new CadFault("SNAPSHOT_NOT_FOUND", "Create a new snapshot for this document");
-        if (s.Revision != revision) throw new CadFault("REVISION_CONFLICT", "DWG changed since snapshot");
         int offset = filter.Number("offset", 0), limit = filter.Number("limit", 100);
         if (offset < 0 || limit < 1 || limit > 500) throw new CadFault("INVALID_PAGE", "offset >= 0; limit 1..500");
         var layer = filter.Text("layer"); var type = filter.Text("type"); var text = filter.Text("text");
@@ -51,7 +50,8 @@ public sealed class SnapshotStore
             chars += size; pageList.Add(e);
         }
         var page = pageList.ToArray();
-        return new { snapshot_id = s.Id, entities = page, matching_in_snapshot = filtered.Length,
+        return new { snapshot_id = s.Id, captured_revision = s.Revision, historical = s.Revision != revision,
+            entities = page, matching_in_snapshot = filtered.Length,
             pagination = new { next_offset = offset + page.Length < filtered.Length ? (int?)(offset + page.Length) : null, snapshot_truncated = s.Truncated } };
     }
 }

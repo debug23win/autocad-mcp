@@ -72,5 +72,5 @@ try {
     $output = Split-Path -Parent $repoRoot
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.3.1-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.3.2-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }
