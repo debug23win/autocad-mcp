@@ -22,6 +22,12 @@ public sealed class CadTools
     public static Task<CallToolResult> Context(string session_id, CancellationToken ct) => Call("cad_context", session_id, null, new { }, null, ct);
     [McpServerTool(Name = "cad_catalog", ReadOnly = true), Description("Read layers, local blocks and attributes, layouts, text/dimension styles and linetypes at the current revision. Use these names before inserting or editing objects.")]
     public static Task<CallToolResult> Catalog(string session_id, string document_id, long expected_revision, CancellationToken ct) => Call("cad_catalog", session_id, document_id, new { }, expected_revision, ct);
+    [McpServerTool(Name = "cad_vertical_catalog", ReadOnly = true), Description("Read the optional Civil 3D and Map 3D product APIs in the running CAD process: bounded lists of surfaces, alignments and pipe networks; Map coordinate systems and object-data table names. Reports unavailable explicitly if a vertical API is not loaded. No vendor DLL is bundled.")]
+    public static Task<CallToolResult> VerticalCatalog(string session_id, string document_id, long expected_revision, CancellationToken ct) =>
+        Call("cad_vertical_catalog", session_id, document_id, new { }, expected_revision, ct);
+    [McpServerTool(Name = "cad_vertical_get", ReadOnly = true), Description("Inspect a Civil 3D surface/alignment/profile/network or Map 3D object-data-bearing entity by hexadecimal handle. For Civil surfaces, optional sample_points_json is 1..100 [x,y] WCS pairs and returns elevations or per-point errors. Bounded child collections and object-data values are included when the relevant product API is loaded.")]
+    public static Task<CallToolResult> VerticalGet(string session_id, string document_id, long expected_revision, string handle, CancellationToken ct, string? sample_points_json = null) =>
+        Call("cad_vertical_get", session_id, document_id, new { handle, sample_points_json }, expected_revision, ct);
     [McpServerTool(Name = "cad_edit_help", ReadOnly = true), Description("Read the native edit operation contract and examples before using cad_edit. Coordinates are WCS drawing units; angles are degrees.")]
     public static CallToolResult EditHelp() => new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new {
         operations = EditPlan.Fields, coordinates = "WCS drawing units, [x,y] or [x,y,z]", angles = "degrees around WCS Z",
@@ -30,6 +36,12 @@ public sealed class CadTools
             block = "name:existing local block; scale:positive scalar or [sx,sy,sz]; attributes:{TAG:string}",
             block_define = "name:new local definition; base_point:WCS insertion base; handles:1..100 current-space top-level source entities. Source entities remain; native C# clones them into the definition",
             layout_create = "Create an empty paper-space layout with the supplied name. Add title block and viewports separately before export",
+            layout_copy = "Copy a complete existing paper-space layout including sheet contents and plot settings",
+            layout_configure = "Set print device, media, plot style, paper units and rotation for a named paper-space layout",
+            viewport = "Place a locked paper-space model viewport on a named layout. center/width/height are paper coordinates; model_center/model_height define WCS view and scale",
+            image_attach = "Attach PNG/JPEG/TIFF/BMP by absolute path. control_points has 3..20 {pixel:[x,y],world:[x,y,z]} anchors; pixel origin top-left, all WCS Z equal. Affine residual and orientation are returned. Source file remains externally referenced",
+            civil_tin_create = "In Civil 3D only, create a native TIN surface from 3..5000 non-collinear WCS [x,y,z] vertices using the current template's default surface style",
+            civil_tin_add_points = "In Civil 3D only, add 3..5000 WCS [x,y,z] vertices to an existing TIN surface by handle",
             ellipse = "major_axis is a nonzero WCS XY vector from the center; radius_ratio is >0 and <=1; optional start/end angles default to 0/360 degrees",
             hatch = "boundaries:[handle or earlier id], closed polylines/circles; first is outer, others are islands; pattern defaults SOLID",
             set = "Only properties supported by the entity type are accepted; text is DBText/MText/Dimension; attributed blocks move/rotate through transform tools; use attributes to change tag values",
@@ -44,6 +56,9 @@ public sealed class CadTools
     public static Task<CallToolResult> Export(string session_id, string document_id, long expected_revision, string operation_id, string format, string path, CancellationToken ct,
         string? layout = null, string? media_name = null) =>
         Call("cad_export", session_id, document_id, new { operation_id, format, path, layout, media_name }, expected_revision, ct);
+    [McpServerTool(Name = "cad_publish", ReadOnly = false, Destructive = false, Idempotent = false), Description("Plot 1..100 named paper layouts into separate PDFs using native AutoCAD C#. output_folder must already exist and contain no conflicting output or CAD MCP manifest. layouts_json is a JSON array of layout names in release order. Writes JSON and CSV file registers with sizes and SHA-256; on a partial failure, the manifests record the PDFs already produced. Supply a unique operation_id and inspect cad_operation_status after an ambiguous response.")]
+    public static Task<CallToolResult> Publish(string session_id, string document_id, long expected_revision, string operation_id, string output_folder, string layouts_json, CancellationToken ct) =>
+        Call("cad_publish", session_id, document_id, new { operation_id, output_folder, layouts_json }, expected_revision, ct);
     [McpServerTool(Name = "cad_lisp", ReadOnly = false, Destructive = true, Idempotent = false), Description("Last-resort fallback for AutoCAD/vendor commands unavailable through native C# tools. Executes code inside progn; supply all command-s arguments, no interactive prompts. Returns QUEUED: poll cad_operation_status and verify resulting geometry or files. Errors can leave partial changes. Never retry with a new id after an uncertain result.")]
     public static Task<CallToolResult> Lisp(string session_id, string document_id, long expected_revision, string operation_id, string code, CancellationToken ct) =>
         Call("cad_lisp", session_id, document_id, new { operation_id, code }, expected_revision, ct);
@@ -69,7 +84,7 @@ public sealed class CadTools
     [McpServerTool(Name = "cad_focus", ReadOnly = false), Description("Select a top-level entity in the active document without modifying DWG geometry. Changes implied selection only.")]
     public static Task<CallToolResult> Focus(string session_id, string document_id, long expected_revision, string handle, CancellationToken ct) =>
         Call("cad_focus", session_id, document_id, new { handle }, expected_revision, ct);
-    [McpServerTool(Name = "cad_render", ReadOnly = true), Description("Return a real AutoCAD preview image and view metadata at an expected revision. Preview fidelity must be checked in CAD; no pixel/world mapping is asserted.")]
+    [McpServerTool(Name = "cad_render", ReadOnly = true), Description("Return a real AutoCAD preview image with an image_id and actual pixel dimensions. Pixel origin is top-left. For an exact image-to-WCS transform, call cad_image_register with at least 3 known pixel/WCS control points from this specific image; preview cropping is not assumed from viewport metadata.")]
     public static async Task<CallToolResult> Render(string session_id, string document_id, long expected_revision, CancellationToken ct, int width = 1024, int height = 768)
     {
         var response = await PipeClient.CallAsync(BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_render", session_id, document_id, expected_revision, Wire.Element(new { width, height })), ct);
@@ -79,4 +94,10 @@ public sealed class CadTools
         return new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response with { Data = metadata }, Wire.Json) },
             ImageContentBlock.FromBytes(Convert.FromBase64String(data.GetProperty("image_base64").GetString()!), "image/png")] };
     }
+    [McpServerTool(Name = "cad_image_register", ReadOnly = true), Description("Calibrate one cad_render image to the DWG WCS XY plane using 3..20 point pairs. control_points_json: [{\"pixel\":[x,y],\"world\":[x,y,z]},...]. Pixels have top-left origin; WCS Z must be common. Returns 2D affine transform, corners and RMS/max residual. Registration is kept for up to 8 images in the current worker session and does not modify the DWG.")]
+    public static Task<CallToolResult> ImageRegister(string session_id, string document_id, long expected_revision, string image_id, string control_points_json, CancellationToken ct) =>
+        Call("cad_image_register", session_id, document_id, new { image_id, control_points_json }, expected_revision, ct);
+    [McpServerTool(Name = "cad_image_point", ReadOnly = true), Description("Convert 1..100 coordinates through a previously calibrated cad_render image. points_json is an array of [x,y] pairs; direction is pixel_to_world (default) or world_to_pixel. Returns captured_revision and historical flag so older images are not mistaken for the current drawing.")]
+    public static Task<CallToolResult> ImagePoint(string session_id, string document_id, long expected_revision, string image_id, string points_json, CancellationToken ct, string direction = "pixel_to_world") =>
+        Call("cad_image_point", session_id, document_id, new { image_id, points_json, direction }, expected_revision, ct);
 }

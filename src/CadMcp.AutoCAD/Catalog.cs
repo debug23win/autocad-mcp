@@ -20,8 +20,24 @@ internal static class Catalog
                 attributes = b.Cast<ObjectId>().Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<AttributeDefinition>().Take(100).Select(a => new { tag = a.Tag, text = a.TextString, constant = a.Constant }) }),
             text_styles = styles.Take(limit).Select(s => new { name = s.Name, font = s.FileName, height = s.TextSize }),
             dimension_styles = dimensionStyles.Take(limit).Select(s => s.Name), linetypes = types.Take(limit).Select(t => t.Name),
-            layouts = layouts.Take(limit).Select(l => new { name = l.LayoutName, handle = l.Handle.ToString(), model = l.ModelType,
-                tab_order = l.TabOrder, selected = l.TabSelected, plot_device = l.PlotConfigurationName, paper_size = l.CanonicalMediaName }),
+            layouts = layouts.Take(limit).Select(l => LayoutInfo(l, tr)),
             truncated = layers.Length > limit || blocks.Length > limit || styles.Length > limit || dimensionStyles.Length > limit || types.Length > limit || layouts.Length > limit, limit_per_category = limit };
+    }
+
+    private static object LayoutInfo(Layout layout, Transaction tr)
+    {
+        var space = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+        var objects = space.Cast<ObjectId>().Take(1001).Select(id => tr.GetObject(id, OpenMode.ForRead)).ToArray();
+        return new { name = layout.LayoutName, handle = layout.Handle.ToString(), model = layout.ModelType,
+            tab_order = layout.TabOrder, selected = layout.TabSelected, plot_device = layout.PlotConfigurationName,
+            paper_size = layout.CanonicalMediaName, paper_units = layout.PlotPaperUnits.ToString(),
+            paper_rotation = layout.PlotRotation.ToString(), plot_style = layout.CurrentStyleSheet,
+            viewports = objects.OfType<Viewport>().Take(50).Select(v => new { handle = v.Handle.ToString(),
+                paper_center = new[] { v.CenterPoint.X, v.CenterPoint.Y }, paper_width = v.Width, paper_height = v.Height,
+                model_target = new[] { v.ViewTarget.X, v.ViewTarget.Y, v.ViewTarget.Z }, model_view_height = v.ViewHeight,
+                scale = v.CustomScale, locked = v.Locked }).ToArray(),
+            inserted_blocks = objects.OfType<BlockReference>().Take(50).Select(b =>
+                ((BlockTableRecord)tr.GetObject(b.BlockTableRecord, OpenMode.ForRead)).Name).ToArray(),
+            sheet_contents_truncated = objects.Length > 1000 };
     }
 }

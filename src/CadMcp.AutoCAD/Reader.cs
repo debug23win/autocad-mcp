@@ -81,6 +81,22 @@ internal static class Reader
             case Hatch hatch:
                 item["pattern"] = hatch.PatternName; item["pattern_scale"] = hatch.PatternScale; item["pattern_angle"] = hatch.PatternAngle;
                 item["loops"] = hatch.NumberOfLoops; item["access"] = "partial"; item["limitations"] = new[] { "hatch_boundary_geometry_not_expanded" }; break;
+            case Viewport viewport:
+                item["paper_center"] = P(viewport.CenterPoint); item["paper_width"] = viewport.Width; item["paper_height"] = viewport.Height;
+                item["model_target"] = P(viewport.ViewTarget); item["model_view_height"] = viewport.ViewHeight;
+                item["custom_scale"] = viewport.CustomScale; item["twist"] = viewport.TwistAngle;
+                item["locked"] = viewport.Locked; item["on"] = viewport.On; item["access"] = "structured"; break;
+            case RasterImage raster:
+                var imageDefinition = (RasterImageDef)tr.GetObject(raster.ImageDefId, OpenMode.ForRead);
+                var orientation = raster.Orientation;
+                item["source_path"] = imageDefinition.SourceFileName;
+                item["image_name"] = raster.Name;
+                item["image_width"] = raster.ImageWidth; item["image_height"] = raster.ImageHeight;
+                item["orientation"] = new { origin = P(orientation.Origin),
+                    x_axis = new[] { orientation.Xaxis.X, orientation.Xaxis.Y, orientation.Xaxis.Z },
+                    y_axis = new[] { orientation.Yaxis.X, orientation.Yaxis.Y, orientation.Yaxis.Z } };
+                item["pixel_to_model_transform"] = raster.PixelToModelTransform.ToArray();
+                item["access"] = "structured"; break;
             default:
                 item["vendor_assembly"] = e.GetType().Assembly.GetName().Name;
                 var specialized = ReadSpecializedMetadata(e);

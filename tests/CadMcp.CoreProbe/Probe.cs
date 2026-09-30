@@ -134,10 +134,79 @@ public static class Probe
                 Assert(nativeCatalog.GetProperty("layouts").EnumerateArray().Any(x => x.Text("name") == "CADMCP_A3") &&
                     nativeCatalog.GetProperty("blocks").EnumerateArray().Any(x => x.Text("name") == "CADMCP_NATIVE_BLOCK"), "Native block definition and layout persisted");
             }
+            string a3;
+            using (var paper = new PlotSettings(false))
+            {
+                var validator = PlotSettingsValidator.Current;
+                validator.SetPlotConfigurationName(paper, "DWG To PDF.pc3", null);
+                validator.RefreshLists(paper);
+                a3 = validator.GetCanonicalMediaNameList(paper).Cast<string>()
+                    .First(x => x.Contains("A3", StringComparison.OrdinalIgnoreCase));
+            }
+            var sheet = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
+                new { op = "layout_configure", name = "CADMCP_A3", media_name = a3, paper_rotation = 90, paper_units = "millimeters" },
+                new { op = "viewport", layout = "CADMCP_A3", center = new[] { 150, 100, 0 }, width = 200, height = 150,
+                    model_center = new[] { 50, 50, 0 }, model_height = 75, locked = true },
+                new { op = "block", name = "CADMCP_NATIVE_BLOCK", layout = "CADMCP_A3", position = new[] { 10, 10, 0 } }
+            })), default));
+            var viewportResult = sheet.GetProperty("entities").EnumerateArray().FirstOrDefault(e => e.Text("type") == "Viewport");
+            Assert(viewportResult.ValueKind == JsonValueKind.Object && Math.Abs(viewportResult.GetProperty("custom_scale").GetDouble() - 2) < 1e-8 &&
+                viewportResult.GetProperty("locked").GetBoolean(),
+                "Native paper-space viewport created at exact model scale");
+            using (var configured = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var layout = Sheets.Layout(doc.Database, configured, "CADMCP_A3");
+                var paperSpace = (BlockTableRecord)configured.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+                Assert(layout.CanonicalMediaName == a3 && layout.PlotRotation == PlotRotation.Degrees090 &&
+                    paperSpace.Cast<ObjectId>().Any(id => configured.GetObject(id, OpenMode.ForRead) is BlockReference),
+                    "Paper size, rotation and title-block insertion retained on named layout");
+            }
+            Edits.Execute(doc, EditPlan.Parse("[{\"op\":\"layout_copy\",\"source\":\"CADMCP_A3\",\"name\":\"CADMCP_SHEET_2\"}]"), default);
+            using (var copied = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var copiedLayout = Sheets.Layout(doc.Database, copied, "CADMCP_SHEET_2");
+                var copiedSpace = (BlockTableRecord)copied.GetObject(copiedLayout.BlockTableRecordId, OpenMode.ForRead);
+                Assert(copiedSpace.Cast<ObjectId>().Any(id => copied.GetObject(id, OpenMode.ForRead) is Viewport),
+                    "Layout copy preserves the viewport and sheet contents");
+            }
             var nativeDxf = Wire.Element(Exports.Execute(doc, "dxf", output + ".dxf", null, null, default));
             Assert(nativeDxf.GetProperty("bytes").GetInt64() > 0 && File.Exists(output + ".dxf"), "Native DXF export verified by file size and SHA-256");
             var nativePdf = Wire.Element(Exports.Execute(doc, "pdf", output + ".pdf", "CADMCP_A3", null, default));
             Assert(nativePdf.GetProperty("bytes").GetInt64() > 0 && File.Exists(output + ".pdf"), "Native PDF layout export verified by file size and SHA-256");
+            Assert(!PdfRepair.NormalizeStructure(output + ".pdf"), "PDF structural normalization is idempotent");
+            var publishFolder = output + ".publish";
+            Directory.CreateDirectory(publishFolder);
+            var published = Wire.Element(Exports.Publish(doc, publishFolder, "[\"CADMCP_A3\",\"CADMCP_SHEET_2\"]", default));
+            Assert(published.Text("status") == "completed" && published.GetProperty("files").GetArrayLength() == 2 &&
+                File.Exists(published.Text("manifest_path")) && File.Exists(published.Text("csv_path")),
+                "Two native layout PDFs and JSON/CSV file register produced");
+            var rasterPath = output + ".png";
+            using (var bitmap = new System.Drawing.Bitmap(100, 50))
+            {
+                using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+                graphics.Clear(System.Drawing.Color.White);
+                graphics.DrawLine(System.Drawing.Pens.Black, 0, 0, 99, 49);
+                bitmap.Save(rasterPath, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            var rasterPlan = JsonSerializer.Serialize(new[] { new {
+                op = "image_attach", path = rasterPath, name = "CADMCP_REGISTERED_IMAGE",
+                control_points = new[] {
+                    new { pixel = new[] { 0, 0 }, world = new[] { 1000, 2000, 0 } },
+                    new { pixel = new[] { 100, 0 }, world = new[] { 1100, 2000, 0 } },
+                    new { pixel = new[] { 0, 50 }, world = new[] { 1000, 1950, 0 } } } } });
+            var rasterResult = Wire.Element(Edits.Execute(doc, EditPlan.Parse(rasterPlan), default));
+            var raster = rasterResult.GetProperty("entities")[0];
+            Assert(raster.Text("type") == "RasterImage" && raster.Text("source_path") == rasterPath &&
+                Math.Abs(rasterResult.GetProperty("results")[0].GetProperty("image_registration").GetProperty("rms_error").GetDouble()) < 1e-7,
+                "Raster attached in WCS with pixel control-point registration");
+            var skewPlan = JsonSerializer.Serialize(new[] { new {
+                op = "image_attach", path = rasterPath, name = "CADMCP_SKEWED_IMAGE",
+                control_points = new[] {
+                    new { pixel = new[] { 0, 0 }, world = new[] { 2000, 2000, 0 } },
+                    new { pixel = new[] { 100, 0 }, world = new[] { 2100, 2020, 0 } },
+                    new { pixel = new[] { 0, 50 }, world = new[] { 2025, 1950, 0 } } } } });
+            var skewed = Wire.Element(Edits.Execute(doc, EditPlan.Parse(skewPlan), default));
+            Assert(skewed.GetProperty("entities")[0].Text("type") == "RasterImage", "Skewed raster affine orientation stored in DWG");
             var dimension = entities.First(e => e.Text("type") == "AlignedDimension");
             Assert(dimension.GetProperty("geometry").GetProperty("XLine1Point")[0].GetDouble() == 0 && Math.Abs(dimension.GetProperty("measurement").GetDouble() - 100) < 1e-8, "Dimension geometry and measurement read back");
             var changed = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
@@ -203,6 +272,22 @@ public static class Probe
             var detail = Search(new { scope = "model", type = "AlignedDimension", details = true });
             Assert(detail.GetProperty("entities")[0].TryGetProperty("geometry", out _), "Search returns full dimension detail on demand");
             Assert(Search(new { scope = "selection" }).GetProperty("entities").GetArrayLength() == 0, "Empty selection safely returns no objects");
+            using (var verticalRead = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var verticals = Wire.Element(Verticals.Catalog(doc.Database, verticalRead));
+                Assert(verticals.TryGetProperty("civil3d", out _) && verticals.TryGetProperty("map3d", out _),
+                    "Optional Civil 3D and Map 3D adapters report availability safely");
+                if (!verticals.GetProperty("civil3d").GetProperty("available").GetBoolean())
+                {
+                    try
+                    {
+                        Verticals.EditTin(doc.Database, verticalRead, EditPlan.Parse("[{\"op\":\"civil_tin_create\",\"name\":\"Probe\",\"vertices\":[[0,0,0],[1,0,0],[0,1,1]]}]")[0]);
+                        throw new System.Exception("Expected Civil 3D capability fault");
+                    }
+                    catch (CadFault error) when (error.Code == "CIVIL3D_REQUIRED")
+                    { checks.Add("Civil TIN creation is explicitly unavailable outside Civil 3D"); }
+                }
+            }
         }
         catch (System.Exception error) { failure = error.ToString(); }
         File.WriteAllText(output, JsonSerializer.Serialize(new { checks, failure }, new JsonSerializerOptions { WriteIndented = true }));

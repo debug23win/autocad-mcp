@@ -2,7 +2,7 @@
   <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><AutoCADDir>C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir><DefineConstants>$(DefineConstants);CORE_CONSOLE</DefineConstants></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />
-    <Compile Include="../../src/CadMcp.AutoCAD/Documents.cs;../../src/CadMcp.AutoCAD/Reader.cs;../../src/CadMcp.AutoCAD/Edits.cs;../../src/CadMcp.AutoCAD/Exports.cs;../../src/CadMcp.AutoCAD/Catalog.cs;../../src/CadMcp.AutoCAD/DrawingSearch.cs;../../src/CadMcp.AutoCAD/UndoGroup.cs;../../src/CadMcp.AutoCAD/Dispatcher.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/Documents.cs;../../src/CadMcp.AutoCAD/Reader.cs;../../src/CadMcp.AutoCAD/Edits.cs;../../src/CadMcp.AutoCAD/Sheets.cs;../../src/CadMcp.AutoCAD/RasterImages.cs;../../src/CadMcp.AutoCAD/Exports.cs;../../src/CadMcp.AutoCAD/PdfRepair.cs;../../src/CadMcp.AutoCAD/Catalog.cs;../../src/CadMcp.AutoCAD/Verticals.cs;../../src/CadMcp.AutoCAD/DrawingSearch.cs;../../src/CadMcp.AutoCAD/UndoGroup.cs;../../src/CadMcp.AutoCAD/Dispatcher.cs" />
     <Reference Include="AcCoreMgd"><HintPath>$(AutoCADDir)/AcCoreMgd.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="AcDbMgd"><HintPath>$(AutoCADDir)/AcDbMgd.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>

@@ -127,6 +127,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         "-c", "mcp_servers.cad.default_tools_approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_edit.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_export.approval_mode=\"approve\"",
+        "-c", "mcp_servers.cad.tools.cad_publish.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_lisp.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"", "app-server"];
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)

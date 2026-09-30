@@ -20,6 +20,12 @@ public static class EditPlan
         ["block"] = "name position scale rotation_deg attributes layer color_index",
         ["block_define"] = "name base_point handles",
         ["layout_create"] = "name",
+        ["layout_copy"] = "source name",
+        ["layout_configure"] = "name device media_name plot_style paper_units paper_rotation",
+        ["viewport"] = "layout center width height model_center model_height twist_deg locked layer color_index",
+        ["image_attach"] = "path name control_points layer color_index layout",
+        ["civil_tin_create"] = "name vertices",
+        ["civil_tin_add_points"] = "handle vertices",
         ["dimension_aligned"] = "first second position text style layer color_index",
         ["hatch"] = "boundaries pattern scale angle_deg layer color_index",
         ["box"] = "center length width height layer color_index",
@@ -45,6 +51,8 @@ public static class EditPlan
             string kind = RequiredText(op, "op");
             if (!Fields.TryGetValue(kind, out var fields)) throw new CadFault("INVALID_OPERATION", kind);
             var allowed = fields.Split(' ').Concat(["op", "id"]).ToHashSet(StringComparer.Ordinal);
+            if (kind is "line" or "circle" or "point" or "ellipse" or "arc" or "polyline" or "rectangle" or
+                "text" or "mtext" or "block" or "dimension_aligned" or "box" or "cylinder") allowed.Add("layout");
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var p in op.EnumerateObject())
             {
@@ -61,7 +69,11 @@ public static class EditPlan
                     throw new CadFault("INVALID_TARGET", "Expected handle or target");
             var required = kind switch
             {
-                "layer" or "layout_create" => "name", "line" => "start end", "circle" => "center radius", "point" => "position",
+                "layer" or "layout_create" or "layout_configure" => "name", "layout_copy" => "source name",
+                "viewport" => "layout center width height model_center model_height",
+                "image_attach" => "path control_points",
+                "civil_tin_create" => "name vertices", "civil_tin_add_points" => "handle vertices",
+                "line" => "start end", "circle" => "center radius", "point" => "position",
                 "ellipse" => "center major_axis radius_ratio",
                 "arc" => "center radius start_angle_deg end_angle_deg", "polyline" => "points",
                 "rectangle" => "first second", "text" or "mtext" => "position text height",
@@ -103,12 +115,38 @@ public static class EditPlan
     }
     private static void ValidateValue(string key, JsonElement v)
     {
-        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "displacement" or "base_point" or "major_axis") { Point(v); return; }
+        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "displacement" or "base_point" or "major_axis" or "model_center") { Point(v); return; }
         if (key == "handles")
         {
             if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 100 ||
                 v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || !long.TryParse(x.GetString(), System.Globalization.NumberStyles.HexNumber, null, out var h) || h <= 0))
                 throw new CadFault("INVALID_HANDLES", "Expected 1..100 hexadecimal entity handles");
+            return;
+        }
+        if (key == "control_points")
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 3 or > 20)
+                throw new CadFault("INVALID_CONTROL_POINTS", "Supply 3..20 pixel/WCS control point pairs");
+            foreach (var item in v.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("pixel", out var pixel) ||
+                    pixel.ValueKind != JsonValueKind.Array || pixel.GetArrayLength() != 2 ||
+                    pixel.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || !x.TryGetDouble(out var n) || !double.IsFinite(n)) ||
+                    !item.TryGetProperty("world", out var world))
+                    throw new CadFault("INVALID_CONTROL_POINTS", "Each control point needs pixel:[x,y] and world:[x,y,z]");
+                Point(world);
+            }
+            return;
+        }
+        if (key == "vertices")
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 3 or > 5000)
+                throw new CadFault("INVALID_TIN_POINTS", "Supply 3..5000 three-dimensional WCS points");
+            foreach (var point in v.EnumerateArray())
+            {
+                if (point.ValueKind != JsonValueKind.Array || point.GetArrayLength() != 3) throw new CadFault("INVALID_TIN_POINTS", "TIN points need [x,y,z]");
+                Point(point);
+            }
             return;
         }
         if (key == "points")
@@ -132,11 +170,12 @@ public static class EditPlan
         { if (v.ValueKind != JsonValueKind.Array || v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || double.IsNaN(x.GetDouble()) || double.IsInfinity(x.GetDouble()))) throw new CadFault("INVALID_BULGES", "Expected finite numbers"); return; }
         if (key == "scale" && v.ValueKind == JsonValueKind.Array)
         { if (v.GetArrayLength() != 3 || Point(v).Any(x => x <= 0)) throw new CadFault("INVALID_SCALE", "Scale must contain three positive factors"); return; }
-        if (key is "radius" or "radius_ratio" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "linetype_scale" or "lineweight" or "color_index")
+        if (key is "radius" or "radius_ratio" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "twist_deg" or "model_height" or "paper_rotation" or "linetype_scale" or "lineweight" or "color_index")
         {
             if (v.ValueKind != JsonValueKind.Number || !v.TryGetDouble(out var n) || !(!double.IsNaN(n) && !double.IsInfinity(n))) throw new CadFault("INVALID_PARAMETER", key + " must be finite");
-            if (key is "radius" or "height" or "length" or "factor" or "scale" or "linetype_scale" && n <= 0) throw new CadFault("INVALID_PARAMETER", key + " must be positive");
+            if (key is "radius" or "height" or "length" or "factor" or "scale" or "model_height" or "linetype_scale" && n <= 0) throw new CadFault("INVALID_PARAMETER", key + " must be positive");
             if (key == "width" && n < 0) throw new CadFault("INVALID_PARAMETER", "width must be nonnegative");
+            if (key == "paper_rotation" && n is not (0 or 90 or 180 or 270)) throw new CadFault("INVALID_PARAMETER", "paper_rotation must be 0, 90, 180 or 270 degrees");
             if (key == "radius_ratio" && (n <= 0 || n > 1)) throw new CadFault("INVALID_PARAMETER", "radius_ratio must be >0 and <=1");
             if (key == "color_index" && (n != Math.Truncate(n) || n < 0 || n > 256)) throw new CadFault("INVALID_COLOR", "ACI color must be an integer 0..256");
             return;

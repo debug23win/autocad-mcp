@@ -1,5 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.PlottingServices;
@@ -9,6 +11,80 @@ namespace CadMcp.AutoCAD;
 
 internal static class Exports
 {
+    public static object Publish(Document document, string outputFolder, string layoutsJson, CancellationToken ct)
+    {
+        if (!Path.IsPathFullyQualified(outputFolder)) throw new CadFault("INVALID_PATH", "Use an absolute output folder");
+        var folder = Path.GetFullPath(outputFolder);
+        if (!Directory.Exists(folder)) throw new CadFault("OUTPUT_FOLDER_MISSING", folder);
+        using var parsed = JsonDocument.Parse(layoutsJson);
+        if (parsed.RootElement.ValueKind != JsonValueKind.Array || parsed.RootElement.GetArrayLength() is < 1 or > 100)
+            throw new CadFault("INVALID_LAYOUTS", "Expected an array of 1..100 layout names");
+        var names = parsed.RootElement.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : null).ToArray();
+        if (names.Any(string.IsNullOrWhiteSpace) || names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != names.Length)
+            throw new CadFault("INVALID_LAYOUTS", "Layout names must be nonempty and unique");
+        using (var tr = document.Database.TransactionManager.StartOpenCloseTransaction())
+        {
+            var dictionary = (DBDictionary)tr.GetObject(document.Database.LayoutDictionaryId, OpenMode.ForRead);
+            foreach (var name in names)
+                if (!dictionary.Contains(name!)) throw new CadFault("LAYOUT_NOT_FOUND", name!);
+        }
+        var manifestPath = Path.Combine(folder, "cad-mcp-manifest.json");
+        var csvPath = Path.Combine(folder, "cad-mcp-manifest.csv");
+        if (File.Exists(manifestPath) || File.Exists(csvPath)) throw new CadFault("OUTPUT_EXISTS", "Manifest already exists in the output folder");
+        var paths = names.Select((name, index) => Path.Combine(folder,
+            (index + 1).ToString("D3") + "-" + SafeFileName(name!) + ".pdf")).ToArray();
+        if (paths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != paths.Length || paths.Any(File.Exists))
+            throw new CadFault("OUTPUT_EXISTS", "A PDF already exists in the output folder");
+        var produced = new List<object>();
+        string? error = null;
+        for (int i = 0; i < names.Length; i++)
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                PlotPdf(document, paths[i], names[i], null, ct);
+                if (!File.Exists(paths[i]) || new FileInfo(paths[i]).Length == 0)
+                    throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty PDF");
+                using var file = File.OpenRead(paths[i]);
+                produced.Add(new { number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
+                    sha256 = Convert.ToHexString(SHA256.HashData(file)) });
+            }
+            catch (System.Exception exception)
+            {
+                error = exception.Message;
+                break;
+            }
+        }
+        var manifest = new { drawing = document.Name, generated_at = DateTimeOffset.UtcNow,
+            status = error is null ? "completed" : "partial", requested_layouts = names,
+            produced, failed_layout = error is null ? null : names[produced.Count], error };
+        var json = JsonSerializer.Serialize(manifest, Wire.Json);
+        File.WriteAllText(manifestPath, json, Encoding.UTF8);
+        var csv = new StringBuilder("number,layout,path,bytes,sha256\r\n");
+        foreach (var item in produced)
+        {
+            var row = JsonSerializer.SerializeToElement(item, Wire.Json);
+            csv.Append(row.GetProperty("number").GetInt32()).Append(',')
+                .Append(Csv(row.GetProperty("layout").GetString()!)).Append(',')
+                .Append(Csv(row.GetProperty("path").GetString()!)).Append(',')
+                .Append(row.GetProperty("bytes").GetInt64()).Append(',')
+                .Append(row.GetProperty("sha256").GetString()).Append("\r\n");
+        }
+        File.WriteAllText(csvPath, csv.ToString(), Encoding.UTF8);
+        return new { manifest.status, manifest_path = manifestPath, csv_path = csvPath,
+            files = produced, manifest.failed_layout, manifest.error,
+            verification = "each_output_file_exists_and_sha256_verified" };
+    }
+
+    private static string SafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var value = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).TrimEnd('.', ' ');
+        return string.IsNullOrEmpty(value) ? "layout" : value;
+    }
+
+    private static string Csv(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
+
     public static object Execute(Document document, string format, string outputPath, string? layoutName, string? mediaName, CancellationToken ct)
     {
         format = format.ToLowerInvariant();
@@ -39,6 +115,7 @@ internal static class Exports
         {
             if (!string.Equals(originalLayout, layoutName, StringComparison.OrdinalIgnoreCase)) layoutManager.CurrentLayout = layoutName;
             PlotCurrentPdf(document, path, layoutName, mediaName, ct);
+            PdfRepair.NormalizeStructure(path);
         }
         finally
         {

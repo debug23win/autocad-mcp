@@ -219,6 +219,29 @@ await Test("native geometry, blocks and layouts validate before touching DWG", a
         "[{\"op\":\"block_define\",\"name\":\"X\",\"base_point\":[0,0],\"handles\":[\"NOT_HEX\"]}]" })
         await Throws<CadFault>(() => Task.FromResult(EditPlan.Parse(invalid)));
 });
+await Test("image control points fit pixel/WCS affine transform and inverse", () =>
+{
+    var points = Wire.Element(new[] {
+        new { pixel = new[] { 0, 0 }, world = new[] { 1000, 2000, 0 } },
+        new { pixel = new[] { 1000, 0 }, world = new[] { 1100, 2020, 0 } },
+        new { pixel = new[] { 0, 500 }, world = new[] { 1025, 1900, 0 } },
+        new { pixel = new[] { 500, 250 }, world = new[] { 1062, 1960, 0 } } });
+    var fit = ImageRegistration.Fit(points, 1000, 500);
+    var world = fit.PixelToWorld(500, 250);
+    var pixel = fit.WorldToPixel(world[0], world[1]);
+    Assert(Math.Abs(world[0] - 1062.5) < 1 && Math.Abs(pixel[0] - 500) < 1e-6 && Math.Abs(pixel[1] - 250) < 1e-6 && fit.RmsError > 0,
+        "Image affine fit/inverse incorrect");
+    try
+    {
+        ImageRegistration.Fit(Wire.Element(new[] {
+            new { pixel = new[] { 0, 0 }, world = new[] { 0, 0, 0 } },
+            new { pixel = new[] { 1, 1 }, world = new[] { 1, 1, 0 } },
+            new { pixel = new[] { 2, 2 }, world = new[] { 2, 2, 0 } } }), 1000, 500);
+        throw new Exception("Collinear anchors were accepted");
+    }
+    catch (CadFault fault) when (fault.Code == "IMAGE_CONTROL_POINTS_COLLINEAR") { }
+    return Task.CompletedTask;
+});
 await Test("reject ambiguous and invalid edit plans before mutation", async () =>
 {
     foreach (var json in new[] {
@@ -473,7 +496,10 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 15 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") && names.Contains("cad_export") && names.Contains("cad_lisp") && names.Contains("cad_operation_status") && names.Contains("cad_render"), "Wrong tools");
+        Assert(names.Length == 20 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
+            names.Contains("cad_export") && names.Contains("cad_publish") && names.Contains("cad_lisp") &&
+            names.Contains("cad_operation_status") && names.Contains("cad_render") && names.Contains("cad_image_register") &&
+            names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get"), "Wrong tools");
         var call = await Rpc(new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "cad_sessions", arguments = new { } } }, 3);
         Assert(call.GetProperty("content")[0].GetProperty("text").GetString()!.Contains("fixture"), "Tool did not reach broker");
         var render = await Rpc(new { jsonrpc = "2.0", id = 4, method = "tools/call", @params = new { name = "cad_render", arguments = new { session_id = "s", document_id = "d", expected_revision = 1 } } }, 4);

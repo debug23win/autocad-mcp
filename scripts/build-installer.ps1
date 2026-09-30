@@ -3,6 +3,8 @@ param(
     [string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025',
     [string]$CodexDir,
     [string]$CodexPayloadDir,
+    [string]$StageRoot,
+    [string]$InstallerOutput,
     [Parameter(Mandatory=$true)][string]$DotNet2027
 )
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,8 @@ try {
     $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
     $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $payload = Join-Path $repoRoot "artifacts/installer-$stamp/payload"
+    $stage = if ($StageRoot) { $StageRoot } else { Join-Path $repoRoot 'artifacts' }
+    $payload = Join-Path $stage "installer-$stamp/payload"
     $codexAssets = Get-Content -LiteralPath (Join-Path $repoRoot 'installer/codex-assets.json') -Raw | ConvertFrom-Json
     if ([bool]$CodexDir -eq [bool]$CodexPayloadDir) { throw 'Supply exactly one of CodexDir or CodexPayloadDir' }
     $codexSource = if ($CodexPayloadDir) { $CodexPayloadDir } else { $CodexDir }
@@ -56,13 +59,14 @@ try {
     New-Item -ItemType Directory -Force -Path $codexPayload | Out-Null
     if ($CodexPayloadDir) {
         $sourceRoot = (Resolve-Path -LiteralPath $CodexPayloadDir).Path
-        if ([IO.Path]::GetPathRoot($sourceRoot) -ne [IO.Path]::GetPathRoot($codexPayload)) { throw 'Hardlink reuse requires the same volume' }
         Get-ChildItem -LiteralPath $sourceRoot -File -Recurse | ForEach-Object {
             $relative = [IO.Path]::GetRelativePath($sourceRoot, $_.FullName)
             $target = Join-Path $codexPayload $relative
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            try { New-Item -ItemType HardLink -Path $target -Target $_.FullName | Out-Null }
-            catch { Copy-Item -LiteralPath $_.FullName -Destination $target }
+            if ([IO.Path]::GetPathRoot($sourceRoot) -eq [IO.Path]::GetPathRoot($codexPayload)) {
+                try { New-Item -ItemType HardLink -Path $target -Target $_.FullName | Out-Null }
+                catch { Copy-Item -LiteralPath $_.FullName -Destination $target }
+            } else { Copy-Item -LiteralPath $_.FullName -Destination $target }
         }
     } else {
         Get-ChildItem -LiteralPath (Join-Path $CodexDir 'package') | Copy-Item -Destination $codexPayload -Recurse
@@ -88,8 +92,9 @@ try {
     Get-ChildItem -LiteralPath $payload -File -Recurse | ForEach-Object {
         [pscustomobject]@{path=[System.IO.Path]::GetRelativePath($payload,$_.FullName).Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}
     } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath "$payload/payload-manifest.json" -Encoding utf8
-    $output = Split-Path -Parent $repoRoot
+    $output = if ($InstallerOutput) { $InstallerOutput } else { Split-Path -Parent $repoRoot }
+    New-Item -ItemType Directory -Force -Path $output | Out-Null
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.4.0-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.5.0-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }

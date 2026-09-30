@@ -91,8 +91,24 @@ internal static class Edits
                 if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Layouts cannot be entity targets");
                 continue;
             }
+            if (kind is "layout_copy" or "layout_configure")
+            {
+                var detail = kind == "layout_copy" ? Sheets.Copy(doc.Database, tr, op) : Sheets.Configure(doc.Database, tr, op);
+                results.Add(new { index = index++, op = kind, detail });
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Layout operations cannot be entity targets");
+                continue;
+            }
+            if (kind is "civil_tin_create" or "civil_tin_add_points")
+            {
+                var (surfaceId, detail) = Verticals.EditTin(doc.Database, tr, op);
+                touched.Add(surfaceId);
+                results.Add(new { index = index++, op = kind, detail });
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Civil surfaces cannot be used as regular entity targets");
+                continue;
+            }
             Entity entity;
             string? sourceHandle = null;
+            object? imageRegistration = null;
             if (kind is "move" or "copy" or "rotate" or "scale" or "mirror" or "erase" or "set")
             {
                 var sourceId = Resolve(doc.Database, tr, op, aliases);
@@ -125,22 +141,33 @@ internal static class Edits
             }
             else
             {
-                entity = Create(doc.Database, tr, op, aliases);
+                if (kind == "viewport") Sheets.InitializeLayoutView(S(op, "layout"));
+                if (kind == "image_attach")
+                {
+                    var attached = RasterImages.Attach(doc.Database, tr, op);
+                    entity = attached.Image; imageRegistration = attached.Registration;
+                }
+                else entity = kind == "viewport" ? new Viewport() : Create(doc.Database, tr, op, aliases);
                 try
                 {
                     entity.SetDatabaseDefaults(doc.Database);
+                    if (entity is Viewport prepared) Sheets.ConfigureViewport(prepared, op);
                     entity.LayerId = Layer(doc.Database, tr, op.Text("layer") ?? "0");
                     if (op.TryGetProperty("color_index", out var c)) entity.ColorIndex = c.GetInt32();
-                    space.AppendEntity(entity); tr.AddNewlyCreatedDBObject(entity, true);
+                    var targetSpace = op.Text("layout") is { } layout ? Sheets.Space(doc.Database, tr, layout) : space;
+                    targetSpace.AppendEntity(entity); tr.AddNewlyCreatedDBObject(entity, true);
+                    if (entity is RasterImage raster) RasterImages.Associate(raster, tr);
                 }
                 catch { if (entity.ObjectId.IsNull) entity.Dispose(); throw; }
                 if (entity is BlockReference block) Attributes(doc.Database, tr, block, op, true);
+                if (entity is Viewport viewport) Sheets.TurnOnViewport(S(op, "layout"), viewport);
                 if (entity is Hatch hatch) SetupHatch(doc.Database, tr, hatch, op, aliases);
                 if (entity is Dimension dimension) dimension.RecomputeDimensionBlock(true);
                 touched.Add(entity.ObjectId);
             }
             if (op.TryGetProperty("id", out var id)) aliases.Add(id.GetString()!, entity.ObjectId);
-            results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = entity.Handle.ToString(), source_handle = sourceHandle, erased = entity.IsErased });
+            results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = entity.Handle.ToString(), source_handle = sourceHandle, erased = entity.IsErased,
+                image_registration = imageRegistration });
         }
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
