@@ -79,6 +79,10 @@ if (args.Contains("app-server"))
             Console.WriteLine("{\"method\":\"item/reasoning/summaryTextDelta\",\"params\":{\"delta\":\"Проверяю размеры чертежа\",\"itemId\":\"r1\",\"summaryIndex\":0,\"threadId\":\"test-thread\",\"turnId\":\"t1\"}}");
             Console.WriteLine("{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"tool\":\"cad_search\"}}}");
             Console.WriteLine("{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"tool\":\"cad_search\",\"status\":\"completed\"}}}");
+            Console.WriteLine("{\"method\":\"item/started\",\"params\":{\"threadId\":\"test-thread\",\"item\":{\"type\":\"collabAgentToolCall\",\"tool\":\"spawnAgent\"}}}");
+            Console.WriteLine("{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"child-thread\",\"delta\":\"CHILD-ONLY\"}}");
+            Console.WriteLine("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"child-thread\",\"turn\":{\"status\":\"completed\"}}}");
+            Console.WriteLine("{\"method\":\"item/completed\",\"params\":{\"threadId\":\"test-thread\",\"item\":{\"type\":\"collabAgentToolCall\",\"tool\":\"wait\",\"status\":\"completed\"}}}");
             Console.WriteLine("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"Сеть ✓\"}}");
             Console.WriteLine("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"completed\"}}}");
         }
@@ -99,6 +103,8 @@ if (args.Contains("-p"))
     }
     if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
     Console.WriteLine("{\"type\":\"system\",\"session_id\":\"test-claude\"}");
+    Console.WriteLine("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"mcp__cad__cad_edit\"}]}}");
+    Console.WriteLine("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tool-1\",\"content\":\"ok\"}]}}");
     Console.WriteLine("{\"type\":\"stream_event\",\"event\":{\"delta\":{\"text\":\"Сеть ✓\"}}}");
     Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Сеть ✓\"}");
     return;
@@ -141,14 +147,26 @@ await Test("HTML chat escapes input and Word export embeds images", async () =>
         Assert(!html.Contains("<script>") && html.Contains("&lt;script&gt;"), "HTML injection escaped incorrectly");
         Assert(html.Contains("https://cadmcp-assets.local/view.png"), "Image lost: " + html);
         Assert(html.Contains("class=\"math\"") && html.Contains("A=ab"), "Math lost: " + html);
+        Assert(!html.Contains("cad_search"), "Raw CAD events should not appear in chat");
+        Assert(!ChatMarkup.PlainTranscript(lines).Contains("cad_search"), "Raw CAD events should not appear in transcript");
         var path = Path.Combine(folder, "chat.docx");
         ChatWordExporter.Save(path, lines);
         using var document = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(path, false);
         Assert(document.MainDocumentPart!.ImageParts.Count() == 1, "Word image not embedded");
         Assert(document.MainDocumentPart.Document.Body!.InnerText.Contains("3,05 м"), "Word text missing");
+        Assert(!document.MainDocumentPart.Document.Body.InnerText.Contains("cad_search"), "Raw CAD events should not appear in Word");
         Assert(!new DocumentFormat.OpenXml.Validation.OpenXmlValidator().Validate(document).Any(), "Invalid Word document");
     }
     finally { Directory.Delete(folder, true); }
+    await Task.CompletedTask;
+});
+await Test("CAD activity is readable and visual work requests a preview", async () =>
+{
+    Assert(CadToolActivity.Describe("Выполняю mcp__cad__cad_search") == "Изучаю чертёж", "Search activity");
+    Assert(CadToolActivity.Describe("Выполняю mcp__cad__cad_edit") == "Изменяю чертёж", "Edit activity");
+    Assert(CadToolActivity.Describe("Выполняю mcp__cad__cad_render") == "Проверяю вид чертежа", "Render activity");
+    Assert(CadToolActivity.ProducesVisibleResult("Завершено: mcp__cad__cad_edit"), "Edit should trigger preview");
+    Assert(!CadToolActivity.ProducesVisibleResult("Ошибка: mcp__cad__cad_edit"), "Failed edit should not trigger preview");
     await Task.CompletedTask;
 });
 await Test("snapshot revision and document isolation", async () =>
@@ -174,18 +192,24 @@ await Test("stable pagination and bounded snapshot retention", async () =>
     for (int i = 0; i < 4; i++) store.Add("d", 1, [], false);
     await Throws<CadFault>(() => Task.FromResult(store.Query(s.Id, "d", 1, Wire.Element(new { }))));
 });
-await Test("pipe serialization, parallel clients, expired requests", async () =>
+await Test("pipe stays responsive during a long CAD request and rejects expired requests", async () =>
 {
-    string pipe = "cadmcp-test-" + Guid.NewGuid().ToString("N"); int active = 0, peak = 0;
+    string pipe = "cadmcp-test-" + Guid.NewGuid().ToString("N");
+    var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     using var server = new PipeServer(pipe, async (r, ct) =>
     {
-        int now = Interlocked.Increment(ref active); peak = Math.Max(peak, now);
-        try { await Task.Delay(20, ct); return new(r.RequestId, "completed", "ok"); }
-        finally { Interlocked.Decrement(ref active); }
+        if (r.Operation == "slow") { started.SetResult(); await release.Task.WaitAsync(ct); }
+        return new(r.RequestId, "completed", "ok");
     });
     server.Start();
-    var replies = await Task.WhenAll(Enumerable.Range(0, 4).Select(i => PipeClient.CallAsync(pipe, new(i.ToString(), "read"), default)));
-    Assert(replies.All(r => r.Status == "completed") && peak == 1, "Requests were not serialized");
+    var slow = PipeClient.CallAsync(pipe, new("slow", "slow"), default);
+    await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    using var quickTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+    var quick = await PipeClient.CallAsync(pipe, new("quick", "broker_ping"), quickTimeout.Token);
+    Assert(quick.Status == "completed", "Broker ping was blocked by a long CAD call");
+    release.SetResult();
+    Assert((await slow).Status == "completed", "Long CAD call did not finish");
     var expired = await PipeClient.CallAsync(pipe, new("expired", "read", Deadline: DateTimeOffset.UtcNow.AddSeconds(-1)), default);
     Assert(expired.Error?.Code == "DEADLINE_EXPIRED", "Expired request ran");
 });
@@ -194,6 +218,37 @@ await Test("broker rejects missing session", async () =>
     var broker = new Broker(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
     Assert(broker.Discover().Count == 0, "Unexpected workers");
     await Throws<CadFault>(() => broker.DispatchAsync(new("r", "cad_snapshot"), default));
+});
+await Test("broker probes independent CAD sessions in parallel", async () =>
+{
+    var root = Path.Combine(Path.GetTempPath(), "cad-broker-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var first = "cadmcp-worker-" + Guid.NewGuid().ToString("N");
+    var second = "cadmcp-worker-" + Guid.NewGuid().ToString("N");
+    int active = 0;
+    var bothStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    async Task<Response> Handler(Request r, CancellationToken ct)
+    {
+        if (Interlocked.Increment(ref active) == 2) bothStarted.TrySetResult();
+        await bothStarted.Task.WaitAsync(ct);
+        return new(r.RequestId, "completed", new { document = r.SessionId });
+    }
+    using var a = new PipeServer(first, Handler);
+    using var b = new PipeServer(second, Handler);
+    a.Start(); b.Start();
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "one.json"), JsonSerializer.Serialize(new WorkerDescriptor("s1", first, 1, "test"), Wire.Json));
+        File.WriteAllText(Path.Combine(root, "two.json"), JsonSerializer.Serialize(new WorkerDescriptor("s2", second, 2, "test"), Wire.Json));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        var result = await new Broker(root).DispatchAsync(new("sessions", "cad_sessions"), timeout.Token);
+        var sessions = Wire.Element(result.Data!);
+        Assert(sessions.GetArrayLength() == 2 && sessions.EnumerateArray().All(x => x.GetProperty("reachable").GetBoolean()), "CAD sessions were probed serially");
+    }
+    finally
+    {
+        File.Delete(Path.Combine(root, "one.json")); File.Delete(Path.Combine(root, "two.json")); Directory.Delete(root);
+    }
 });
 await Test("edit plan supports aliases, Unicode and explicit units", () =>
 {
@@ -218,6 +273,37 @@ await Test("native geometry, blocks and layouts validate before touching DWG", a
     foreach (var invalid in new[] { "[{\"op\":\"ellipse\",\"center\":[0,0],\"major_axis\":[10,0],\"radius_ratio\":2}]",
         "[{\"op\":\"block_define\",\"name\":\"X\",\"base_point\":[0,0],\"handles\":[\"NOT_HEX\"]}]" })
         await Throws<CadFault>(() => Task.FromResult(EditPlan.Parse(invalid)));
+});
+await Test("native spatial paths and meshes validate face topology", async () =>
+{
+    var plan = EditPlan.Parse("""
+        [{"op":"polyline3d","points":[[0,0,0],[10,0,5],[10,10,10]]},
+         {"op":"mesh","vertices":[[0,0,0],[10,0,0],[0,10,0],[0,0,10]],
+          "faces":[[0,2,1],[0,1,3],[1,2,3],[2,0,3]]}]
+        """);
+    Assert(plan.Length == 2, "Native 3D edit operations missing");
+    foreach (var invalid in new[] {
+        "[{\"op\":\"polyline3d\",\"points\":[[0,0],[1,1,1]]}]",
+        "[{\"op\":\"mesh\",\"vertices\":[[0,0,0],[1,0,0],[0,1,0]],\"faces\":[[0,1,3]]}]",
+        "[{\"op\":\"mesh\",\"vertices\":[[0,0,0],[1,0,0],[0,1,0]],\"faces\":[[0,1,1]]}]",
+        "[{\"op\":\"mesh\",\"vertices\":[[0,0,0],[1,0,0],[2,0,0]],\"faces\":[[0,1,2]]}]"
+    }) await Throws<CadFault>(() => Task.FromResult(EditPlan.Parse(invalid)));
+});
+await Test("native solid modeling plans validate references and sizes", async () =>
+{
+    var plan = EditPlan.Parse("""
+        [{"op":"circle","id":"profile","center":[0,0,0],"radius":5},
+         {"op":"extrude","id":"solid","target":"profile","direction":[0,0,10]},
+         {"op":"sphere","id":"tool","center":[0,0,5],"radius":2},
+         {"op":"solid_boolean","target":"solid","tool_target":"tool","operation":"subtract"}]
+        """);
+    Assert(plan.Length == 4, "Native solid edit plan is missing");
+    foreach (var invalid in new[] {
+        "[{\"op\":\"extrude\",\"target\":\"future\",\"direction\":[0,0,10]}]",
+        "[{\"op\":\"solid_boolean\",\"handle\":\"A\",\"operation\":\"union\"}]",
+        "[{\"op\":\"torus\",\"center\":[0,0,0],\"major_radius\":-1,\"minor_radius\":1}]",
+        "[{\"op\":\"solid_boolean\",\"handle\":\"A\",\"tool_handle\":\"B\",\"operation\":\"explode\"}]"
+    }) await Throws<CadFault>(() => Task.FromResult(EditPlan.Parse(invalid)));
 });
 await Test("image control points fit pixel/WCS affine transform and inverse", () =>
 {
@@ -437,7 +523,9 @@ foreach (var name in new[] { "Codex", "Claude" })
             Assert(events.Any(e => e.Kind == "model" && e.Text == "available-model"), "Catalog selection missing");
             Assert(events.Any(e => e.Kind == "reasoning_summary" && e.Text.Contains("размеры")), "Reasoning summary missing");
             Assert(events.Count(e => e.Kind == "step" && e.Text.Contains("cad_search")) == 2, "Tool progress missing");
+            Assert(events.Any(e => e.Kind == "status" && e.Text.Contains("Помощники")), "Subagent progress missing");
         }
+        else Assert(events.Any(e => e.Kind == "step" && e.Text == "Завершено: mcp__cad__cad_edit"), "Claude edit completion missing");
         events.Clear();
         await foreach (var e in provider.SendAsync("Resume", timeout.Token)) events.Add(e);
         Assert(events.Any(e => e.Kind == "completed"), "Resume failed");
@@ -455,6 +543,16 @@ await Test("provider arguments preserve paths and isolate Claude MCP config", ()
     var config = JsonDocument.Parse(a[Array.IndexOf(a, "--mcp-config") + 1]);
     Assert(config.RootElement.GetProperty("mcpServers").GetProperty("cad").GetProperty("command").GetString() == options.McpExecutable, "Path escaped incorrectly");
     Assert(a.Contains("--strict-mcp-config"), "Claude config not isolated");
+    Assert(a.Contains("Agent") && a.Contains("--agents"), "Claude subagents not enabled");
+    using var helper = JsonDocument.Parse(a[Array.IndexOf(a, "--agents") + 1]);
+    var helperTools = helper.RootElement.GetProperty("cad_researcher").GetProperty("tools").EnumerateArray().Select(x => x.GetString()).ToArray();
+    Assert(helperTools.Contains("mcp__cad__cad_search") && !helperTools.Contains("mcp__cad__cad_edit") &&
+        !helperTools.Contains("mcp__cad__cad_lisp"), "Claude helper must be read-only");
+    var single = new ClaudeProvider(options with { MaxSubagents = 0 }).Arguments();
+    Assert(single.Contains("--disallowedTools") && !single.Contains("--agents"), "Claude helper opt-out missing");
+    var selected = new ClaudeProvider(options with { Model = "opus", ReasoningEffort = "high" }).Arguments();
+    Assert(selected[Array.IndexOf(selected, "--model") + 1] == "opus" &&
+        selected[Array.IndexOf(selected, "--effort") + 1] == "high", "Claude model or effort selection missing");
     return Task.CompletedTask;
 });
 await Test("Codex grants CAD tools without global permission changes", () =>
@@ -465,6 +563,9 @@ await Test("Codex grants CAD tools without global permission changes", () =>
     Assert(!arguments.Any(a => a.Contains("danger-full-access") || a.Contains("bypass-approvals") || a.StartsWith("apps.")), "Global permissions changed");
     var command = arguments.Single(a => a.StartsWith("mcp_servers.cad.command="));
     Assert(JsonSerializer.Deserialize<string>(command["mcp_servers.cad.command=".Length..]) == options.McpExecutable, "CAD host path corrupted");
+    Assert(arguments.Contains("agents.enabled=true") && arguments.Contains("agents.max_concurrent_threads_per_session=3"), "Subagent limit missing");
+    var withoutAgents = new CodexProvider(options with { MaxSubagents = 0 }).Arguments();
+    Assert(withoutAgents.Contains("agents.enabled=false"), "Subagent opt-out missing");
     return Task.CompletedTask;
 });
 await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>

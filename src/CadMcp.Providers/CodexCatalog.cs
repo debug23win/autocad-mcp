@@ -55,7 +55,7 @@ public static class CodexCatalog
         }
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.4.0-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.6.0-preview" } } });
             while (await process.StandardOutput.ReadLineAsync(token) is { } line)
             {
                 using var json = JsonDocument.Parse(line);

@@ -29,11 +29,6 @@ public static class ChatWordExporter
                 body.Append(Paragraph("Краткий ход рассуждений", bold: true));
                 foreach (string line in message.ReasoningSummary.Replace("\r\n", "\n").Split('\n')) body.Append(Paragraph(line));
             }
-            if (message.Steps is { Count: > 0 })
-            {
-                body.Append(Paragraph("Действия", bold: true));
-                foreach (var step in message.Steps) body.Append(Paragraph("• " + step));
-            }
             if (message.Images is { Count: > 0 })
                 foreach (var image in message.Images)
                 {

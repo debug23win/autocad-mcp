@@ -48,12 +48,6 @@ public static class ChatMarkup
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
                 html.Append("<section class='reasoning'><strong>Краткий ход рассуждений</strong>")
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
-            if (message.Steps is { Count: > 0 })
-            {
-                html.Append("<section class='steps'><strong>Действия</strong><ul>");
-                foreach (var step in message.Steps) html.Append("<li>").Append(WebUtility.HtmlEncode(step)).Append("</li>");
-                html.Append("</ul></section>");
-            }
             html.Append("</article>");
         }
         return html.ToString();
@@ -68,7 +62,6 @@ public static class ChatMarkup
             value.AppendLine(message.Text);
             if (message.Images is { Count: > 0 }) value.AppendLine("Вложения: " + string.Join(", ", message.Images.Select(x => x.Name)));
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary)) value.AppendLine("Краткий ход рассуждений: " + message.ReasoningSummary);
-            if (message.Steps is { Count: > 0 }) foreach (var step in message.Steps) value.AppendLine("• " + step);
             value.AppendLine();
         }
         return value.ToString();

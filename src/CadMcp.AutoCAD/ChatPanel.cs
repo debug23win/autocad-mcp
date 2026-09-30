@@ -24,6 +24,7 @@ internal sealed class ChatPanel : UserControl
     private sealed record Choice(string Id, string Label);
     private readonly ComboBox model = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox reasoning = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
+    private readonly ComboBox agentCount = new() { ItemsSource = new[] { "Выключены", "До 2 помощников", "До 3 помощников", "До 4 помощников" }, SelectedIndex = 2 };
     private readonly Button refreshModels = new() { Content = "Обновить список моделей", Margin = new Thickness(0, 4, 0, 4) };
     private readonly TextBox executable = new() { Text = "codex.exe" };
     private readonly TextBox host = new() { Text = "Полный путь к CadMcp.Host.exe" };
@@ -58,7 +59,8 @@ internal sealed class ChatPanel : UserControl
     private IChatProvider? adapter;
     private string? adapterKey;
     private string? adapterSelection;
-    private string? chosenModel, chosenEffort;
+    private string? chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort;
+    private int maxSubagents = 3;
     private IReadOnlyList<CodexModel> catalog = Array.Empty<CodexModel>();
     private bool settingChoices, firstLoad, restoring;
     public ChatPanel() : this(null) { }
@@ -99,7 +101,7 @@ internal sealed class ChatPanel : UserControl
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
                 input.AppendText("\nИспользуй текущее выделение в чертеже «" + data.Text("name") + "»: " + selected.GetRawText() + ". Перед работой перечитай актуальный контекст.");
         }; cadButtons.Children.Add(selection);
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель Codex", model), ("Глубина рассуждений", reasoning) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
         var connection = new StackPanel();
@@ -120,18 +122,35 @@ internal sealed class ChatPanel : UserControl
             if (previousProvider == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
             executable.Text = provider.SelectedIndex == 0 ? codexExecutable : claudeExecutable;
             previousProvider = provider.SelectedIndex; adapter = null;
+            ApplyProviderChoices();
             SetBusy(false);
             if (!restoring && provider.SelectedIndex == 0 && IsLoaded) _ = RefreshModels();
         };
         model.SelectionChanged += (_, _) =>
         {
             if (settingChoices) return;
-            chosenModel = model.SelectedValue as string;
-            var selected = SelectedCatalogModel();
-            if (selected is not null && !string.IsNullOrEmpty(chosenEffort) && !selected.Efforts.Contains(chosenEffort)) chosenEffort = null;
+            if (provider.SelectedIndex == 0)
+            {
+                chosenModel = model.SelectedValue as string;
+                var selected = SelectedCatalogModel();
+                if (selected is not null && !string.IsNullOrEmpty(chosenEffort) && !selected.Efforts.Contains(chosenEffort)) chosenEffort = null;
+            }
+            else chosenClaudeModel = model.SelectedValue as string;
             PopulateEfforts(); Persist();
         };
-        reasoning.SelectionChanged += (_, _) => { if (!settingChoices) { chosenEffort = reasoning.SelectedValue as string; Persist(); } };
+        reasoning.SelectionChanged += (_, _) =>
+        {
+            if (settingChoices) return;
+            if (provider.SelectedIndex == 0) chosenEffort = reasoning.SelectedValue as string;
+            else chosenClaudeEffort = reasoning.SelectedValue as string;
+            Persist();
+        };
+        agentCount.SelectionChanged += (_, _) =>
+        {
+            if (restoring) return;
+            maxSubagents = agentCount.SelectedIndex switch { 1 => 2, 2 => 3, 3 => 4, _ => 0 };
+            Persist();
+        };
         refreshModels.Click += async (_, _) => await RefreshModels();
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
@@ -139,7 +158,7 @@ internal sealed class ChatPanel : UserControl
         Loaded += async (_, _) => { ApplyTheme(); contextTimer.Start(); await RefreshCad(); };
         Unloaded += (_, _) => contextTimer.Stop();
         contextTimer.Tick += async (_, _) => { ApplyTheme(); if (running is null) await RefreshCad(); };
-        ApplyModels(catalog);
+        ApplyProviderChoices();
         SetBusy(false);
         settings.Children.Add(activity);
         flushTimer.Tick += (_, _) => FlushText();
@@ -244,24 +263,28 @@ internal sealed class ChatPanel : UserControl
     private async Task RunAccount(bool diagnostic)
     {
         if (running is not null) return;
-        if (provider.SelectedIndex != 0) { activity.Text = "Вход в Claude Code: выполните claude auth login в официальном CLI"; return; }
         running = new(); SetBusy(true);
         try
         {
             running.CancelAfter(TimeSpan.FromMinutes(diagnostic ? 1 : 5));
             var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
-            using var process = System.Diagnostics.Process.Start(ProviderProcess.StartInfo(options, diagnostic ? new[] { "login", "status" } : new[] { "login" }))!;
+            bool codex = provider.SelectedIndex == 0;
+            var command = codex ? diagnostic ? new[] { "login", "status" } : new[] { "login" }
+                : diagnostic ? new[] { "auth", "status" } : new[] { "auth", "login" };
+            using var process = System.Diagnostics.Process.Start(ProviderProcess.StartInfo(options, command))!;
             using var cancel = running.Token.Register(() => ProviderProcess.Stop(process));
             var stderr = ProviderProcess.DrainErrors(process); var stdout = process.StandardOutput.ReadToEndAsync(running.Token);
             activity.Text = diagnostic ? "Проверка входа…" : "Завершите вход в открывшемся браузере";
             await process.WaitForExitAsync(running.Token); await stdout; string detail = await stderr;
-            activity.Text = process.ExitCode == 0 ? "Codex: вход выполнен" : "Нужно войти в Codex: " + detail;
+            string providerName = codex ? "Codex" : "Claude Code";
+            activity.Text = process.ExitCode == 0 ? providerName + ": вход выполнен"
+                : "Нужно войти в " + providerName + ": " + detail;
         }
         catch (OperationCanceledException) { activity.Text = "Вход или проверка остановлены"; }
         catch (System.Exception error) { LogError(error); activity.Text = "Подключение: " + error.Message; }
         finally { running.Dispose(); running = null; SetBusy(false); }
         await RefreshCad();
-        if (!diagnostic) await RefreshModels();
+        if (!diagnostic && provider.SelectedIndex == 0) await RefreshModels();
     }
     private static string EffortLabel(string effort) => effort switch
     {
@@ -275,6 +298,7 @@ internal sealed class ChatPanel : UserControl
     internal void ApplyModels(IReadOnlyList<CodexModel> models)
     {
         catalog = models; settingChoices = true;
+        if (provider.SelectedIndex != 0) { settingChoices = false; return; }
         var defaultModel = catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault();
         var choices = new List<Choice> { new("", "Автоматически" + (defaultModel is null ? "" : " — " + defaultModel.DisplayName)) };
         choices.AddRange(catalog.Select(m => new Choice(m.Id, m.DisplayName)));
@@ -282,9 +306,28 @@ internal sealed class ChatPanel : UserControl
         model.ItemsSource = choices; model.SelectedValue = chosenModel ?? "";
         settingChoices = false; PopulateEfforts();
     }
+    private void ApplyProviderChoices()
+    {
+        if (provider.SelectedIndex == 0) { ApplyModels(catalog); return; }
+        settingChoices = true;
+        model.ItemsSource = new[] { new Choice("", "Автоматически"), new Choice("sonnet", "Claude Sonnet"),
+            new Choice("opus", "Claude Opus"), new Choice("haiku", "Claude Haiku") };
+        model.SelectedValue = chosenClaudeModel ?? "";
+        settingChoices = false;
+        PopulateEfforts();
+    }
     private void PopulateEfforts()
     {
         settingChoices = true;
+        if (provider.SelectedIndex != 0)
+        {
+            reasoning.ItemsSource = new[] { new Choice("", "По умолчанию"), new Choice("low", "Низкая"),
+                new Choice("medium", "Средняя"), new Choice("high", "Высокая"),
+                new Choice("xhigh", "Очень высокая"), new Choice("max", "Максимальная") };
+            reasoning.SelectedValue = chosenClaudeEffort ?? "";
+            settingChoices = false;
+            return;
+        }
         var selected = SelectedCatalogModel();
         var choices = new List<Choice> { new("", "По умолчанию" + (selected is null ? "" : " — " + EffortLabel(selected.DefaultEffort))) };
         if (selected is not null) choices.AddRange(selected.Efforts.Select(e => new Choice(e, EffortLabel(e))));
@@ -295,7 +338,9 @@ internal sealed class ChatPanel : UserControl
     private void SetBusy(bool busy)
     {
         send.IsEnabled = attach.IsEnabled = provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
-        model.IsEnabled = reasoning.IsEnabled = refreshModels.IsEnabled = !busy && provider.SelectedIndex == 0;
+        model.IsEnabled = reasoning.IsEnabled = !busy;
+        refreshModels.IsEnabled = !busy && provider.SelectedIndex == 0;
+        agentCount.IsEnabled = !busy;
     }
     private async Task RefreshModels()
     {
@@ -328,12 +373,17 @@ internal sealed class ChatPanel : UserControl
             var files = ChatAttachments.Capture(attachments);
             await BrokerBootstrap.EnsureAsync(host.Text, running.Token);
             await RefreshCad();
+            string? initialDocumentId = cadContext?.DocumentId;
+            bool visibleCadResult = false;
             var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
-            var selection = (chosenModel ?? "") + "|" + (chosenEffort ?? "");
+            var selectedModel = provider.SelectedIndex == 0 ? chosenModel : chosenClaudeModel;
+            var selectedEffort = provider.SelectedIndex == 0 ? chosenEffort : chosenClaudeEffort;
+            var selection = (selectedModel ?? "") + "|" + (selectedEffort ?? "") + "|" + maxSubagents;
             if (adapter is null || adapterKey != key || adapterSelection != selection)
             {
                 var previousSession = adapterKey == key ? adapter?.SessionId : null;
-                var options = new ProviderOptions(executable.Text, host.Text, directory.Text, chosenModel, chosenEffort);
+                var options = new ProviderOptions(executable.Text, host.Text, directory.Text, selectedModel, selectedEffort,
+                    MaxSubagents: maxSubagents);
                 adapter = provider.SelectedIndex == 0 ? new CodexProvider(options) : new ClaudeProvider(options); adapterKey = key;
                 adapterSelection = selection;
                 adapter.SessionId = previousSession ?? (restored?.AdapterKey == key ? restored.SessionId : null);
@@ -355,27 +405,52 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "reasoning_summary") UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
-                    FlushText();
-                    UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>()).Append(item.Text).ToArray() });
-                    currentActivity = item.Text;
+                    currentActivity = CadToolActivity.Describe(item.Text);
+                    visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
                 }
                 if (item.Kind == "status") currentActivity = item.Text;
                 if (item.Kind == "session") Persist();
                 UpdateProgress();
             }
-            FlushText(); attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
+            FlushText();
+            if (visibleCadResult) await AttachPreview(initialDocumentId);
+            attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
         }
         catch (OperationCanceledException)
         {
-            FlushText(); UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>())
-                .Append("Остановлено. Уже принятые CAD-запросы могут завершиться.").ToArray() }); activity.Text = "Остановлено";
+            FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Уже принятые CAD-запросы могут завершиться." }); activity.Text = "Остановлено";
         }
         catch (System.Exception e)
         {
-            LogError(e); FlushText(); UpdateAssistant(line => line with { Steps = (line.Steps ?? Array.Empty<string>())
-                .Append("Ошибка: " + e.Message).ToArray() }); activity.Text = "Ошибка; подробности в журнале";
+            LogError(e); FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОшибка: " + e.Message }); activity.Text = "Ошибка; подробности в журнале";
         }
         finally { progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+    }
+    private async Task AttachPreview(string? initialDocumentId)
+    {
+        currentActivity = "Получаю итоговый вид чертежа";
+        UpdateProgress();
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await RefreshCad();
+            var context = cadContext ?? throw new IOException("подключение к AutoCAD недоступно");
+            if (initialDocumentId is null || context.DocumentId != initialDocumentId)
+                throw new IOException("активный чертёж изменился");
+            var result = await PipeClient.CallAsync(Wire.BrokerPipe,
+                new(Guid.NewGuid().ToString("N"), "cad_render", context.SessionId, context.DocumentId,
+                    context.Revision, Wire.Element(new { width = 1024, height = 768 })), timeout.Token);
+            if (result.Error is not null) throw new IOException(result.Error.Message);
+            if (result.Data is not JsonElement data) throw new IOException("AutoCAD не вернул изображение");
+            var preview = transcript.SavePreview(data.Text("image_base64") ?? throw new IOException("изображение пусто"),
+                data.Number("width", 1024), data.Number("height", 768));
+            UpdateAssistant(line => line with { Images = (line.Images ?? Array.Empty<ChatImage>()).Append(preview).ToArray() });
+        }
+        catch (System.Exception error) when (error is IOException or OperationCanceledException or FormatException or InvalidDataException)
+        {
+            LogError(error);
+            UpdateAssistant(line => line with { Text = line.Text + "\n\nИтоговый вид не получен: " + error.Message + ". Проверьте открытый чертёж перед сохранением." });
+        }
     }
     private void FlushText()
     {
@@ -403,7 +478,8 @@ internal sealed class ChatPanel : UserControl
         if (provider.SelectedIndex == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
         return new(provider.SelectedIndex, codexExecutable, claudeExecutable, host.Text, directory.Text,
             adapter?.SessionId ?? restored?.SessionId, ChatMarkup.PlainTranscript(messages),
-            adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort, messages.ToArray());
+            adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort, messages.ToArray(), maxSubagents,
+            chosenClaudeModel, chosenClaudeEffort);
     }
     private void Persist()
     { try { store.Save(State()); } catch (System.Exception e) { activity.Text = "История не сохранена: " + e.Message; } }
@@ -423,7 +499,10 @@ internal sealed class ChatPanel : UserControl
         else if (!string.IsNullOrWhiteSpace(state.Transcript)) messages.Add(new ChatLine("history", state.Transcript));
         selectedAnswer = -1; RenderChat(); restored = state; adapter = null; adapterKey = null; attachments.Clear(); RefreshAttachments();
         chosenModel = state.CodexModel; chosenEffort = state.CodexReasoningEffort;
-        ApplyModels(Array.Empty<CodexModel>());
+        chosenClaudeModel = state.ClaudeModel; chosenClaudeEffort = state.ClaudeReasoningEffort;
+        maxSubagents = state.MaxSubagents;
+        agentCount.SelectedIndex = maxSubagents switch { 2 => 1, 3 => 2, 4 => 3, _ => 0 };
+        ApplyProviderChoices();
         activity.Text = "История восстановлена; актуальный чертёж будет прочитан заново";
         }
         finally { restoring = false; }

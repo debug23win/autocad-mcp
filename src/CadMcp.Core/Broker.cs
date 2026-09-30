@@ -21,21 +21,22 @@ public sealed class Broker(string descriptorRoot)
     }
     public async Task<Response> DispatchAsync(Request request, CancellationToken ct)
     {
-        if (request.Operation == "broker_ping") return new(request.RequestId, "completed", new { version = "0.4.0-preview" });
+        if (request.Operation == "broker_ping") return new(request.RequestId, "completed", new { version = "0.6.0-preview" });
         if (request.Operation == "cad_sessions")
         {
-            var reachable = new List<object>();
-            foreach (var w in Discover())
+            async Task<object> ProbeWorker(WorkerDescriptor w)
             {
                 using var probe = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 probe.CancelAfter(TimeSpan.FromSeconds(1));
                 try
                 {
                     var reply = await PipeClient.CallAsync(w.PipeName, request with { Operation = "cad_context", SessionId = w.SessionId }, probe.Token);
-                    reachable.Add(new { worker = w, context = reply, reachable = true });
+                    return new { worker = w, context = reply, reachable = true };
                 }
-                catch (Exception e) when (e is IOException or OperationCanceledException) { reachable.Add(new { worker = w, reachable = false }); }
+                catch (Exception e) when (e is IOException or OperationCanceledException)
+                { return new { worker = w, context = (Response?)null, reachable = false }; }
             }
+            var reachable = await Task.WhenAll(Discover().Select(ProbeWorker));
             return new(request.RequestId, "completed", reachable);
         }
         if (string.IsNullOrEmpty(request.SessionId)) throw new CadFault("SESSION_REQUIRED", "Choose a session from cad_sessions");

@@ -43,6 +43,31 @@ internal static class Reader
                 item["vertices"] = vertices; item["vertex_count"] = poly.NumberOfVertices; item["closed"] = poly.Closed; item["length"] = poly.Length;
                 item["normal"] = new[] { poly.Normal.X, poly.Normal.Y, poly.Normal.Z }; item["vertices_truncated"] = poly.NumberOfVertices > 2000;
                 item["access"] = poly.NumberOfVertices <= 2000 ? "structured" : "partial"; break;
+            case Polyline3d spatial:
+                var spatialVertices = spatial.Cast<ObjectId>().Take(2001)
+                    .Select(id => tr.GetObject(id, OpenMode.ForRead))
+                    .OfType<PolylineVertex3d>().Select(v => P(v.Position)).ToArray();
+                item["vertices"] = spatialVertices.Take(2000).ToArray();
+                item["vertex_count"] = spatialVertices.Length;
+                item["vertices_truncated"] = spatialVertices.Length > 2000;
+                item["closed"] = spatial.Closed;
+                item["access"] = spatialVertices.Length <= 2000 ? "structured" : "partial"; break;
+            case Spline spline:
+                item["degree"] = spline.Degree;
+                item["closed"] = spline.Closed;
+                item["fit_point_count"] = spline.NumFitPoints;
+                item["fit_points"] = Enumerable.Range(0, Math.Min(spline.NumFitPoints, 2000))
+                    .Select(i => P(spline.GetFitPointAt(i))).ToArray();
+                item["access"] = spline.NumFitPoints <= 2000 ? "structured" : "partial"; break;
+            case SubDMesh mesh:
+                var meshVertices = mesh.Vertices.Cast<Point3d>().Select(P).ToArray();
+                var meshFaceArray = mesh.FaceArray.Cast<int>().ToArray();
+                item["vertices"] = meshVertices;
+                item["face_array"] = meshFaceArray;
+                item["vertex_count"] = mesh.NumberOfVertices;
+                item["face_count"] = mesh.NumberOfFaces;
+                item["smooth_level"] = mesh.SmoothLevel;
+                item["access"] = "structured"; break;
             case DBText text:
                 item["text"] = text.TextString; item["position"] = P(text.Position); item["rotation"] = text.Rotation; item["height"] = text.Height; item["access"] = "structured"; break;
             case MText text:

@@ -106,10 +106,36 @@ internal static class Edits
                 if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Civil surfaces cannot be used as regular entity targets");
                 continue;
             }
+            if (kind == "solid_boolean")
+            {
+                var primaryId = Resolve(doc.Database, tr, op, aliases);
+                var toolId = op.Text("tool_target") is { } toolAlias
+                    ? aliases.TryGetValue(toolAlias, out var aliased) ? aliased : throw new CadFault("UNKNOWN_TARGET", toolAlias)
+                    : Handle(doc.Database, S(op, "tool_handle"));
+                if (primaryId == toolId) throw new CadFault("INVALID_SOLID_BOOLEAN", "Primary and tool must be different solids");
+                if (Editable(doc.Database, tr, primaryId, true) is not Solid3d primary ||
+                    Editable(doc.Database, tr, toolId, false) is not Solid3d tool)
+                    throw new CadFault("INVALID_SOLID_BOOLEAN", "Both targets must be editable 3D solids in the current space");
+                var booleanType = S(op, "operation") switch
+                {
+                    "union" => BooleanOperationType.BoolUnite,
+                    "subtract" => BooleanOperationType.BoolSubtract,
+                    "intersect" => BooleanOperationType.BoolIntersect,
+                    _ => throw new CadFault("INVALID_SOLID_BOOLEAN", "Unknown Boolean operation")
+                };
+                using (var toolCopy = (Solid3d)tool.Clone()) primary.BooleanOperation(booleanType, toolCopy);
+                bool keepTool = Bool(op, "keep_tool");
+                if (!keepTool) { RequireUnlocked(tr, tool); tool.UpgradeOpen(); tool.Erase(); }
+                touched.Add(primaryId); touched.Add(toolId);
+                if (op.TryGetProperty("id", out var solidId)) aliases.Add(solidId.GetString()!, primaryId);
+                results.Add(new { index = index++, op = kind, operation = S(op, "operation"), handle = primary.Handle.ToString(),
+                    tool_handle = tool.Handle.ToString(), tool_erased = !keepTool });
+                continue;
+            }
             Entity entity;
             string? sourceHandle = null;
             object? imageRegistration = null;
-            if (kind is "move" or "copy" or "rotate" or "scale" or "mirror" or "erase" or "set")
+            if (kind is "move" or "copy" or "rotate" or "rotate3d" or "scale" or "mirror" or "erase" or "set")
             {
                 var sourceId = Resolve(doc.Database, tr, op, aliases);
                 entity = Editable(doc.Database, tr, sourceId, kind != "copy");
@@ -128,6 +154,9 @@ internal static class Edits
                     case "move": case "copy":
                         Transform(entity, Matrix3d.Displacement(Point(op, "displacement") - Point3d.Origin), tr); break;
                     case "rotate": Transform(entity, Matrix3d.Rotation(Angle(op, "angle_deg"), Vector3d.ZAxis, Point(op, "center")), tr); break;
+                    case "rotate3d":
+                        var axisStart = Point(op, "axis_start"); var axisEnd = Point(op, "axis_end"); Equal(axisStart, axisEnd);
+                        Transform(entity, Matrix3d.Rotation(Angle(op, "angle_deg"), axisEnd - axisStart, axisStart), tr); break;
                     case "scale": Transform(entity, Matrix3d.Scaling(N(op, "factor"), Point(op, "center")), tr); break;
                     case "mirror":
                         var first = Point(op, "first"); var second = Point(op, "second"); Equal(first, second);
@@ -156,6 +185,7 @@ internal static class Edits
                     if (op.TryGetProperty("color_index", out var c)) entity.ColorIndex = c.GetInt32();
                     var targetSpace = op.Text("layout") is { } layout ? Sheets.Space(doc.Database, tr, layout) : space;
                     targetSpace.AppendEntity(entity); tr.AddNewlyCreatedDBObject(entity, true);
+                    if (entity is Polyline3d spatial) PopulatePolyline3d(spatial, op, tr);
                     if (entity is RasterImage raster) RasterImages.Associate(raster, tr);
                 }
                 catch { if (entity.ObjectId.IsNull) entity.Dispose(); throw; }
@@ -227,6 +257,64 @@ internal static class Edits
                 var poly = new Polyline(points.Length) { Elevation = points[0][2], Closed = Bool(op, "closed") };
                 for (int i = 0; i < points.Length; i++) poly.AddVertexAt(i, new(points[i][0], points[i][1]), bulges[i], N(op, "width", 0), N(op, "width", 0));
                 return poly;
+            case "polyline3d": return new Polyline3d();
+            case "spline":
+                var fitPoints = new Point3dCollection();
+                foreach (var value in op.GetProperty("fit_points").EnumerateArray())
+                {
+                    var fit = EditPlan.Point(value); fitPoints.Add(new Point3d(fit[0], fit[1], fit[2]));
+                }
+                var splineDegree = op.TryGetProperty("degree", out var requestedDegree) ? requestedDegree.GetInt32() : Math.Min(3, fitPoints.Count - 1);
+                return new Spline(fitPoints, Bool(op, "closed"), KnotParameterizationEnum.Chord, splineDegree, 0);
+            case "mesh":
+                var meshVertices = new Point3dCollection();
+                foreach (var value in op.GetProperty("vertices").EnumerateArray())
+                {
+                    var vertex = EditPlan.Point(value);
+                    meshVertices.Add(new Point3d(vertex[0], vertex[1], vertex[2]));
+                }
+                var meshFaces = new Int32Collection();
+                foreach (var face in op.GetProperty("faces").EnumerateArray())
+                {
+                    meshFaces.Add(face.GetArrayLength());
+                    foreach (var vertex in face.EnumerateArray()) meshFaces.Add(vertex.GetInt32());
+                }
+                var mesh = new SubDMesh();
+                try { mesh.SetSubDMesh(meshVertices, meshFaces, 0); return mesh; }
+                catch { mesh.Dispose(); throw; }
+            case "extrude":
+                var profileId = Resolve(db, tr, op, aliases);
+                var profile = Editable(db, tr, profileId, false);
+                if (profile is not (Circle or Polyline) || profile is Polyline { Closed: false })
+                    throw new CadFault("INVALID_EXTRUSION_PROFILE", "Use a closed planar polyline or circle in the current space");
+                var direction = Point(op, "direction") - Point3d.Origin;
+                if (direction.Length < 1e-8) throw new CadFault("INVALID_EXTRUSION_DIRECTION", "Extrusion direction must be nonzero");
+                var extruded = new Solid3d();
+                try { extruded.CreateExtrudedSolid(profile, direction, new SweepOptions()); return extruded; }
+                catch { extruded.Dispose(); throw; }
+            case "sweep":
+                var sweepProfile = Editable(db, tr, Resolve(db, tr, op, aliases), false);
+                if (sweepProfile is not (Circle or Polyline) || sweepProfile is Polyline { Closed: false })
+                    throw new CadFault("INVALID_SWEEP_PROFILE", "Use a closed planar polyline or circle as the sweep profile");
+                var pathId = op.Text("path_target") is { } pathAlias
+                    ? aliases.TryGetValue(pathAlias, out var pathTarget) ? pathTarget : throw new CadFault("UNKNOWN_TARGET", pathAlias)
+                    : Handle(db, S(op, "path_handle"));
+                if (Editable(db, tr, pathId, false) is not Curve sweepPath)
+                    throw new CadFault("INVALID_SWEEP_PATH", "Use a current-space line, arc, polyline or spline as the path");
+                var swept = new Solid3d();
+                try { swept.CreateSweptSolid(sweepProfile, sweepPath, new SweepOptions()); return swept; }
+                catch { swept.Dispose(); throw; }
+            case "revolve":
+                var revolveProfile = Editable(db, tr, Resolve(db, tr, op, aliases), false);
+                if (revolveProfile is not (Circle or Polyline) || revolveProfile is Polyline { Closed: false })
+                    throw new CadFault("INVALID_REVOLVE_PROFILE", "Use a closed planar polyline or circle as the revolve profile");
+                var revolveStart = Point(op, "axis_start"); var revolveEnd = Point(op, "axis_end"); Equal(revolveStart, revolveEnd);
+                var revolveAngle = Angle(op, "angle_deg");
+                if (Math.Abs(revolveAngle) < 1e-10 || Math.Abs(revolveAngle) > Math.PI * 2 + 1e-10)
+                    throw new CadFault("INVALID_REVOLVE_ANGLE", "Revolve angle must be nonzero and at most 360 degrees");
+                var revolved = new Solid3d();
+                try { revolved.CreateRevolvedSolid(revolveProfile, revolveStart, revolveEnd - revolveStart, revolveAngle, 0, new RevolveOptions()); return revolved; }
+                catch { revolved.Dispose(); throw; }
             case "rectangle":
                 var p = Point(op, "first"); var q = Point(op, "second");
                 if (Math.Abs(p.Z - q.Z) > 1e-8 || Math.Abs(p.X - q.X) < 1e-10 || Math.Abs(p.Y - q.Y) < 1e-10) throw new CadFault("DEGENERATE_RECTANGLE", "Opposite corners need different X/Y and the same Z");
@@ -264,8 +352,30 @@ internal static class Edits
                 var bounds = solid.GeometricExtents;
                 solid.TransformBy(Matrix3d.Displacement(new(center.X - (bounds.MinPoint.X + bounds.MaxPoint.X) / 2,
                     center.Y - (bounds.MinPoint.Y + bounds.MaxPoint.Y) / 2, center.Z - bounds.MinPoint.Z))); return solid;
+            case "sphere":
+                var sphere = new Solid3d(); sphere.CreateSphere(N(op, "radius"));
+                PlaceSolid(sphere, Point(op, "center"), false); return sphere;
+            case "cone":
+                var cone = new Solid3d(); cone.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), 0);
+                PlaceSolid(cone, Point(op, "center"), true); return cone;
+            case "wedge":
+                if (N(op, "width") <= 0) throw new CadFault("INVALID_PARAMETER", "Wedge width must be positive");
+                var wedge = new Solid3d(); wedge.CreateWedge(N(op, "length"), N(op, "width"), N(op, "height"));
+                PlaceSolid(wedge, Point(op, "center"), false); return wedge;
+            case "torus":
+                if (N(op, "minor_radius") >= N(op, "major_radius")) throw new CadFault("INVALID_TORUS", "minor_radius must be smaller than major_radius");
+                var torus = new Solid3d(); torus.CreateTorus(N(op, "major_radius"), N(op, "minor_radius"));
+                PlaceSolid(torus, Point(op, "center"), false); return torus;
             default: throw new CadFault("INVALID_OPERATION", S(op, "op"));
         }
+    }
+    private static void PlaceSolid(Solid3d solid, Point3d target, bool bottom)
+    {
+        var bounds = solid.GeometricExtents;
+        var origin = new Point3d((bounds.MinPoint.X + bounds.MaxPoint.X) / 2,
+            (bounds.MinPoint.Y + bounds.MaxPoint.Y) / 2,
+            bottom ? bounds.MinPoint.Z : (bounds.MinPoint.Z + bounds.MaxPoint.Z) / 2);
+        solid.TransformBy(Matrix3d.Displacement(target - origin));
     }
     private static ObjectId Layer(Database db, Transaction tr, string name)
     {
@@ -298,12 +408,23 @@ internal static class Edits
     {
         if (id.IsErased) throw new CadFault("ENTITY_ERASED", id.Handle.ToString());
         if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != db.CurrentSpaceId) throw new CadFault("UNSUPPORTED_SCOPE", "Only current-space top-level entities can be edited");
-        if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or DBPoint or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
+        if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or Polyline3d or Spline or SubDMesh or DBPoint or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
             throw new CadFault("SPECIAL_OBJECT", "Special objects need a vendor API or explicitly targeted AutoLISP");
         if (e is BlockReference block && ((BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead)).IsFromExternalReference)
             throw new CadFault("XREF_OBJECT", "This path does not edit external references");
         if (write) { RequireUnlocked(tr, e); e.UpgradeOpen(); }
         return e;
+    }
+    private static void PopulatePolyline3d(Polyline3d polyline, JsonElement op, Transaction tr)
+    {
+        foreach (var value in op.GetProperty("points").EnumerateArray())
+        {
+            var point = EditPlan.Point(value);
+            var vertex = new PolylineVertex3d(new Point3d(point[0], point[1], point[2]));
+            polyline.AppendVertex(vertex);
+            tr.AddNewlyCreatedDBObject(vertex, true);
+        }
+        polyline.Closed = Bool(op, "closed");
     }
     private static void Set(Database db, Transaction tr, Entity entity, JsonElement op)
     {

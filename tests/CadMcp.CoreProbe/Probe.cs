@@ -128,6 +128,81 @@ public static class Probe
                 new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } },
                 new { op = "layout_create", name = "CADMCP_A3" } })), default));
             Assert(extended.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Ellipse"), "Native ellipse and point created with structured readback");
+            var spatial = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"polyline3d","points":[[400,100,0],[420,100,20],[440,100,0]]},
+                 {"op":"mesh","vertices":[[400,0,0],[420,0,0],[400,20,0],[400,0,20]],
+                  "faces":[[0,2,1],[0,1,3],[1,2,3],[2,0,3]]}]
+                """), default));
+            Assert(spatial.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Polyline3d" &&
+                e.GetProperty("vertex_count").GetInt32() == 3 && e.GetProperty("vertices")[1][2].GetDouble() == 20),
+                "Native 3D polyline retained spatial vertices");
+            Assert(spatial.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "SubDMesh" &&
+                e.GetProperty("vertex_count").GetInt32() == 4 && e.GetProperty("face_count").GetInt32() == 4),
+                "Native C# mesh retained four faces and structured readback");
+            var smoothPath = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"spline","fit_points":[[450,100,0],[460,110,5],[470,90,10],[480,100,15]],"degree":3}]
+                """), default));
+            Assert(smoothPath.GetProperty("entities")[0].Text("type") == "Spline" &&
+                smoothPath.GetProperty("entities")[0].GetProperty("fit_point_count").GetInt32() == 4,
+                "Native C# spatial spline retained fit points");
+            var modeled = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"rectangle","id":"section","first":[500,0,0],"second":[520,20,0]},
+                 {"op":"extrude","id":"beam","target":"section","direction":[0,0,30]},
+                 {"op":"cylinder","id":"hole","center":[510,10,0],"radius":3,"height":30},
+                 {"op":"solid_boolean","target":"beam","tool_target":"hole","operation":"subtract"}]
+                """), default));
+            var beamHandle = modeled.GetProperty("results")[1].Text("handle");
+            Assert(modeled.GetProperty("entities").EnumerateArray().Any(e => e.Text("handle") == beamHandle &&
+                e.GetProperty("volume").GetDouble() is > 0 and < 12000),
+                "Native C# extrusion and solid subtraction produce measured volume");
+            Assert(modeled.GetProperty("results")[3].GetProperty("tool_erased").GetBoolean() &&
+                modeled.GetProperty("entities").EnumerateArray().Any(e => e.TryGetProperty("erased", out var erased) && erased.GetBoolean()),
+                "Native solid Boolean consumes the tool in the same transaction");
+            var merged = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"box","id":"first","center":[900,0,0],"length":10,"width":10,"height":10},
+                 {"op":"box","id":"second","center":[905,0,0],"length":10,"width":10,"height":10},
+                 {"op":"solid_boolean","target":"first","tool_target":"second","operation":"union","keep_tool":true}]
+                """), default));
+            Assert(merged.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Solid3d" &&
+                Math.Abs(e.GetProperty("volume").GetDouble() - 1500) < 1e-5),
+                "Native C# union computes overlapping solid volume");
+            var intersected = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"box","id":"first","center":[930,0,0],"length":10,"width":10,"height":10},
+                 {"op":"box","id":"second","center":[935,0,0],"length":10,"width":10,"height":10},
+                 {"op":"solid_boolean","target":"first","tool_target":"second","operation":"intersect"}]
+                """), default));
+            Assert(intersected.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Solid3d" &&
+                Math.Abs(e.GetProperty("volume").GetDouble() - 500) < 1e-5),
+                "Native C# intersection computes common solid volume");
+            var primitives = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"sphere","center":[600,0,0],"radius":5},
+                 {"op":"cone","center":[620,0,0],"radius":5,"height":12},
+                 {"op":"wedge","center":[640,0,0],"length":10,"width":8,"height":12},
+                 {"op":"torus","center":[670,0,0],"major_radius":10,"minor_radius":3}]
+                """), default));
+            Assert(primitives.GetProperty("entities").GetArrayLength() == 4 &&
+                primitives.GetProperty("entities").EnumerateArray().All(e => e.Text("type") == "Solid3d" && e.GetProperty("volume").GetDouble() > 0),
+                "Native C# sphere, cone, wedge and torus created as 3D solids");
+            var swept = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"circle","id":"section","center":[700,0,0],"radius":2},
+                 {"op":"line","id":"path","start":[700,0,0],"end":[700,0,20]},
+                 {"op":"sweep","target":"section","path_target":"path"}]
+                """), default));
+            Assert(swept.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Solid3d" && e.GetProperty("volume").GetDouble() > 0),
+                "Native C# sweep builds a solid along a path");
+            var revolved = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"rectangle","id":"section","first":[720,0,0],"second":[724,5,0]},
+                 {"op":"revolve","target":"section","axis_start":[715,0,0],"axis_end":[715,5,0],"angle_deg":360}]
+                """), default));
+            Assert(revolved.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Solid3d" && e.GetProperty("volume").GetDouble() > 0),
+                "Native C# revolve builds a solid around an axis");
+            var rotated3d = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
+                [{"op":"line","id":"upright","start":[800,0,0],"end":[800,10,0]},
+                 {"op":"rotate3d","target":"upright","axis_start":[800,0,0],"axis_end":[810,0,0],"angle_deg":90}]
+                """), default));
+            Assert(rotated3d.GetProperty("entities")[0].Text("type") == "Line" &&
+                Math.Abs(rotated3d.GetProperty("entities")[0].GetProperty("end")[2].GetDouble() - 10) < 1e-8,
+                "Native C# 3D rotation preserves the requested spatial axis");
             using (var catalogTransaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
             {
                 var nativeCatalog = Wire.Element(Catalog.Read(doc.Database, catalogTransaction));

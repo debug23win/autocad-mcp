@@ -87,6 +87,18 @@ internal sealed class ChatBrowser : Grid
         catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException)
         { return new ChatImage(file.Name, destination); }
     }
+    public ChatImage SavePreview(string base64, int width, int height)
+    {
+        if (base64.Length > 6 * 1024 * 1024) throw new InvalidDataException("Предпросмотр слишком велик");
+        byte[] bytes = Convert.FromBase64String(base64);
+        if (bytes.Length > 4 * 1024 * 1024 || bytes.Length < 8 ||
+            !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new InvalidDataException("AutoCAD вернул некорректное изображение");
+        Directory.CreateDirectory(AssetRoot);
+        string destination = Path.Combine(AssetRoot, Guid.NewGuid().ToString("N") + ".png");
+        File.WriteAllBytes(destination, bytes);
+        return new ChatImage("Текущий вид чертежа после работы", destination, width, height);
+    }
     public void Update(IReadOnlyList<ChatLine> lines, bool isDark, int selectedIndex)
     {
         messages = lines.ToArray(); dark = isDark; selected = selectedIndex;

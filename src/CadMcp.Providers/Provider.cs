@@ -6,7 +6,8 @@ using System.Text.Json;
 namespace CadMcp.Providers;
 
 public sealed record ProviderOptions(string Executable, string McpExecutable, string WorkingDirectory,
-    string? Model = null, string? ReasoningEffort = null, IReadOnlyList<string>? McpArguments = null);
+    string? Model = null, string? ReasoningEffort = null, IReadOnlyList<string>? McpArguments = null,
+    int MaxSubagents = 3);
 public sealed record ChatEvent(string Kind, string Text);
 public interface IChatProvider
 {
@@ -60,9 +61,30 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     public string? SessionId { get; set; }
     public string[] Arguments(bool imageInput = false)
     {
+        if (options.MaxSubagents is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(options.MaxSubagents));
         var config = JsonSerializer.Serialize(new { mcpServers = new { cad = new { command = options.McpExecutable, args = Array.Empty<string>() } } });
         var args = new List<string> { "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__cad__*", "--append-system-prompt", CadAgent.Instructions };
+            "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__cad__*" };
+        if (!string.IsNullOrWhiteSpace(options.Model)) args.AddRange(["--model", options.Model]);
+        if (!string.IsNullOrWhiteSpace(options.ReasoningEffort)) args.AddRange(["--effort", options.ReasoningEffort]);
+        if (options.MaxSubagents > 0)
+        {
+            args.Add("Agent");
+            args.AddRange(["--agents", JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["cad_researcher"] = new
+                {
+                    description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
+                    prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
+                    tools = new[] { "mcp__cad__cad_sessions", "mcp__cad__cad_context", "mcp__cad__cad_catalog", "mcp__cad__cad_search",
+                        "mcp__cad__cad_snapshot", "mcp__cad__cad_query", "mcp__cad__cad_result_get", "mcp__cad__cad_entity_get",
+                        "mcp__cad__cad_vertical_catalog", "mcp__cad__cad_vertical_get", "mcp__cad__cad_render",
+                        "mcp__cad__cad_image_register", "mcp__cad__cad_image_point", "mcp__cad__cad_edit_help", "WebSearch" }
+                }
+            })]);
+        }
+        else args.AddRange(["--disallowedTools", "Agent"]);
+        args.AddRange(["--append-system-prompt", CadAgent.Instructions]);
         if (SessionId is not null) args.AddRange(["--resume", SessionId]);
         if (imageInput) args.AddRange(["--input-format", "stream-json"]);
         return args.ToArray();
@@ -71,10 +93,13 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     {
         attachments ??= Array.Empty<ChatAttachment>();
         bool imageInput = attachments.Any(f => f.Kind == AttachmentKind.Image);
-        using var p = Process.Start(ProviderProcess.StartInfo(options, Arguments(imageInput))) ?? throw new IOException("Cannot start Claude Code");
+        var start = ProviderProcess.StartInfo(options, Arguments(imageInput));
+        if (options.MaxSubagents > 0) start.Environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = options.MaxSubagents.ToString();
+        using var p = Process.Start(start) ?? throw new IOException("Cannot start Claude Code");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
         var stderr = ProviderProcess.DrainErrors(p);
         bool completed = false, streamed = false;
+        var pendingTools = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
             string userPrompt = ChatAttachments.AddToPrompt(prompt, attachments);
@@ -97,7 +122,24 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 if (type == "assistant" && e.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var blocks))
                     foreach (var block in blocks.EnumerateArray())
                         if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_use" && block.TryGetProperty("name", out var tool))
-                            yield return new("step", "Выполняю " + (tool.GetString() ?? "CAD tool"));
+                        {
+                            string toolName = tool.GetString() ?? "CAD tool";
+                            if (block.TryGetProperty("id", out var toolId) && toolId.GetString() is { } id) pendingTools[id] = toolName;
+                            yield return toolName is "Agent" or "Task"
+                                ? new("status", "Помощники анализируют задачу") : new("step", "Выполняю " + toolName);
+                        }
+                if (type == "user" && e.TryGetProperty("message", out var toolMessage) &&
+                    toolMessage.TryGetProperty("content", out var results) && results.ValueKind == JsonValueKind.Array)
+                    foreach (var resultBlock in results.EnumerateArray())
+                        if (resultBlock.TryGetProperty("type", out var resultType) && resultType.GetString() == "tool_result" &&
+                            resultBlock.TryGetProperty("tool_use_id", out var toolId) &&
+                            toolId.GetString() is { } id && pendingTools.Remove(id, out var toolName))
+                        {
+                            bool failed = resultBlock.TryGetProperty("is_error", out var isError) && isError.ValueKind == JsonValueKind.True;
+                            yield return toolName is "Agent" or "Task"
+                                ? new("status", "Объединяю результаты помощников")
+                                : new("step", (failed ? "Ошибка: " : "Завершено: ") + toolName);
+                        }
                 if (type == "user") yield return new("cad_result", e.GetRawText());
                 if (type == "result")
                 {
@@ -118,9 +160,14 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
 public sealed class CodexProvider(ProviderOptions options) : IChatProvider
 {
     public string? SessionId { get; set; }
-    public string[] Arguments() => ["-c", "mcp_servers.cad.command=" + JsonSerializer.Serialize(options.McpExecutable),
+    public string[] Arguments()
+    {
+        if (options.MaxSubagents is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(options.MaxSubagents));
+        return ["-c", "mcp_servers.cad.command=" + JsonSerializer.Serialize(options.McpExecutable),
         "-c", "mcp_servers.cad.args=" + JsonSerializer.Serialize(options.McpArguments ?? Array.Empty<string>()),
         "-c", "mcp_servers.cad.enabled=true",
+        "-c", "agents.enabled=" + (options.MaxSubagents > 0 ? "true" : "false"),
+        "-c", "agents.max_concurrent_threads_per_session=" + Math.Max(1, options.MaxSubagents),
         // The user authorized direct CAD edits. `never` disables approval dialogs, but does
         // not approve side-effecting MCP tools. Grant the local CAD server explicitly;
         // keep the filesystem sandbox and other servers' policies unchanged.
@@ -130,6 +177,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         "-c", "mcp_servers.cad.tools.cad_publish.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_lisp.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"", "app-server"];
+    }
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
     {
         attachments ??= Array.Empty<ChatAttachment>();
@@ -143,7 +191,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.4.0-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.6.0-preview" } } });
             while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 using var doc = JsonDocument.Parse(line); var e = doc.RootElement;
@@ -198,23 +246,28 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                 if (e.TryGetProperty("method", out var method))
                 {
                     string? name = method.GetString();
+                    var parameters = e.TryGetProperty("params", out var eventParameters) ? eventParameters : default;
+                    string? eventThread = parameters.ValueKind == JsonValueKind.Object && parameters.TryGetProperty("threadId", out var thread)
+                        ? thread.GetString() : null;
+                    bool rootEvent = eventThread is null || eventThread == SessionId;
                     if (e.TryGetProperty("id", out var serverRequest))
                     {
                         // Interactive approvals/authentication require a richer UI in stage 3B.
                         await Send(new { id = serverRequest.Clone(), error = new { code = -32601, message = "Interactive request unsupported by prototype UI" } });
                         throw new IOException("Codex requires an interactive action: " + name);
                     }
-                    if (name == "item/agentMessage/delta") yield return new("text", e.GetProperty("params").GetProperty("delta").GetString() ?? "");
+                    if (name == "item/agentMessage/delta" && rootEvent) yield return new("text", parameters.GetProperty("delta").GetString() ?? "");
                     // Codex exposes a summary of reasoning, never the private reasoning text.
-                    if (name == "item/reasoning/summaryTextDelta")
-                        yield return new("reasoning_summary", e.GetProperty("params").GetProperty("delta").GetString() ?? "");
-                    if (name == "item/started" && e.GetProperty("params").TryGetProperty("item", out var item))
+                    if (name == "item/reasoning/summaryTextDelta" && rootEvent)
+                        yield return new("reasoning_summary", parameters.GetProperty("delta").GetString() ?? "");
+                    if (name == "item/started" && rootEvent && parameters.TryGetProperty("item", out var item))
                     {
                         string? type = item.TryGetProperty("type", out var itemType) ? itemType.GetString() : null;
                         if (type == "mcpToolCall")
                             yield return new("step", "Выполняю " + (item.TryGetProperty("tool", out var tool) ? tool.GetString() ?? "CAD tool" : "CAD tool"));
+                        if (type == "collabAgentToolCall") yield return new("status", "Помощники анализируют задачу");
                     }
-                    if (name == "item/completed" && e.GetProperty("params").TryGetProperty("item", out var completedItem) &&
+                    if (name == "item/completed" && rootEvent && parameters.TryGetProperty("item", out var completedItem) &&
                         completedItem.TryGetProperty("type", out var completedType) && completedType.GetString() == "mcpToolCall")
                     {
                         var tool = completedItem.TryGetProperty("tool", out var toolName) ? toolName.GetString() ?? "CAD tool" : "CAD tool";
@@ -222,13 +275,15 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         yield return new("step", (result == "failed" ? "Ошибка: " : "Завершено: ") + tool);
                         yield return new("cad_result", completedItem.GetRawText());
                     }
+                    if (name == "item/completed" && rootEvent && parameters.TryGetProperty("item", out var collabItem) &&
+                        collabItem.TryGetProperty("type", out var collabType) && collabType.GetString() == "collabAgentToolCall")
+                        yield return new("status", "Объединяю результаты помощников");
                     if (name == "error")
                     {
-                        var parameters = e.GetProperty("params");
                         if (parameters.TryGetProperty("willRetry", out var retry) && retry.GetBoolean()) yield return new("status", "Codex восстанавливает соединение");
                         else throw new IOException("Codex: " + FriendlyError(ErrorMessage(parameters)));
                     }
-                    if (name == "turn/completed")
+                    if (name == "turn/completed" && rootEvent)
                     {
                         var turn = e.GetProperty("params").GetProperty("turn");
                         if (turn.GetProperty("status").GetString() != "completed") throw new IOException("Codex turn did not complete: " + turn);

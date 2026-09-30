@@ -64,14 +64,33 @@ public sealed class PipeServer(string name, Func<Request, CancellationToken, Tas
     {
         while (!stop.IsCancellationRequested)
         {
+            NamedPipeServerStream? pipe = null;
             try
             {
-                using var pipe = CreatePipe();
+                pipe = CreatePipe();
                 await pipe.WaitForConnectionAsync(stop.Token);
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
+                _ = HandleAsync(pipe);
+                pipe = null;
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
+            catch (Exception e)
+            {
+                System.Diagnostics.Trace.WriteLine(e.Message);
+                try { await Task.Delay(100, stop.Token); } catch (OperationCanceledException) { break; }
+            }
+            finally { pipe?.Dispose(); }
+        }
+    }
+    private async Task HandleAsync(NamedPipeServerStream pipe)
+    {
+        using (pipe)
+        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop.Token))
+        {
+            try
+            {
                 timeout.CancelAfter(TimeSpan.FromSeconds(30));
                 var bytes = await Frames.ReadAsync(pipe, timeout.Token);
-                if (bytes is null) continue;
+                if (bytes is null) return;
                 var request = JsonSerializer.Deserialize<Request>(bytes, Wire.Json) ?? throw new JsonException();
                 Response response;
                 try
@@ -86,17 +105,14 @@ public sealed class PipeServer(string name, Func<Request, CancellationToken, Tas
                 catch (Exception e) { response = Response.Fail(request, "INTERNAL_ERROR", e.Message); }
                 await Frames.WriteAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(response, Wire.Json), stop.Token);
             }
-            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
-            catch (Exception e)
-            {
-                System.Diagnostics.Trace.WriteLine(e.Message);
-                try { await Task.Delay(100, stop.Token); } catch (OperationCanceledException) { break; }
-            }
+            catch (Exception e) when (e is IOException or OperationCanceledException or JsonException)
+            { System.Diagnostics.Trace.WriteLine(e.Message); }
         }
     }
     private NamedPipeServerStream CreatePipe()
     {
-        return new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        return new NamedPipeServerStream(name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     }
     public void Dispose() { stop.Cancel(); /* listener releases pipe asynchronously; do not block the CAD thread */ }
 }

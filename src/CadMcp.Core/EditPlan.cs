@@ -14,6 +14,8 @@ public static class EditPlan
         ["ellipse"] = "center major_axis radius_ratio start_angle_deg end_angle_deg layer color_index",
         ["arc"] = "center radius start_angle_deg end_angle_deg layer color_index",
         ["polyline"] = "points closed bulges width layer color_index",
+        ["polyline3d"] = "points closed layer color_index",
+        ["spline"] = "fit_points degree closed layer color_index",
         ["rectangle"] = "first second layer color_index",
         ["text"] = "position text height rotation_deg style layer color_index",
         ["mtext"] = "position text height width rotation_deg style layer color_index",
@@ -30,9 +32,19 @@ public static class EditPlan
         ["hatch"] = "boundaries pattern scale angle_deg layer color_index",
         ["box"] = "center length width height layer color_index",
         ["cylinder"] = "center radius height layer color_index",
+        ["sphere"] = "center radius layer color_index",
+        ["cone"] = "center radius height layer color_index",
+        ["wedge"] = "center length width height layer color_index",
+        ["torus"] = "center major_radius minor_radius layer color_index",
+        ["extrude"] = "handle target direction layer color_index",
+        ["sweep"] = "handle target path_handle path_target layer color_index",
+        ["revolve"] = "handle target axis_start axis_end angle_deg layer color_index",
+        ["solid_boolean"] = "handle target tool_handle tool_target operation keep_tool",
+        ["mesh"] = "vertices faces layer color_index",
         ["move"] = "handle target displacement",
         ["copy"] = "handle target displacement layer",
         ["rotate"] = "handle target center angle_deg",
+        ["rotate3d"] = "handle target axis_start axis_end angle_deg",
         ["scale"] = "handle target center factor",
         ["mirror"] = "handle target first second",
         ["erase"] = "handle target",
@@ -51,22 +63,35 @@ public static class EditPlan
             string kind = RequiredText(op, "op");
             if (!Fields.TryGetValue(kind, out var fields)) throw new CadFault("INVALID_OPERATION", kind);
             var allowed = fields.Split(' ').Concat(["op", "id"]).ToHashSet(StringComparer.Ordinal);
-            if (kind is "line" or "circle" or "point" or "ellipse" or "arc" or "polyline" or "rectangle" or
-                "text" or "mtext" or "block" or "dimension_aligned" or "box" or "cylinder") allowed.Add("layout");
+            if (kind is "line" or "circle" or "point" or "ellipse" or "arc" or "polyline" or "polyline3d" or "spline" or "rectangle" or
+                "text" or "mtext" or "block" or "dimension_aligned" or "box" or "cylinder" or "sphere" or
+                "cone" or "wedge" or "torus" or "extrude" or "sweep" or "revolve" or "mesh") allowed.Add("layout");
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var p in op.EnumerateObject())
             {
                 if (!names.Add(p.Name)) throw new CadFault("DUPLICATE_FIELD", p.Name);
                 if (!allowed.Contains(p.Name)) throw new CadFault("UNKNOWN_FIELD", kind + ": " + p.Name);
-                ValidateValue(p.Name, p.Value);
+                ValidateValue(kind, p.Name, p.Value);
             }
             if (op.TryGetProperty("target", out var target) && !aliases.Contains(target.GetString() ?? ""))
                 throw new CadFault("UNKNOWN_TARGET", "target must refer to an earlier operation id");
+            if (op.TryGetProperty("tool_target", out var toolTarget) && !aliases.Contains(toolTarget.GetString() ?? ""))
+                throw new CadFault("UNKNOWN_TARGET", "tool_target must refer to an earlier operation id");
+            if (op.TryGetProperty("path_target", out var pathTarget) && !aliases.Contains(pathTarget.GetString() ?? ""))
+                throw new CadFault("UNKNOWN_TARGET", "path_target must refer to an earlier operation id");
             if (op.TryGetProperty("handle", out _) && op.TryGetProperty("target", out _))
                 throw new CadFault("INVALID_TARGET", "Use handle or target, not both");
-            if (kind is "move" or "copy" or "rotate" or "scale" or "mirror" or "erase" or "set")
+            if (op.TryGetProperty("tool_handle", out _) && op.TryGetProperty("tool_target", out _))
+                throw new CadFault("INVALID_TARGET", "Use tool_handle or tool_target, not both");
+            if (op.TryGetProperty("path_handle", out _) && op.TryGetProperty("path_target", out _))
+                throw new CadFault("INVALID_TARGET", "Use path_handle or path_target, not both");
+            if (kind is "move" or "copy" or "rotate" or "rotate3d" or "scale" or "mirror" or "erase" or "set" or "extrude" or "sweep" or "revolve" or "solid_boolean")
                 if (!op.TryGetProperty("handle", out _) && !op.TryGetProperty("target", out _))
                     throw new CadFault("INVALID_TARGET", "Expected handle or target");
+            if (kind == "solid_boolean" && !op.TryGetProperty("tool_handle", out _) && !op.TryGetProperty("tool_target", out _))
+                throw new CadFault("INVALID_TARGET", "solid_boolean needs tool_handle or tool_target");
+            if (kind == "sweep" && !op.TryGetProperty("path_handle", out _) && !op.TryGetProperty("path_target", out _))
+                throw new CadFault("INVALID_TARGET", "sweep needs path_handle or path_target");
             var required = kind switch
             {
                 "layer" or "layout_create" or "layout_configure" => "name", "layout_copy" => "source name",
@@ -75,15 +100,23 @@ public static class EditPlan
                 "civil_tin_create" => "name vertices", "civil_tin_add_points" => "handle vertices",
                 "line" => "start end", "circle" => "center radius", "point" => "position",
                 "ellipse" => "center major_axis radius_ratio",
-                "arc" => "center radius start_angle_deg end_angle_deg", "polyline" => "points",
+                "arc" => "center radius start_angle_deg end_angle_deg", "polyline" or "polyline3d" => "points",
+                "spline" => "fit_points",
                 "rectangle" => "first second", "text" or "mtext" => "position text height",
                 "block" => "name position", "block_define" => "name base_point handles", "dimension_aligned" => "first second position",
-                "hatch" => "boundaries", "box" => "center length width height", "cylinder" => "center radius height",
-                "move" or "copy" => "displacement", "rotate" => "center angle_deg", "scale" => "center factor",
+                "hatch" => "boundaries", "box" or "wedge" => "center length width height", "cylinder" or "cone" => "center radius height",
+                "sphere" => "center radius", "torus" => "center major_radius minor_radius",
+                "extrude" => "direction", "sweep" => "", "revolve" => "axis_start axis_end angle_deg",
+                "solid_boolean" => "operation",
+                "mesh" => "vertices faces",
+                "move" or "copy" => "displacement", "rotate" => "center angle_deg", "rotate3d" => "axis_start axis_end angle_deg", "scale" => "center factor",
                 "mirror" => "first second", _ => ""
             };
             foreach (var field in required.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
                 if (!op.TryGetProperty(field, out _)) throw new CadFault("MISSING_FIELD", kind + ": " + field);
+            if (kind == "mesh") ValidateMesh(op);
+            if (kind == "spline" && op.TryGetProperty("degree", out var degree) && degree.GetInt32() >= op.GetProperty("fit_points").GetArrayLength())
+                throw new CadFault("INVALID_SPLINE", "degree must be smaller than fit point count");
             if (op.TryGetProperty("id", out var id))
             {
                 var value = id.GetString();
@@ -113,9 +146,9 @@ public static class EditPlan
             ? n : throw new CadFault("INVALID_POINT", "Coordinates must be finite numbers")).ToArray();
         return [coords[0], coords[1], coords.Length == 3 ? coords[2] : 0];
     }
-    private static void ValidateValue(string key, JsonElement v)
+    private static void ValidateValue(string kind, string key, JsonElement v)
     {
-        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "displacement" or "base_point" or "major_axis" or "model_center") { Point(v); return; }
+        if (key is "start" or "end" or "center" or "position" or "first" or "second" or "axis_start" or "axis_end" or "displacement" or "direction" or "base_point" or "major_axis" or "model_center") { Point(v); return; }
         if (key == "handles")
         {
             if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 100 ||
@@ -149,14 +182,49 @@ public static class EditPlan
             }
             return;
         }
+        if (key == "fit_points")
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 3 or > 2000)
+                throw new CadFault("INVALID_SPLINE", "Supply 3..2000 WCS fit points");
+            foreach (var point in v.EnumerateArray())
+            {
+                if (point.ValueKind != JsonValueKind.Array || point.GetArrayLength() != 3)
+                    throw new CadFault("INVALID_SPLINE", "Fit points need [x,y,z]");
+                Point(point);
+            }
+            return;
+        }
+        if (key == "degree")
+        {
+            if (v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out var n) || n is < 1 or > 11)
+                throw new CadFault("INVALID_SPLINE", "degree must be an integer from 1 to 11");
+            return;
+        }
+        if (key == "faces")
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 2000)
+                throw new CadFault("INVALID_MESH_FACES", "Supply 1..2000 triangle or quadrilateral faces");
+            foreach (var face in v.EnumerateArray())
+                if (face.ValueKind != JsonValueKind.Array || face.GetArrayLength() is < 3 or > 4 ||
+                    face.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || !x.TryGetInt32(out var n) || n < 0))
+                    throw new CadFault("INVALID_MESH_FACES", "Each face needs 3 or 4 zero-based vertex indices");
+            return;
+        }
         if (key == "points")
         {
             if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 2 or > 2000) throw new CadFault("INVALID_POINTS", "Expected 2..2000 vertices");
+            if (kind == "polyline3d")
+            {
+                if (v.EnumerateArray().Any(p => p.ValueKind != JsonValueKind.Array || p.GetArrayLength() != 3))
+                    throw new CadFault("INVALID_POINTS", "3D polyline vertices need [x,y,z]");
+                foreach (var point in v.EnumerateArray()) Point(point);
+                return;
+            }
             var points = v.EnumerateArray().Select(Point).ToArray();
-            if (points.Any(p => Math.Abs(p[2] - points[0][2]) > 1e-8)) throw new CadFault("NONPLANAR_POLYLINE", "Polyline vertices must share WCS Z; use AutoLISP for 3D polylines");
+            if (points.Any(p => Math.Abs(p[2] - points[0][2]) > 1e-8)) throw new CadFault("NONPLANAR_POLYLINE", "Polyline vertices must share WCS Z; use polyline3d for spatial paths");
             return;
         }
-        if (key is "closed" or "locked" or "off" or "visible")
+        if (key is "closed" or "locked" or "off" or "visible" or "keep_tool")
         { if (v.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new CadFault("INVALID_PARAMETER", key + " must be boolean"); return; }
         if (key == "attributes")
         {
@@ -170,10 +238,10 @@ public static class EditPlan
         { if (v.ValueKind != JsonValueKind.Array || v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || double.IsNaN(x.GetDouble()) || double.IsInfinity(x.GetDouble()))) throw new CadFault("INVALID_BULGES", "Expected finite numbers"); return; }
         if (key == "scale" && v.ValueKind == JsonValueKind.Array)
         { if (v.GetArrayLength() != 3 || Point(v).Any(x => x <= 0)) throw new CadFault("INVALID_SCALE", "Scale must contain three positive factors"); return; }
-        if (key is "radius" or "radius_ratio" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "twist_deg" or "model_height" or "paper_rotation" or "linetype_scale" or "lineweight" or "color_index")
+        if (key is "radius" or "radius_ratio" or "major_radius" or "minor_radius" or "height" or "width" or "length" or "factor" or "scale" or "angle_deg" or "start_angle_deg" or "end_angle_deg" or "rotation_deg" or "twist_deg" or "model_height" or "paper_rotation" or "linetype_scale" or "lineweight" or "color_index")
         {
             if (v.ValueKind != JsonValueKind.Number || !v.TryGetDouble(out var n) || !(!double.IsNaN(n) && !double.IsInfinity(n))) throw new CadFault("INVALID_PARAMETER", key + " must be finite");
-            if (key is "radius" or "height" or "length" or "factor" or "scale" or "model_height" or "linetype_scale" && n <= 0) throw new CadFault("INVALID_PARAMETER", key + " must be positive");
+            if (key is "radius" or "major_radius" or "minor_radius" or "height" or "length" or "factor" or "scale" or "model_height" or "linetype_scale" && n <= 0) throw new CadFault("INVALID_PARAMETER", key + " must be positive");
             if (key == "width" && n < 0) throw new CadFault("INVALID_PARAMETER", "width must be nonnegative");
             if (key == "paper_rotation" && n is not (0 or 90 or 180 or 270)) throw new CadFault("INVALID_PARAMETER", "paper_rotation must be 0, 90, 180 or 270 degrees");
             if (key == "radius_ratio" && (n <= 0 || n > 1)) throw new CadFault("INVALID_PARAMETER", "radius_ratio must be >0 and <=1");
@@ -182,7 +250,28 @@ public static class EditPlan
         }
         if (v.ValueKind != JsonValueKind.String || (key != "text" && string.IsNullOrWhiteSpace(v.GetString())))
             throw new CadFault("INVALID_PARAMETER", key + " must be a string");
-        if (key == "handle" && (!long.TryParse(v.GetString(), System.Globalization.NumberStyles.HexNumber, null, out var h) || h <= 0))
+        if ((key is "handle" or "tool_handle" or "path_handle") &&
+            (!long.TryParse(v.GetString(), System.Globalization.NumberStyles.HexNumber, null, out var h) || h <= 0))
             throw new CadFault("INVALID_HANDLE", "Expected a positive hexadecimal handle");
+        if (key == "operation" && v.GetString() is not ("union" or "subtract" or "intersect"))
+            throw new CadFault("INVALID_PARAMETER", "operation must be union, subtract or intersect");
+    }
+    private static void ValidateMesh(JsonElement op)
+    {
+        var vertices = op.GetProperty("vertices").EnumerateArray().Select(Point).ToArray();
+        foreach (var face in op.GetProperty("faces").EnumerateArray())
+        {
+            var indices = face.EnumerateArray().Select(x => x.GetInt32()).ToArray();
+            if (indices.Any(i => i >= vertices.Length) || indices.Distinct().Count() != indices.Length)
+                throw new CadFault("INVALID_MESH_FACES", "Face indices must be distinct and refer to supplied vertices");
+            var a = vertices[indices[0]]; var b = vertices[indices[1]]; var c = vertices[indices[2]];
+            var ab = new[] { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+            var ac = new[] { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+            var cross = new[] { ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0] };
+            var areaSquared = cross.Sum(x => x * x);
+            var scale = Math.Max(ab.Sum(x => x * x), ac.Sum(x => x * x));
+            if (areaSquared <= scale * scale * 1e-24)
+                throw new CadFault("DEGENERATE_MESH_FACE", "The first three face vertices must form a nonzero area");
+        }
     }
 }

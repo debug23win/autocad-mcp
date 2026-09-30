@@ -27,11 +27,13 @@ public static class BrokerBootstrap
         start.ArgumentList.Add("--broker");
         start.ArgumentList.Add("--broker-pipe"); start.ArgumentList.Add(pipeName);
         using var process = Process.Start(start) ?? throw new IOException("Cannot start CAD MCP broker");
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < 20; i++)
         {
             if (await Probe()) return;
-            await Task.Delay(100, ct);
+            await Task.Delay(150, ct);
         }
-        throw new IOException("CAD MCP broker did not become ready");
+        throw new IOException(process.HasExited
+            ? "CAD MCP broker is unresponsive; a second broker exited during startup (code " + process.ExitCode + ")"
+            : "CAD MCP broker did not become ready after startup");
     }
 }

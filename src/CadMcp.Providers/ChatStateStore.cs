@@ -5,7 +5,8 @@ namespace CadMcp.Providers;
 public sealed record ChatState(int Provider, string CodexExecutable, string ClaudeExecutable, string Host, string Directory,
     string? SessionId, string Transcript, string? AdapterKey = null,
     string? CodexModel = null, string? CodexReasoningEffort = null,
-    IReadOnlyList<ChatLine>? Messages = null);
+    IReadOnlyList<ChatLine>? Messages = null, int MaxSubagents = 3,
+    string? ClaudeModel = null, string? ClaudeReasoningEffort = null);
 
 // Atomic-save approach adapted from debug23win/ClaudeRevit HistoryStore.cs (MIT).
 // Copyright (c) 2026 Alexandre Roubaud. See licenses/ClaudeRevit-MIT.txt.
@@ -29,7 +30,8 @@ public sealed class ChatStateStore(string root)
         return null;
     }
     public static bool Valid(ChatState state) => state.Provider is 0 or 1 && state.CodexExecutable is not null && state.ClaudeExecutable is not null
-        && state.Host is not null && state.Directory is not null && state.Transcript is not null;
+        && state.Host is not null && state.Directory is not null && state.Transcript is not null
+        && state.MaxSubagents is >= 0 and <= 4;
     public static ChatState UseBundledCodex(ChatState state, string bundled, string desktop)
     {
         if (!string.Equals(state.CodexExecutable, desktop, StringComparison.OrdinalIgnoreCase) &&
@@ -47,7 +49,7 @@ public sealed class ChatStateStore(string root)
             var recent = messages.TakeLast(200).Select(line => line with {
                 Text = line.Text.Length > 100000 ? line.Text[^100000..] : line.Text,
                 ReasoningSummary = line.ReasoningSummary is { Length: > 20000 } summary ? summary[^20000..] : line.ReasoningSummary,
-                Steps = line.Steps?.TakeLast(100).ToArray()
+                Steps = null
             }).ToList();
             state = state with { Messages = recent };
             while (recent.Count > 1 && JsonSerializer.SerializeToUtf8Bytes(state).Length > 3 * 1024 * 1024)
