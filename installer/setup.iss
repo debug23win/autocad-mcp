@@ -7,7 +7,7 @@
 [Setup]
 AppId={{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}
 AppName=CAD MCP для AutoCAD, Map 3D и Civil 3D 2025–2027 (предварительная версия)
-AppVersion=0.6.0-preview
+AppVersion=0.6.1-preview
 AppPublisher=CAD MCP contributors
 AppPublisherURL=https://github.com/debug23win/autocad-mcp
 DefaultDirName={userappdata}\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle
@@ -19,7 +19,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=CAD-MCP-2025-2027-0.6.0-preview-Setup
+OutputBaseFilename=CAD-MCP-2025-2027-0.6.1-preview-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -46,6 +46,76 @@ Name: "{group}\Репозиторий проекта"; Filename: "https://github
 Name: "{group}\Удалить CAD MCP"; Filename: "{uninstallexe}"
 
 [Code]
+function AutoCADRuntime(const Series: String): Integer;
+var
+  Root, Location, Key: String;
+  Config: AnsiString;
+  Names: TArrayOfString;
+  I, Found: Integer;
+begin
+  Result := 0;
+  Root := 'SOFTWARE\Autodesk\AutoCAD\' + Series;
+  if not RegGetSubkeyNames(HKLM64, Root, Names) then Exit;
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Key := Root + '\' + Names[I];
+    if not RegQueryStringValue(HKLM64, Key, 'AcadLocation', Location) then Continue;
+    if not LoadStringFromFile(AddBackslash(Location) + 'acdbmgd.runtimeconfig.json', Config) then
+    begin
+      Result := -2;
+      Exit;
+    end;
+    if Pos('net10.0', Lowercase(Config)) > 0 then Found := 10
+    else if Pos('net8.0', Lowercase(Config)) > 0 then Found := 8
+    else
+    begin
+      Result := -2;
+      Exit;
+    end;
+    if (Result <> 0) and (Result <> Found) then
+    begin
+      Result := -1;
+      Exit;
+    end;
+    Result := Found;
+  end;
+end;
+
+procedure SelectAdapter(const Series, ModuleName: String);
+var
+  Document, Groups, Group, Requirements, Entry: Variant;
+  I: Integer;
+  Path: String;
+begin
+  Path := ExpandConstant('{app}\PackageContents.xml');
+  Document := CreateOleObject('Msxml2.DOMDocument.6.0');
+  Document.async := False;
+  if not Document.load(Path) then RaiseException('Не удалось прочитать PackageContents.xml');
+  Groups := Document.selectNodes('/ApplicationPackage/Components');
+  for I := 0 to Groups.length - 1 do
+  begin
+    Group := Groups.item[I];
+    Requirements := Group.selectSingleNode('RuntimeRequirements');
+    if VarIsNull(Requirements) then Continue;
+    if Requirements.getAttribute('SeriesMin') <> Series then Continue;
+    Entry := Group.selectSingleNode('ComponentEntry');
+    if VarIsNull(Entry) then RaiseException('Нет адаптера для ' + Series);
+    Entry.setAttribute('ModuleName', ModuleName);
+    Document.save(Path);
+    Exit;
+  end;
+  RaiseException('Не найдена серия AutoCAD ' + Series);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then Exit;
+  if AutoCADRuntime('R25.0') = 10 then
+    SelectAdapter('R25.0', './Contents/Net10R250/CadMcp.AutoCAD2025Net10.dll');
+  if AutoCADRuntime('R25.1') = 10 then
+    SelectAdapter('R25.1', './Contents/Net10R251/CadMcp.AutoCAD2026Net10.dll');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Locator, Services, Processes: Variant;
@@ -59,6 +129,15 @@ begin
       Result := 'Закройте AutoCAD и CAD MCP перед установкой. Установщик не закрывает чертежи автоматически.';
   except
     Result := 'Не удалось проверить запущенные процессы. Закройте AutoCAD и CAD MCP и повторите установку.';
+  end;
+  if Result = '' then
+  begin
+    if AutoCADRuntime('R25.0') = -1 then
+      Result := 'Продукты AutoCAD 2025 используют разные версии .NET. Установите согласованные обновления Autodesk.';
+    if AutoCADRuntime('R25.1') = -1 then
+      Result := 'Продукты AutoCAD 2026 используют разные версии .NET. Установите согласованные обновления Autodesk.';
+    if (AutoCADRuntime('R25.0') = -2) or (AutoCADRuntime('R25.1') = -2) then
+      Result := 'Не удалось определить среду .NET установленного AutoCAD. Проверьте файлы продукта или переустановите обновление Autodesk.';
   end;
 end;
 

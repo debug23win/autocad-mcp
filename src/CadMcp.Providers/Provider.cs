@@ -191,7 +191,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.6.0-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.6.1-preview" } } });
             while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 using var doc = JsonDocument.Parse(line); var e = doc.RootElement;

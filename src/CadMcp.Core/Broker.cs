@@ -21,7 +21,7 @@ public sealed class Broker(string descriptorRoot)
     }
     public async Task<Response> DispatchAsync(Request request, CancellationToken ct)
     {
-        if (request.Operation == "broker_ping") return new(request.RequestId, "completed", new { version = "0.6.0-preview" });
+        if (request.Operation == "broker_ping") return new(request.RequestId, "completed", new { version = "0.6.1-preview" });
         if (request.Operation == "cad_sessions")
         {
             async Task<object> ProbeWorker(WorkerDescriptor w)

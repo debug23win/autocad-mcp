@@ -33,7 +33,7 @@ try {
     }
     $cliVersion = & $codexExe --version
     if ($LASTEXITCODE -ne 0 -or $cliVersion -ne 'codex-cli 0.159.0') { throw 'Expected verified official Codex 0.159.0' }
-    New-Item -ItemType Directory -Force -Path "$payload/Contents/Win64","$payload/Contents/Host","$payload/Contents/Net10","$payload/Contents/Client" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$payload/Contents/Win64","$payload/Contents/Host","$payload/Contents/Net10","$payload/Contents/Net10R250","$payload/Contents/Net10R251","$payload/Contents/Client" | Out-Null
     dotnet build CadMcp.sln -c Release -m:1 /nodeReuse:false "-p:AutoCADDir=$AutoCADDir" --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
     dotnet publish src/CadMcp.Host/CadMcp.Host.csproj -c Release -r win-x64 --self-contained true -p:RuntimeFrameworkVersion=8.0.31 -p:PublishSingleFile=false -p:PublishTrimmed=false --no-restore -o "$payload/Contents/Host" -m:1 /nodeReuse:false
@@ -42,6 +42,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Client publish failed' }
     & $DotNet2027 build src/CadMcp.AutoCAD2027/CadMcp.AutoCAD2027.csproj -c Release --no-restore -p:BuildProjectReferences=false -m:1 /nodeReuse:false
     if ($LASTEXITCODE -ne 0) { throw 'Official SDK 2027 build failed' }
+    foreach ($edition in @(@('2025Net10','Net10R250'), @('2026Net10','Net10R251'))) {
+        $project = "src/CadMcp.AutoCAD$($edition[0])/CadMcp.AutoCAD$($edition[0]).csproj"
+        # Core is also restored for win-x64 by Host/Client; refresh its RID-specific lock entry.
+        & $DotNet2027 restore $project --force-evaluate --packages (Join-Path $repoRoot '.runtime/packages')
+        if ($LASTEXITCODE -ne 0) { throw "Official SDK $($edition[0]) restore failed" }
+        & $DotNet2027 build $project -c Release --no-restore -p:BuildProjectReferences=false -m:1 /nodeReuse:false
+        if ($LASTEXITCODE -ne 0) { throw "Official SDK $($edition[0]) build failed" }
+        $nativeEdition = Join-Path $repoRoot "src/CadMcp.AutoCAD$($edition[0])/bin/Release/net10.0-windows"
+        foreach ($name in @("CadMcp.AutoCAD$($edition[0]).dll",'CadMcp.Core.dll',"CadMcp.AutoCAD$($edition[0]).deps.json")) {
+            Copy-Item -LiteralPath (Join-Path $nativeEdition $name) -Destination "$payload/Contents/$($edition[1])"
+        }
+    }
     $native2027 = Join-Path $repoRoot 'src/CadMcp.AutoCAD2027/bin/Release/net10.0-windows'
     foreach ($name in @('CadMcp.AutoCAD2027.dll','CadMcp.Core.dll','CadMcp.AutoCAD2027.deps.json')) {
         Copy-Item -LiteralPath (Join-Path $native2027 $name) -Destination "$payload/Contents/Net10"
@@ -96,5 +108,5 @@ try {
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.6.0-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.6.1-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }

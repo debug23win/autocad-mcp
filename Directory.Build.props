@@ -6,6 +6,6 @@
     <LangVersion>12</LangVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <Deterministic>true</Deterministic>
-    <Version>0.6.0-preview</Version>
+    <Version>0.6.1-preview</Version>
   </PropertyGroup>
 </Project>

@@ -1,6 +1,6 @@
 # CAD MCP — AutoCAD, Map 3D и Civil 3D 2025–2027
 
-Версия 0.6.0-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
+Версия 0.6.1-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
 
 ## Что реализовано
 
@@ -30,13 +30,15 @@ Codex 0.159.0 включён в установщик. Работа по подп
 
 | Продукты / годы | Адаптер | Интерфейс | Проверка |
 |---|---|---|---|
-| Полный AutoCAD и Map 3D 2025 | API 2025, .NET 8 | Палитра из ленты | Общие DWG-операции: по 20 GUI-проверок; нативный движок AutoCAD |
-| AutoCAD, Map 3D, Civil 3D 2026; Civil 3D 2025 | Совместимый API 2025, .NET 8 | Палитра из ленты | Сборка и ограничения загрузчика; отдельные продуктовые установки ещё не проверены |
+| AutoCAD, Map 3D, Civil 3D 2025 до обновлений .NET 10 | API 2025, .NET 8 | Палитра из ленты | AutoCAD и Map 3D: нативные GUI-проверки; Civil 3D отдельно не проверен |
+| AutoCAD, Map 3D, Civil 3D 2026 до обновлений .NET 10 | Совместимый API 2025, .NET 8 | Палитра из ленты | Сборка; живой запуск отдельно не проверен |
+| AutoCAD и основанные на нём продукты 2025.1.4+ | Официальный AutoCAD.NET 25.0.2, .NET 10 | Отдельное окно из ленты | SDK собран; живой запуск обновлённого продукта не проверен |
+| AutoCAD и основанные на нём продукты 2026.1.2+ | Официальный AutoCAD.NET 25.1.1, .NET 10 | Отдельное окно из ленты | SDK собран; живой запуск обновлённого продукта не проверен |
 | AutoCAD, Map 3D, Civil 3D 2027 | Официальный AutoCAD.NET 26.0.0, .NET 10 | Отдельное окно из ленты | Сборка официального SDK; живой запуск ещё не проверен |
 
 AutoCAD LT и версии до 2025 исключены по согласованному объёму. Будущие версии после 2027 не включены автоматически. Совместимость базового DWG API не означает готовность специальных операций с сетями Civil, геоданными Map, проверкой ГОСТ/СПДС или выпуском комплектов.
 
-Autodesk подтверждает совместимость SDK 2025 с AutoCAD 2026 и необходимость SDK 2027 / .NET 10 для AutoCAD 2027: [официальная таблица](https://help.autodesk.com/cloudhelp/2027/ENU/AutoCAD-Customization/files/GUID-A6C680F2-DE2E-418A-A182-E4884073338A.htm). Пакет SDK 2027 опубликован Autodesk в [NuGet](https://www.nuget.org/packages/AutoCAD.NET/26.0.0). SDK-сборки Autodesk не распространяются в установщике.
+Обновления AutoCAD 2025.1.4 и 2026.1.2 переводят среду с .NET 8 на .NET 10. Установщик читает `acdbmgd.runtimeconfig.json` каждого установленного выпуска и выбирает подходящий адаптер; после обновления Autodesk запустите установщик CAD MCP повторно. При смешении .NET 8 и .NET 10 внутри одного выпуска установщик остановится: [Autodesk предупреждает о сбоях такой конфигурации](https://help.autodesk.com/view/ACD/2026/ENU/?caas=caas/sfdcarticles/sfdcarticles/AutoCAD-2026-1-2-and-Toolset-Products-Crashes-After-Updating-To-NET-10-Based-Builds.html). SDK-сборки Autodesk не распространяются в установщике.
 
 ## Установка
 
@@ -55,6 +57,6 @@ Windows x64; .NET SDK для net8 и отдельный SDK для net10; уст
 
 Из корня: scripts/build.ps1, scripts/test.ps1. Нативные проверки: собрать tests/CadMcp.CoreProbe и запустить scripts/test-autocad-core.ps1; собрать tests/CadMcp.NativeProbe и запустить scripts/test-autocad-gui.ps1 (для установленного Map 3D 2025 — -Product MAP). Core Console работает с /isolate и своим профилем; GUI-проверка создаёт собственные пустые DWG и заранее копирует зарегистрированный профиль, чтобы /p не вызывал модальный диалог. Launcher завершает только свой процесс, восстанавливает прежний выбор профиля, если тот ещё указывает на тестовый, и удаляет свой профиль. Рабочие DWG не открываются.
 
-Для установщика сначала восстановить Host и Client для win-x64, SelfContained=true, RuntimeFrameworkVersion=8.0.31, адаптер 2027 — SDK .NET 10. Затем scripts/prepare-codex.ps1 -Destination <папка-комплекта> и scripts/build-installer.ps1 -IsccPath <Inno-Setup-6.7.3/ISCC.exe> -CodexDir <папка-комплекта> -DotNet2027 <SDK10/dotnet.exe>.
+Для установщика сначала восстановить Host и Client для win-x64, SelfContained=true, RuntimeFrameworkVersion=8.0.31, адаптеры 2025.1.4+, 2026.1.2+ и 2027 — SDK .NET 10. Затем scripts/prepare-codex.ps1 -Destination <папка-комплекта> и scripts/build-installer.ps1 -IsccPath <Inno-Setup-6.7.3/ISCC.exe> -CodexDir <папка-комплекта> -DotNet2027 <SDK10/dotnet.exe>.
 
-Документация: [проверка 0.6.0](docs/validation-0.6.0.md), [помощники](docs/agents.md), [3D-моделирование](docs/native-modeling.md), [геопривязка](docs/georeferencing.md), [выпуск листов](docs/publishing.md), [вертикальные API](docs/verticals.md), [вложения](docs/attachments.md), [редактирование](docs/editing.md), [чтение](docs/reading.md), [модели](docs/model-selection.md), [анализ ClaudeRevit](docs/clauderevit-analysis.md).
+Документация: [проверка 0.6.1](docs/validation-0.6.1.md), [помощники](docs/agents.md), [3D-моделирование](docs/native-modeling.md), [геопривязка](docs/georeferencing.md), [выпуск листов](docs/publishing.md), [вертикальные API](docs/verticals.md), [вложения](docs/attachments.md), [редактирование](docs/editing.md), [чтение](docs/reading.md), [модели](docs/model-selection.md), [анализ ClaudeRevit](docs/clauderevit-analysis.md).

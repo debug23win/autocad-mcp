@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "AutoCAD.NET": {
+        "type": "Direct",
+        "requested": "[25.1.1, )",
+        "resolved": "25.1.1",
+        "contentHash": "zWmlethoQq8g4ohUg6roEG5o8pg4zPFaCXUM2PwrrVeT0eRWCukgf38a4+x/L7iQdwW7dmYzDlw61ulN5uYxWg==",
+        "dependencies": {
+          "AutoCAD.NET.Core": "[25.1.1]"
+        }
+      },
+      "AutoCAD.NET.Core": {
+        "type": "Transitive",
+        "resolved": "25.1.1",
+        "contentHash": "G9tj0yBt8AhHroUYXjkDsL8kCFArG1I+22aumeQqPL5XQ36Oti7QbN8T4D3Rfz3HsIYKNHTtUeiU6ixvBwTi+Q==",
+        "dependencies": {
+          "AutoCAD.NET.Model": "[25.1.1]"
+        }
+      },
+      "AutoCAD.NET.Model": {
+        "type": "Transitive",
+        "resolved": "25.1.1",
+        "contentHash": "SUbl6tXY5Ad6SSz2H5OYkzs0T+Buz1SUviZuBVBw86Pc2tt3KTnxS1vkvyAUWh1mMc1pgagJUfWj/znsY9LGZg=="
+      },
+      "cadmcp.core": {
+        "type": "Project"
+      }
+    }
+  }
+}
