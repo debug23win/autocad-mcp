@@ -83,6 +83,10 @@ internal static class Reader
                 foreach (var name in new[] { "XLine1Point", "XLine2Point", "DimLinePoint", "Center", "CenterPoint", "ChordPoint", "FarChordPoint", "ArcPoint", "XLine1Start", "XLine1End", "XLine2Start", "XLine2End" })
                     if (dim.GetType().GetProperty(name)?.GetValue(dim) is Point3d point) points[name] = P(point);
                 item["geometry"] = points; item["limitations"] = new[] { "formatted_dimension_text_requires_style_evaluation" }; break;
+            case Table table:
+                item["table"] = NativeTables.Read(table, tr, rowCount: 10);
+                item["row_count"] = table.Rows.Count; item["column_count"] = table.Columns.Count;
+                item["width"] = table.Width; item["height"] = table.Height; item["access"] = "structured"; break;
             case BlockReference block:
                 var definition = (BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead);
                 item["name"] = definition.Name; item["is_xref"] = definition.IsFromExternalReference;

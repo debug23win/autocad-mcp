@@ -15,7 +15,8 @@ internal static class Catalog
         var layoutDictionary = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
         var layouts = layoutDictionary.Cast<System.Collections.DictionaryEntry>().Select(x => x.Value is ObjectId id
             ? (Layout)tr.GetObject(id, OpenMode.ForRead) : throw new InvalidOperationException("Invalid layout dictionary entry")).OrderBy(x => x.TabOrder).ToArray();
-        return new { layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }),
+        var tableStyles = ((DBDictionary)tr.GetObject(db.TableStyleDictionaryId, OpenMode.ForRead)).Cast<System.Collections.DictionaryEntry>().Select(e => e.Key.ToString()).ToArray();
+        return new { table_styles = tableStyles.Take(limit), layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }),
             blocks = blocks.Take(limit).Select(b => new { name = b.Name, handle = b.Handle.ToString(), xref = b.IsFromExternalReference, dependent = b.IsDependent,
                 attributes = b.Cast<ObjectId>().Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<AttributeDefinition>().Take(100).Select(a => new { tag = a.Tag, text = a.TextString, constant = a.Constant }) }),
             text_styles = styles.Take(limit).Select(s => new { name = s.Name, font = s.FileName, height = s.TextSize }),

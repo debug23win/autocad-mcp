@@ -74,6 +74,17 @@ if (args.Contains("app-server"))
             if (e.GetProperty("params").GetProperty("model").GetString() != (explicitSelection ? "alternative-model" : "available-model") ||
                 threadModel != (explicitSelection ? "alternative-model" : "available-model") ||
                 e.GetProperty("params").GetProperty("effort").GetString() != (explicitSelection ? "high" : "medium")) throw new Exception("Wrong requested model or effort on wire");
+            if (prompt is "STEER" or "STEER_REJECT")
+            {
+                Console.WriteLine("{\"id\":3,\"result\":{\"turn\":{\"id\":\"live-turn\"}}}");
+                var next=JsonDocument.Parse(Console.ReadLine()!).RootElement;
+                if(next.GetProperty("method").GetString()!="turn/steer"||next.GetProperty("params").GetProperty("expectedTurnId").GetString()!="live-turn"||next.GetProperty("params").GetProperty("input")[0].GetProperty("text").GetString()!="Уточнение ✓")throw new Exception("Invalid same-turn steering contract");
+                int inputId=next.GetProperty("id").GetInt32();
+                Console.WriteLine(prompt=="STEER"?JsonSerializer.Serialize(new{id=inputId,result=new{turnId="live-turn"}}):JsonSerializer.Serialize(new{id=inputId,error=new{code=-32600,message="turn already completed"}}));
+                Console.WriteLine("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"Учёл уточнение\"}}");
+                Console.WriteLine("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"completed\"}}}");
+                return;
+            }
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
             Console.WriteLine("{\"id\":3,\"result\":{}}");
             Console.WriteLine("{\"method\":\"item/reasoning/summaryTextDelta\",\"params\":{\"delta\":\"Проверяю размеры чертежа\",\"itemId\":\"r1\",\"summaryIndex\":0,\"threadId\":\"test-thread\",\"turnId\":\"t1\"}}");
@@ -91,15 +102,19 @@ if (args.Contains("app-server"))
 }
 if (args.Contains("-p"))
 {
-    string prompt = Console.In.ReadToEnd();
-    if (args.Contains("--input-format"))
+    string inputLine=Console.ReadLine()!;
+    var input=JsonDocument.Parse(inputLine).RootElement;
+    var blocks=input.GetProperty("message").GetProperty("content");
+    string prompt=blocks[0].GetProperty("text").GetString()!;
+    if(prompt.StartsWith("ATTACHMENT")&&!blocks.EnumerateArray().Any(x=>x.GetProperty("type").GetString()=="image"&&Convert.FromBase64String(x.GetProperty("source").GetProperty("data").GetString()!).Length>8))throw new Exception("Claude image input missing");
+    if(prompt=="STEER")
     {
-        var message = JsonDocument.Parse(prompt).RootElement.GetProperty("message");
-        var blocks = message.GetProperty("content");
-        if (message.GetProperty("role").GetString() != "user" ||
-            !blocks.EnumerateArray().Any(x => x.GetProperty("type").GetString() == "text" && x.GetProperty("text").GetString()!.Contains("Чертёж ✓")) ||
-            !blocks.EnumerateArray().Any(x => x.GetProperty("type").GetString() == "image" && Convert.FromBase64String(x.GetProperty("source").GetProperty("data").GetString()!).Length > 8))
-            throw new Exception("Claude did not receive text and image attachment");
+        var next=JsonDocument.Parse(Console.ReadLine()!).RootElement;
+        if(next.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()!="Уточнение ✓")throw new Exception("Claude live input lost Unicode");
+        Console.WriteLine(next.GetRawText());
+        Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Первый результат\"}");
+        Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Учёл уточнение\"}");
+        return;
     }
     if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
     Console.WriteLine("{\"type\":\"system\",\"session_id\":\"test-claude\"}");
@@ -601,6 +616,37 @@ foreach (var name in new[] { "Codex", "Claude" })
         Assert(sw.Elapsed < TimeSpan.FromSeconds(4), "Stop hung waiting for stdout");
     });
 }
+foreach(var name in new[]{"Codex","Claude"})
+{
+    await Test(name+" active task accepts follow-up without a second writer",async()=>
+    {
+        IChatProvider live=name=="Codex"?new CodexProvider(options):new ClaudeProvider(options);
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Assert((await live.SteerAsync(new("before",Array.Empty<ChatAttachment>()),timeout.Token)).State=="unavailable","Idle provider pretended to receive input");
+        Task<InputReceipt>? receipt=null;var text=new System.Text.StringBuilder();
+        await foreach(var e in live.SendAsync("STEER",timeout.Token))
+        {if(e.Kind=="input_ready"&&receipt is null)receipt=live.SteerAsync(new("Уточнение ✓",Array.Empty<ChatAttachment>()),timeout.Token);if(e.Kind=="text")text.Append(e.Text);}
+        Assert(receipt is not null&&(await receipt).State=="accepted"&&text.ToString().Contains("Учёл уточнение"),"Follow-up not acknowledged or result lost");
+        Assert((await live.SteerAsync(new("after",Array.Empty<ChatAttachment>()),timeout.Token)).State=="unavailable","Closed turn accepted input");
+    });
+}
+await Test("rejected Codex steering keeps the original response",async()=>
+{
+    var live=new CodexProvider(options);Task<InputReceipt>? receipt=null;bool completed=false;
+    using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    await foreach(var e in live.SendAsync("STEER_REJECT",timeout.Token))
+    {if(e.Kind=="input_ready"&&receipt is null)receipt=live.SteerAsync(new("Уточнение ✓",Array.Empty<ChatAttachment>()),timeout.Token);completed|=e.Kind=="completed";}
+    Assert(completed&&receipt is not null&&(await receipt).State=="rejected","Input rejection destroyed current task");
+});
+await Test("drafting contract validates formulas, bounded cells and verified form widths",async()=>
+{
+    EditPlan.Parse("""[{"op":"table_create","id":"a","position":[0,0],"rows":2,"columns":2,"cells":[{"cell":"A1","value":3}]},{"op":"table_create","position":[100,0],"rows":2,"columns":2,"cells":[{"cell":"A1","formula":"={{n}}*2","references":[{"name":"n","table_target":"a","cell":"A1"}]}]}]""");
+    await Throws<CadFault>(()=>Task.FromResult(EditPlan.Parse("""[{"op":"table_create","position":[0,0],"rows":2,"columns":2,"cells":[{"cell":"C1","value":1}]}]""")));
+    await Throws<CadFault>(()=>Task.FromResult(EditPlan.Parse("""[{"op":"table_create","position":[0,0],"rows":2,"columns":2,"merges":[[0,0,3,1]]}]""")));
+    await Throws<CadFault>(()=>Task.FromResult(EditPlan.Parse("""[{"op":"table_cells","handle":"AB","cells":[{"cell":"A1","formula":"={{missing}}*2"}]}]""")));
+    foreach(var form in SpdsTemplates.Tables.Where(f=>f.VerifiedForm))Assert(form.Widths.Sum()==185&&form.HeaderHeight==15&&form.RowHeight>=8,"Wrong verified GOST form dimensions");
+    Assert(DraftingPlan.Address("$AA$12")== (11,26)&&DraftingPlan.Address(11,26)=="AA12","A1 address conversion failed");
+});
 await Test("provider arguments preserve paths and isolate Claude MCP config", () =>
 {
     var a = new ClaudeProvider(options).Arguments();
@@ -661,7 +707,7 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 25 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
+        Assert(names.Length == 27 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
             names.Contains("cad_export") && names.Contains("cad_publish") && names.Contains("cad_lisp") &&
             names.Contains("cad_operation_status") && names.Contains("cad_render") && names.Contains("cad_image_register") &&
             names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get") &&

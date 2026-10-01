@@ -45,7 +45,7 @@ try {
     foreach ($edition in @(@('2025Net10','Net10R250'), @('2026Net10','Net10R251'))) {
         $project = "src/CadMcp.AutoCAD$($edition[0])/CadMcp.AutoCAD$($edition[0]).csproj"
         # Core is also restored for win-x64 by Host/Client; refresh its RID-specific lock entry.
-        & $DotNet2027 restore $project --force-evaluate --packages (Join-Path $repoRoot '.runtime/packages')
+        & $DotNet2027 restore $project --force-evaluate --packages (Join-Path $repoRoot '.runtime/packages') -m:1 /nodeReuse:false
         if ($LASTEXITCODE -ne 0) { throw "Official SDK $($edition[0]) restore failed" }
         & $DotNet2027 build $project -c Release --no-restore -p:BuildProjectReferences=false -m:1 /nodeReuse:false
         if ($LASTEXITCODE -ne 0) { throw "Official SDK $($edition[0]) build failed" }
@@ -108,5 +108,5 @@ try {
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.7.0-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.8.0-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }

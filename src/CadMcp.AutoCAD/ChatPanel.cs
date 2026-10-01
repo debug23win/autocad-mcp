@@ -57,6 +57,9 @@ internal sealed class ChatPanel : UserControl
     private ChatState? restored;
     private CancellationTokenSource? running;
     private IChatProvider? adapter;
+    private readonly Queue<(int Line, ChatInput Input)> followups = new();
+    private readonly SemaphoreSlim inputDelivery = new(1,1);
+    private bool acceptingInput;
     private string? adapterKey;
     private string? adapterSelection;
     private string? chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort;
@@ -337,7 +340,9 @@ internal sealed class ChatPanel : UserControl
     }
     private void SetBusy(bool busy)
     {
-        send.IsEnabled = attach.IsEnabled = provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
+        send.IsEnabled = attach.IsEnabled = !busy || acceptingInput;
+        send.Content = acceptingInput ? "Дополнить" : "Отправить";
+        provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy && provider.SelectedIndex == 0;
         agentCount.IsEnabled = !busy;
@@ -361,10 +366,11 @@ internal sealed class ChatPanel : UserControl
     }
     private async Task Send()
     {
-        if (running is not null || (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0)) return;
+        if (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0) return;
+        if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
         { activity.Text = "Укажите существующие MCP host и рабочую папку."; return; }
-        running = new(); SetBusy(true);
+        running = new(); acceptingInput = true; SetBusy(true);
         turnStarted = lastSignal = DateTimeOffset.Now;
         currentActivity = "Подключение";
         activity.Text = "Подключение…"; flushTimer.Start(); progressTimer.Start();
@@ -373,6 +379,11 @@ internal sealed class ChatPanel : UserControl
         try
         {
             var files = ChatAttachments.Capture(attachments);
+            var initialPrompt = string.IsNullOrWhiteSpace(input.Text) ? "Изучи приложенные файлы и скажи, чем можешь помочь." : input.Text;
+            var images = files.Where(f => f.Kind == AttachmentKind.Image).Select(transcript.SaveImage).ToArray();
+            messages.Add(new ChatLine("user", initialPrompt, Images: images));
+            currentAssistantIndex = messages.Count; messages.Add(new ChatLine("assistant", ""));
+            input.Clear(); attachments.Clear(); RefreshAttachments(); RenderChat();
             await BrokerBootstrap.EnsureAsync(host.Text, running.Token);
             await RefreshCad();
             initialDocumentId = cadContext?.DocumentId; initialSessionId = cadContext?.SessionId;
@@ -390,16 +401,13 @@ internal sealed class ChatPanel : UserControl
                 adapter.SessionId = previousSession ?? (restored?.AdapterKey == key ? restored.SessionId : null);
                 restored = null;
             }
-            var prompt = string.IsNullOrWhiteSpace(input.Text) ? "Изучи приложенные файлы и скажи, чем можешь помочь." : input.Text;
-            var images = files.Where(f => f.Kind == AttachmentKind.Image).Select(transcript.SaveImage).ToArray();
-            messages.Add(new ChatLine("user", prompt, Images: images));
-            currentAssistantIndex = messages.Count;
-            messages.Add(new ChatLine("assistant", ""));
-            input.Clear(); RenderChat();
+            var prompt = initialPrompt;
             if (cadContext is { } target) prompt += "\nPanel target (verify fresh with CAD tools): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
                 lastSignal = DateTimeOffset.Now;
+                if (item.Kind == "input_ready") _ = DeliverFollowups();
+                if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
                 if (item.Kind == "text") streamedText.Append(item.Text);
                 if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); currentActivity = "Модель: " + item.Text; }
                 if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
@@ -415,7 +423,7 @@ internal sealed class ChatPanel : UserControl
             }
             FlushText();
             await FinalizeCadResult(initialSessionId, initialDocumentId, visibleCadResult);
-            attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
+            activity.Text = "Готово";
         }
         catch (OperationCanceledException)
         {
@@ -427,7 +435,45 @@ internal sealed class ChatPanel : UserControl
             LogError(e); FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОшибка: " + e.Message }); activity.Text = "Ошибка; подробности в журнале";
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
-        finally { progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+        finally {
+            acceptingInput=false;
+            while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,"Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно.");
+            progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+    }
+    private async Task AddFollowup()
+    {
+        try
+        {
+            var files=ChatAttachments.Capture(attachments);
+            var prompt=string.IsNullOrWhiteSpace(input.Text)?"Учти также приложенные файлы.":input.Text;
+            int line=messages.Count;
+            FlushText();var previous=currentAssistantIndex>=0?messages[currentAssistantIndex]:null;
+            messages.Add(new ChatLine("user",prompt,Images:files.Where(f=>f.Kind==AttachmentKind.Image).Select(transcript.SaveImage).ToArray(),Delivery:"Ожидает подключения"));
+            currentAssistantIndex=messages.Count;messages.Add(new ChatLine("assistant","",Model:previous?.Model,Effort:previous?.Effort));
+            followups.Enqueue((line,new(prompt,files)));input.Clear();attachments.Clear();RefreshAttachments();RenderChat();Persist();
+            await DeliverFollowups();
+        }
+        catch(System.Exception error) { activity.Text="Дополнение не отправлено: "+error.Message;LogError(error); }
+    }
+    private void SetDelivery(int line,string text)
+    { if(line>=0&&line<messages.Count){messages[line]=messages[line] with {Delivery=text};RenderChat();Persist();} }
+    private async Task DeliverFollowups()
+    {
+        if(!await inputDelivery.WaitAsync(0))return;
+        try
+        {
+            while(acceptingInput&&adapter is not null&&running is not null&&followups.TryPeek(out var message))
+            {
+                SetDelivery(message.Line,"Отправляется…");
+                var receipt=await adapter.SteerAsync(message.Input,running.Token);
+                if(receipt.State=="unavailable") {SetDelivery(message.Line,"Ожидает подключения");return;}
+                // Send finalization can remove a queued item while awaiting the protocol acknowledgment.
+                if(followups.TryPeek(out var first)&&first.Line==message.Line)followups.Dequeue();
+                SetDelivery(message.Line,receipt.State=="accepted"?receipt.Message:receipt.State=="rejected"?"Не принято: "+receipt.Message:receipt.Message);
+            }
+        }
+        catch(System.Exception error) {LogError(error);activity.Text="Дополнение не отправлено: "+error.Message;}
+        finally{inputDelivery.Release();}
     }
     private async Task FinalizeCadResult(string? session, string? document, bool preview)
     {

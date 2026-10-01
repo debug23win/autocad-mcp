@@ -132,13 +132,42 @@ internal static class Edits
                     tool_handle = tool.Handle.ToString(), tool_erased = !keepTool });
                 continue;
             }
+            if (kind == "spds_dimstyle")
+            {
+                if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Dimension styles cannot be entity targets");
+                results.Add(new { index = index++, op = kind, detail = SpdsDrafting.ConfigureDimensions(doc.Database, tr, op) });
+                continue;
+            }
+            if (kind == "spds_sheet")
+            {
+                var sheet = SpdsDrafting.Sheet(doc.Database, tr, op);
+                touched.Add(sheet.Id);
+                if (op.Text("id") is {} sheetAlias) aliases.Add(sheetAlias, sheet.Id);
+                results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = sheet.Id.Handle.ToString(), detail = sheet.Detail });
+                continue;
+            }
+            if (kind is "table_cells" or "table_merge" or "table_rows" or "table_columns" or "table_recalculate")
+            {
+                var tableId = Resolve(doc.Database, tr, op, aliases);
+                var tableSpace = op.Text("layout") is {} tableLayout ? Sheets.Space(doc.Database,tr,tableLayout).ObjectId : doc.Database.CurrentSpaceId;
+                if (Editable(doc.Database, tr, tableId, true, tableSpace) is not Table nativeTable) throw new CadFault("INVALID_TABLE", "Target must be a native Table in the requested space");
+                if (kind == "table_cells") NativeTables.SetCells(nativeTable, doc.Database, tr, op.GetProperty("cells"), aliases);
+                if (kind == "table_merge") NativeTables.Merge(nativeTable, op.GetProperty("first_row").GetInt32(), op.GetProperty("first_column").GetInt32(), op.GetProperty("last_row").GetInt32(), op.GetProperty("last_column").GetInt32(), Bool(op, "unmerge"));
+                if (kind is "table_rows" or "table_columns") NativeTables.Resize(nativeTable, op);
+                NativeTables.Recalculate(nativeTable, doc.Database, tr);
+                touched.Add(tableId);
+                if (op.Text("id") is {} tableAlias) aliases.Add(tableAlias, tableId);
+                results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = nativeTable.Handle.ToString() });
+                continue;
+            }
             Entity entity;
             string? sourceHandle = null;
             object? imageRegistration = null;
             if (kind is "move" or "copy" or "rotate" or "rotate3d" or "scale" or "mirror" or "erase" or "set")
             {
                 var sourceId = Resolve(doc.Database, tr, op, aliases);
-                entity = Editable(doc.Database, tr, sourceId, kind != "copy");
+                var permittedSpace=kind=="set"&&op.Text("layout") is {} propertyLayout?Sheets.Space(doc.Database,tr,propertyLayout).ObjectId:doc.Database.CurrentSpaceId;
+                entity = Editable(doc.Database, tr, sourceId, kind != "copy", permittedSpace);
                 sourceHandle = entity.Handle.ToString();
                 if (kind == "copy")
                 {
@@ -189,7 +218,8 @@ internal static class Edits
                     if (entity is RasterImage raster) RasterImages.Associate(raster, tr);
                 }
                 catch { if (entity.ObjectId.IsNull) entity.Dispose(); throw; }
-                if (entity is BlockReference block) Attributes(doc.Database, tr, block, op, true);
+                if (entity is Table nativeTable) NativeTables.Populate(nativeTable, doc.Database, tr, op, aliases);
+                if (entity is BlockReference block && entity is not Table) Attributes(doc.Database, tr, block, op, true);
                 if (entity is Viewport viewport) Sheets.TurnOnViewport(S(op, "layout"), viewport);
                 if (entity is Hatch hatch) SetupHatch(doc.Database, tr, hatch, op, aliases);
                 if (entity is Dimension dimension) dimension.RecomputeDimensionBlock(true);
@@ -242,6 +272,12 @@ internal static class Edits
     {
         switch (S(op, "op"))
         {
+            case "table_create": return NativeTables.Create(db, tr, op);
+            case "spds_table": return NativeTables.Template(db, tr, op);
+            case "spds_axis": return SpdsDrafting.Axis(db, tr, op);
+            case "spds_level": return SpdsDrafting.Level(db, tr, op);
+            case "dimension_rotated": case "dimension_radius": case "dimension_diameter":
+                return SpdsDrafting.Dimension(db, tr, op);
             case "line": Equal(Point(op, "start"), Point(op, "end")); return new Line(Point(op, "start"), Point(op, "end"));
             case "circle": return new Circle(Point(op, "center"), Vector3d.ZAxis, N(op, "radius"));
             case "point": return new DBPoint(Point(op, "position"));
@@ -410,10 +446,10 @@ internal static class Edits
     }
     private static void RequireUnlocked(Transaction tr, Entity e)
     { if (((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked) throw new CadFault("LAYER_LOCKED", e.Layer); }
-    private static Entity Editable(Database db, Transaction tr, ObjectId id, bool write)
+    private static Entity Editable(Database db, Transaction tr, ObjectId id, bool write, ObjectId? permittedSpace = null)
     {
         if (id.IsErased) throw new CadFault("ENTITY_ERASED", id.Handle.ToString());
-        if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != db.CurrentSpaceId) throw new CadFault("UNSUPPORTED_SCOPE", "Only current-space top-level entities can be edited");
+        if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != (permittedSpace ?? db.CurrentSpaceId)) throw new CadFault("UNSUPPORTED_SCOPE", "Only top-level entities in the current or explicitly named paper layout can be edited");
         if (e.GetType().Assembly != typeof(Line).Assembly || e is not (Line or Circle or Arc or Polyline or Polyline3d or Spline or SubDMesh or DBPoint or DBText or MText or BlockReference or Dimension or Hatch or Solid3d or Ellipse))
             throw new CadFault("SPECIAL_OBJECT", "Special objects need a vendor API or explicitly targeted AutoLISP");
         if (e is BlockReference block && ((BlockTableRecord)tr.GetObject(block.BlockTableRecord, OpenMode.ForRead)).IsFromExternalReference)
@@ -438,7 +474,7 @@ internal static class Edits
         {
             switch (p.Name)
             {
-                case "op": case "id": case "handle": case "target": break;
+                case "op": case "id": case "handle": case "target": case "layout": break;
                 case "layer": entity.LayerId = Layer(db, tr, p.Value.GetString()!); break;
                 case "color_index": entity.ColorIndex = p.Value.GetInt32(); break;
                 case "visible": entity.Visible = p.Value.GetBoolean(); break;

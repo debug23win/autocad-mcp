@@ -103,7 +103,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
         bool readOnly = r.Operation is "cad_verify" or "cad_context" or "cad_catalog" or "cad_render" or "cad_image_register" or "cad_image_point" or "cad_vertical_catalog" or "cad_vertical_get" or "cad_snapshot" or
-            "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get";
+            "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get" or "cad_table_get";
         var doc = documents.Active(r, checkRevision: !readOnly); var state = documents.Register(doc);
         using var reading = readOnly ? documents.ReadScope(doc) : null;
         using var locked = doc.LockDocument();
@@ -122,11 +122,18 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         ucs_to_wcs = doc.Editor.CurrentUserCoordinateSystem.ToArray(),
                         view = new { width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),
-                        capabilities = new[] { "cad_verify", "cad_operation_list", "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
+                        capabilities = new[] { "cad_verify", "cad_operation_list", "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_table_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
                         cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
                             ignored_read_side_effect_events = state.ReadSideEffectEvents },
                         limitations = new[] { "preview_render_unverified", "Civil3D_Map3D_SPDS_special_geometry_partial", "native_edits_current_space_only" } };
+                break;
+            case "cad_table_get":
+                var tableId = NativeTables.Resolve(doc.Database, r.Data.Text("handle")!);
+                if (tr.GetObject(tableId, OpenMode.ForRead) is not Table table) throw new CadFault("INVALID_TABLE", "Handle must identify a native Table");
+                data = NativeTables.Read(table, tr,
+                    DraftingPlan.Integer(r.Data, "first_row", 0, 499, 0), DraftingPlan.Integer(r.Data, "first_column", 0, 49, 0),
+                    DraftingPlan.Integer(r.Data, "row_count", 1, 100, 20), DraftingPlan.Integer(r.Data, "column_count", 1, 50, 20));
                 break;
             case "cad_catalog":
                 bool catalogHit = catalogCache.TryGet(state.Id, "catalog", state.Revision, out var catalog);

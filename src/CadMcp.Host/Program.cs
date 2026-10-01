@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-if (args.Contains("--version")) { Console.WriteLine("CAD MCP 0.7.0-preview (AutoCAD / Map 3D / Civil 3D 2025–2027)"); return; }
+if (args.Contains("--version")) { Console.WriteLine("CAD MCP 0.8.0-preview (AutoCAD / Map 3D / Civil 3D 2025–2027)"); return; }
 int pipeOption = Array.IndexOf(args, "--broker-pipe");
 string pipeName = pipeOption >= 0 ? args[pipeOption + 1] : Wire.BrokerPipe;
 if (args.Contains("--stop-broker"))

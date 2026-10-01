@@ -48,6 +48,12 @@ internal static class Program
         Assert(store.Load()!.ClaudeModel == "sonnet", "Claude selection was not saved");
         Field("provider").SelectedIndex = 0;
         Assert(model.IsEnabled && reasoning.IsEnabled, "Codex controls remained disabled");
+        typeof(ChatPanel).GetField("acceptingInput", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(panel,true);
+        typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel,new object[]{true});
+        Button ButtonField(string name)=>(Button)typeof(ChatPanel).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(panel)!;
+        Assert(ButtonField("send").IsEnabled&&ButtonField("attach").IsEnabled&&!model.IsEnabled&&ButtonField("send").Content.ToString()=="Дополнить","Running chat prevents adding instructions or files");
+        typeof(ChatPanel).GetField("acceptingInput", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(panel,false);
+        typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel,new object[]{false});
         var note = Path.Combine(root, "plan.txt");
         var picture = Path.Combine(root, "view.png");
         File.WriteAllText(note, "Чертёж ✓");

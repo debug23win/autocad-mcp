@@ -7,7 +7,7 @@
 [Setup]
 AppId={{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}
 AppName=CAD MCP для AutoCAD, Map 3D и Civil 3D 2025–2027 (предварительная версия)
-AppVersion=0.7.0-preview
+AppVersion=0.8.0-preview
 AppPublisher=CAD MCP contributors
 AppPublisherURL=https://github.com/debug23win/autocad-mcp
 DefaultDirName={userappdata}\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle
@@ -19,7 +19,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=CAD-MCP-2025-2027-0.7.0-preview-Setup
+OutputBaseFilename=CAD-MCP-2025-2027-0.8.0-preview-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern

@@ -6,7 +6,7 @@ namespace CadMcp.Providers;
 
 public sealed record ChatImage(string Name, string Path, int Width = 0, int Height = 0);
 public sealed record ChatLine(string Role, string Text, string? Model = null, string? Effort = null,
-    IReadOnlyList<ChatImage>? Images = null, IReadOnlyList<string>? Steps = null, string? ReasoningSummary = null);
+    IReadOnlyList<ChatImage>? Images = null, IReadOnlyList<string>? Steps = null, string? ReasoningSummary = null, string? Delivery = null);
 
 public static class ChatMarkup
 {
@@ -27,6 +27,7 @@ public static class ChatMarkup
             if (!string.IsNullOrWhiteSpace(message.Model)) html.Append(" <small>").Append(WebUtility.HtmlEncode(message.Model)).Append("</small>");
             if (!string.IsNullOrWhiteSpace(message.Effort)) html.Append(" <small>· ").Append(WebUtility.HtmlEncode(message.Effort)).Append("</small>");
             html.Append("</header><div class='content'>").Append(MarkdownHtml(message.Text)).Append("</div>");
+            if (!string.IsNullOrWhiteSpace(message.Delivery)) html.Append("<p class='delivery'>").Append(WebUtility.HtmlEncode(message.Delivery)).Append("</p>");
             if (message.Images is { Count: > 0 })
             {
                 html.Append("<div class='images'>");
@@ -62,6 +63,7 @@ public static class ChatMarkup
         {
             value.AppendLine(message.Role switch { "user" => "Вы:", "assistant" => "Ассистент:", _ => "Ход работы:" });
             value.AppendLine(message.Text);
+            if (!string.IsNullOrWhiteSpace(message.Delivery)) value.AppendLine(message.Delivery);
             if (message.Images is { Count: > 0 }) value.AppendLine("Вложения: " + string.Join(", ", message.Images.Select(x => x.Name)));
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary)) value.AppendLine("Краткий ход рассуждений: " + message.ReasoningSummary);
             value.AppendLine();

@@ -48,8 +48,8 @@ public static class EditPlan
         ["scale"] = "handle target center factor",
         ["mirror"] = "handle target first second",
         ["erase"] = "handle target",
-        ["set"] = "handle target layer color_index linetype linetype_scale lineweight visible text height width rotation_deg position start end center radius closed attributes"
-    };
+        ["set"] = "handle target layer color_index linetype linetype_scale lineweight visible text height width rotation_deg position start end center radius closed attributes layout"
+    }.Concat(DraftingPlan.Fields).ToDictionary(p => p.Key, p => p.Value);
     public static JsonElement[] Parse(string json)
     {
         if (json.Length > 65536) throw new CadFault("PLAN_TOO_LARGE", "Edit plan must be at most 65536 characters");
@@ -71,8 +71,9 @@ public static class EditPlan
             {
                 if (!names.Add(p.Name)) throw new CadFault("DUPLICATE_FIELD", p.Name);
                 if (!allowed.Contains(p.Name)) throw new CadFault("UNKNOWN_FIELD", kind + ": " + p.Name);
-                ValidateValue(kind, p.Name, p.Value);
+                if (!DraftingPlan.Supports(kind) || p.Name is "op" or "id" or "layer" or "color_index" or "layout" or "target" or "style" or "text_style") ValidateValue(kind, p.Name, p.Value);
             }
+            if (DraftingPlan.Supports(kind)) DraftingPlan.Validate(op, aliases);
             if (op.TryGetProperty("target", out var target) && !aliases.Contains(target.GetString() ?? ""))
                 throw new CadFault("UNKNOWN_TARGET", "target must refer to an earlier operation id");
             if (op.TryGetProperty("tool_target", out var toolTarget) && !aliases.Contains(toolTarget.GetString() ?? ""))
@@ -135,7 +136,7 @@ public static class EditPlan
     public static double Numeric(JsonElement e, string name, double? fallback = null)
     {
         if (!e.TryGetProperty(name, out var value)) return fallback ?? throw new CadFault("MISSING_FIELD", name);
-        if (!value.TryGetDouble(out double number) || !(!double.IsNaN(number) && !double.IsInfinity(number))) throw new CadFault("INVALID_PARAMETER", name + " must be finite");
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out double number) || !(!double.IsNaN(number) && !double.IsInfinity(number))) throw new CadFault("INVALID_PARAMETER", name + " must be finite");
         return number;
     }
     public static double[] Point(JsonElement value)
