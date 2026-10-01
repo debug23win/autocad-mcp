@@ -20,7 +20,7 @@ internal static class Edits
     private static bool Bool(JsonElement op, string field, bool fallback = false) => op.TryGetProperty(field, out var v) ? v.GetBoolean() : fallback;
     private static void Equal(Point3d a, Point3d b)
     { if (a.DistanceTo(b) < 1e-10) throw new CadFault("DEGENERATE_GEOMETRY", "Points must differ"); }
-    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct)
+    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default)
     {
         using var undoGroup = new UndoGroup(doc);
         using var tr = doc.Database.TransactionManager.StartTransaction();
@@ -205,7 +205,13 @@ internal static class Edits
             var entity = (Entity)tr.GetObject(id, OpenMode.ForRead, true);
             return entity.IsErased ? Wire.Element(new { handle = entity.Handle.ToString(), erased = true }) : Reader.Read(entity, tr);
         }).ToArray();
-        var data = new { transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback,
+        var acceptance = DrawingVerification.Evaluate(readback, doc.Database.Insunits.ToString(),
+            expectations.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : expectations,
+            aliases.ToDictionary(p => p.Key, p => p.Value.Handle.ToString()));
+        bool enforce = expectations.ValueKind != JsonValueKind.Object || !expectations.TryGetProperty("enforce", out var enforcement) || enforcement.ValueKind != JsonValueKind.False;
+        if (enforce && acceptance.State is "failed" or "unverified")
+            throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
+        var data = new { transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback, acceptance,
             undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_vendor_API" } };
         if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
         ct.ThrowIfCancellationRequested();

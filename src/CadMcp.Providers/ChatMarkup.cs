@@ -39,7 +39,9 @@ public static class ChatMarkup
                     if (candidate is not null && candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate))
                     {
                         string url = "https://cadmcp-assets.local/" + Uri.EscapeDataString(Path.GetFileName(candidate));
-                        html.Append("<figure><img src='").Append(url).Append("' alt='").Append(label).Append("'><figcaption>").Append(label).Append("</figcaption></figure>");
+                        html.Append("<figure><img src='").Append(url).Append("' alt='").Append(label).Append("'");
+                        if (file.Width > 0 && file.Height > 0) html.Append(" width='").Append(file.Width).Append("' height='").Append(file.Height).Append("'");
+                        html.Append("><figcaption>").Append(label).Append("</figcaption></figure>");
                     }
                     else html.Append("<p class='missing-image'>Изображение недоступно: ").Append(label).Append("</p>");
                 }

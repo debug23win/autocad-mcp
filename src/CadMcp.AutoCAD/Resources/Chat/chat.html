@@ -7,10 +7,14 @@
   <link rel="stylesheet" href="katex.min.css">
   <style>
     * { box-sizing: border-box; }
+    html { overflow-anchor:none; color-scheme:light; }
     body { --bg:#f5f6f8; --fg:#20232a; --muted:#5d6572; --card:#fff; --border:#d7dce3; --accent:#0867b4; --user:#e7f1fc;
       margin:0; padding:14px; background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI",Arial,sans-serif; }
     body.dark { --bg:#25282d; --fg:#eff2f5; --muted:#bac2cd; --card:#30343a; --border:#4c535d; --accent:#8bc5ff; --user:#263d55; }
+    body.dark { color-scheme:dark; }
     main { max-width:980px; margin:auto; padding-bottom:24px; }
+    .message,.content,pre,code,table,th,td,li,.katex { color:var(--fg); }
+    ::selection { background:#337ab7; color:white; }
     .message { background:var(--card); border:1px solid var(--border); border-radius:10px; margin:0 0 12px; padding:12px 14px; overflow-wrap:anywhere; }
     .message.user { background:var(--user); }
     .message.assistant { cursor:pointer; }

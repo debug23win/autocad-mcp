@@ -4,6 +4,7 @@
     <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
     <Using Include="System.IO" />
     <!-- Compile production executors into an isolated test assembly so an installed preview can coexist. -->
     <Compile Include="../../src/CadMcp.Core/*.cs" Link="Core/%(Filename)%(Extension)" />

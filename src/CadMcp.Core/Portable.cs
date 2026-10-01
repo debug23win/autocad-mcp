@@ -10,7 +10,7 @@ namespace CadMcp.Core
         {
             var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             using (ct.Register(() => cancelled.TrySetResult(true)))
-            { if (await Task.WhenAny(task, cancelled.Task) != task) throw new OperationCanceledException(ct); return await task; }
+            { if (await Task.WhenAny(task, cancelled.Task).ConfigureAwait(false) != task) throw new OperationCanceledException(ct); return await task.ConfigureAwait(false); }
         }
     }
 }

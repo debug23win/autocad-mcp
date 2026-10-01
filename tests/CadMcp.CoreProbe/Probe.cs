@@ -303,6 +303,41 @@ public static class Probe
             }
             catch (CadFault error) when (error.Code == "LAYER_NOT_FOUND") { }
             Assert(Search(new { scope = "all", limit = 100 }).GetProperty("entities").GetArrayLength() == before, "Failed second edit rolls back first entity");
+            var acceptedPlan = EditPlan.Parse("""[{"op":"line","id":"checked","start":[700,700,0],"end":[800,700,0]}]""");
+            var acceptance = DrawingVerification.Parse("""{"entity_count":1,"checks":[{"target":"checked","property":"length","expected":101,"tolerance":0.01}]}""");
+            try { Edits.Execute(doc, acceptedPlan, default, acceptance); throw new System.Exception("Expected acceptance rollback"); }
+            catch (CadFault error) when (error.Code == "ACCEPTANCE_FAILED") { }
+            Assert(Search(new { scope = "all", limit = 100 }).GetProperty("entities").GetArrayLength() == before, "Wrong measured length rolls back the native edit before commit");
+            acceptance = DrawingVerification.Parse("""{"entity_count":1,"checks":[{"target":"checked","property":"length","expected":100,"tolerance":0.01}]}""");
+            var accepted = Wire.Element(Edits.Execute(doc, acceptedPlan, default, acceptance));
+            var checkedHandle = accepted.GetProperty("entities")[0].Text("handle")!;
+            Assert(accepted.GetProperty("acceptance").Text("state") == "passed", "Actual native length accepted with tolerance");
+            Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new[] {new {op="scale",handle=checkedHandle,center=new[]{700,700,0},factor=2}})), default);
+            using (var reviewTransaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                var currentReview = Wire.Element(DrawingReview.Verify(doc, reviewTransaction, Wire.Element(new {
+                    handles_json = JsonSerializer.Serialize(new[]{checkedHandle}),
+                    expectations_json = JsonSerializer.Serialize(new {checks=new[]{new{handle=checkedHandle,property="length",expected=100,tolerance=.01}}})
+                }), new OperationJournal()));
+                Assert(currentReview.GetProperty("verification").Text("state") == "failed" && currentReview.GetProperty("entities")[0].GetProperty("length").GetDouble() == 200,
+                    "Fresh verification detects a changed entity rather than replaying old readback");
+                Assert(currentReview.GetProperty("document_state").Text("disk_save") == "unsaved", "Native verification reports unsaved DWG honestly");
+            }
+            using (var receiptDispatcher = new Dispatcher(documents))
+            {
+                var queuedId = Guid.NewGuid().ToString("N");
+                using var transportCancelled = new CancellationTokenSource();
+                var request = new Request("queued", "cad_edit", documents.SessionId, state.Id, state.Revision,
+                    Wire.Element(new {operation_id=queuedId,operations_json="[{\"op\":\"line\",\"start\":[900,900,0],\"end\":[1000,900,0]}]"}));
+                var waiting = receiptDispatcher.Enqueue(request, transportCancelled.Token);
+                transportCancelled.Cancel();
+                try { waiting.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+                var status = Task.Run(() => receiptDispatcher.Enqueue(new Request("status", "cad_operation_status", documents.SessionId, state.Id,
+                    Data:Wire.Element(new{operation_id=queuedId})), default)).GetAwaiter().GetResult();
+                Assert(Wire.Element(status.Data!).Text("state") == "queued", "Receipt can be read on a background thread while CAD queue is not pumping");
+                var replay = receiptDispatcher.Enqueue(request with{RequestId="replay"}, default).GetAwaiter().GetResult();
+                Assert(replay.Status == "pending", "Transport cancellation and exact replay do not enqueue a duplicate mutation");
+            }
             try
             {
                 Edits.Execute(doc, EditPlan.Parse("[{\"op\":\"layout_create\",\"name\":\"CADMCP_ROLLBACK_LAYOUT\"},{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1],\"layer\":\"MISSING_LAYER\"}]"), default);

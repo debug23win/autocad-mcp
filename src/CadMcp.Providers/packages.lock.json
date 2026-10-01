@@ -29,6 +29,9 @@
         "type": "Transitive",
         "resolved": "8.0.1",
         "contentHash": "KYkIOAvPexQOLDxPO2g0BVoWInnQhPpkFzRqvNrNrMhVT6kqhVr0zEb6KCHlptLFukxnZrjuMVAnxK7pOGUYrw=="
+      },
+      "cadmcp.core": {
+        "type": "Project"
       }
     },
     "net8.0/win-x64": {}

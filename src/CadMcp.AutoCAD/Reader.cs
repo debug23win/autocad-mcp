@@ -25,7 +25,7 @@ internal static class Reader
             case Line line:
                 item["start"] = P(line.StartPoint); item["end"] = P(line.EndPoint); item["length"] = line.Length; item["access"] = "structured"; break;
             case Circle circle:
-                item["center"] = P(circle.Center); item["radius"] = circle.Radius; item["normal"] = new[] { circle.Normal.X, circle.Normal.Y, circle.Normal.Z }; item["access"] = "structured"; break;
+                item["center"] = P(circle.Center); item["radius"] = circle.Radius; item["area"] = Math.PI * circle.Radius * circle.Radius; item["normal"] = new[] { circle.Normal.X, circle.Normal.Y, circle.Normal.Z }; item["access"] = "structured"; break;
             case DBPoint point:
                 item["position"] = P(point.Position); item["access"] = "structured"; break;
             case Ellipse ellipse:
@@ -41,6 +41,7 @@ internal static class Reader
                 for (int i = 0; i < Math.Min(poly.NumberOfVertices, 2000); i++)
                     vertices.Add(new { point = P(poly.GetPoint3dAt(i)), bulge = poly.GetBulgeAt(i), start_width = poly.GetStartWidthAt(i), end_width = poly.GetEndWidthAt(i) });
                 item["vertices"] = vertices; item["vertex_count"] = poly.NumberOfVertices; item["closed"] = poly.Closed; item["length"] = poly.Length;
+                if (poly.Closed) item["area"] = poly.Area;
                 item["normal"] = new[] { poly.Normal.X, poly.Normal.Y, poly.Normal.Z }; item["vertices_truncated"] = poly.NumberOfVertices > 2000;
                 item["access"] = poly.NumberOfVertices <= 2000 ? "structured" : "partial"; break;
             case Polyline3d spatial:
@@ -51,9 +52,11 @@ internal static class Reader
                 item["vertex_count"] = spatialVertices.Length;
                 item["vertices_truncated"] = spatialVertices.Length > 2000;
                 item["closed"] = spatial.Closed;
+                item["length"] = spatial.GetDistanceAtParameter(spatial.EndParam) - spatial.GetDistanceAtParameter(spatial.StartParam);
                 item["access"] = spatialVertices.Length <= 2000 ? "structured" : "partial"; break;
             case Spline spline:
                 item["degree"] = spline.Degree;
+                item["length"] = spline.GetDistanceAtParameter(spline.EndParam) - spline.GetDistanceAtParameter(spline.StartParam);
                 item["closed"] = spline.Closed;
                 item["fit_point_count"] = spline.NumFitPoints;
                 item["fit_points"] = Enumerable.Range(0, Math.Min(spline.NumFitPoints, 2000))

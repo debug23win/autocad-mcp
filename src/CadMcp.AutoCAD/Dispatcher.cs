@@ -11,6 +11,8 @@ namespace CadMcp.AutoCAD;
 internal sealed class Dispatcher(Documents documents) : IDisposable
 {
     private readonly ConcurrentQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source)> queue = new();
+    private readonly object mutationGate = new();
+    private readonly ConcurrentDictionary<string, string> mutationOwners = new();
     private readonly SnapshotStore snapshots = new();
     private readonly OperationJournal journal = new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "operations", documents.SessionId));
     private readonly ResultArchive archive = new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "results", documents.SessionId));
@@ -24,37 +26,83 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     public void Start() => App.Idle += Idle;
     public async Task<Response> Enqueue(Request r, CancellationToken ct)
     {
-        if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full");
+        // Receipts use no AutoCAD API and remain readable while its UI thread is building geometry.
+        if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
+        ct.ThrowIfCancellationRequested();
         var source = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
-        queue.Enqueue((r, ct, source));
-        return await Portable.Await(source.Task, ct);
+        if (MutationRecovery.IsMutation(r.Operation))
+        {
+            string id = EditPlan.RequiredText(r.Data, "operation_id");
+            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
+            lock (mutationGate)
+            {
+                // Reading an existing receipt must also work when the queue is full.
+                if (journal.Find(id) is not null) return Replay(r, id, journal.Begin(id, r)!);
+                if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full");
+                if (journal.Begin(id, r) is { } prior) return Replay(r, id, prior);
+                mutationOwners[id] = r.RequestId;
+                // Transport cancellation must not destroy the only receipt of an accepted change.
+                queue.Enqueue((r, CancellationToken.None, source));
+            }
+        }
+        else { if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full"); queue.Enqueue((r, ct, source)); }
+        return await Portable.Await(source.Task, ct).ConfigureAwait(false);
+    }
+    private Response Replay(Request r, string id, OperationJournal.Entry entry) => entry.Result is { } result
+        ? result with { RequestId = r.RequestId }
+        : new(r.RequestId, "pending", new { operation_id = id, state = mutationOwners.ContainsKey(id) || lisp?.Id == id ? entry.State : "unknown",
+            replayed = true, requires_poll = "cad_operation_status", mutation_repeated = false }, documents.SessionId, entry.DocumentId);
+    private Response OperationStatus(Request r)
+    {
+        if (r.SessionId != documents.SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
+        if (r.Operation == "cad_operation_list")
+        {
+            DateTimeOffset since = DateTimeOffset.TryParse(r.Data.Text("since"), out var value) ? value : DateTimeOffset.MinValue;
+            var recent = journal.Recent(r.DocumentId ?? "", since, r.Data.Number("limit", 50));
+            return new(r.RequestId, "completed", new { operations = recent.Select(p => OperationJournal.Summary(p.Id, p.Entry,
+                p.Entry.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(p.Id) || lisp?.Id == p.Id)),
+                truncated = recent.Count == r.Data.Number("limit", 50) }, documents.SessionId, r.DocumentId);
+        }
+        string id = EditPlan.RequiredText(r.Data, "operation_id"); var entry = journal.Find(id);
+        if (entry is not null && entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to a different drawing");
+        bool active = entry?.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(id) || lisp?.Id == id;
+        return new(r.RequestId, "completed", new { operation_id = id, state = entry is null ? "not_found" : active ? entry.State : "unknown",
+            result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
+            retry = "Replay only the original exact request with its operation_id. Unknown/not_found never proves no changes." }, documents.SessionId, r.DocumentId);
     }
     private void Idle(object? sender, EventArgs e)
     {
         // All database access occurs here, on the CAD application thread.
         if (!queue.TryPeek(out var pending)) return;
         if (pending.Token.IsCancellationRequested || pending.Request.Deadline <= DateTimeOffset.UtcNow)
-        { queue.TryDequeue(out _); pending.Source.TrySetCanceled(); return; }
+        {
+            queue.TryDequeue(out _);
+            var expired = Response.Fail(pending.Request, "DEADLINE_EXPIRED", "Request expired before execution; no drawing changes were started");
+            if (MutationRecovery.IsMutation(pending.Request.Operation))
+            { string id = EditPlan.RequiredText(pending.Request.Data, "operation_id"); expired = journal.Complete(id, expired); mutationOwners.TryRemove(id, out _); }
+            pending.Source.TrySetResult(expired); return;
+        }
         var active = App.DocumentManager.MdiActiveDocument;
         if (pending.Request.Operation != "cad_operation_status" && active is not null && !active.Editor.IsQuiescent) return;
         if (!queue.TryDequeue(out var job)) return;
-        try { job.Source.TrySetResult(Execute(job.Request, job.Token)); }
-        catch (CadFault error) { job.Source.TrySetResult(Response.Fail(job.Request, error.Code, error.Message)); }
-        catch (System.Exception error) { job.Source.TrySetResult(Response.Fail(job.Request, "CAD_ERROR", error.Message)); }
+        Response response;
+        try { response = Execute(job.Request, job.Token); }
+        catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
+        catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
+        if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
+        {
+            string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
+            if (journal.Find(id)?.Result is null) response = journal.Complete(id, response);
+            mutationOwners.TryRemove(id, out _);
+        }
+        job.Source.TrySetResult(response);
     }
     private Response Execute(Request r, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        if (r.Operation == "cad_operation_status")
-        {
-            if (r.SessionId != documents.SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
-            var entry = journal.Find(EditPlan.RequiredText(r.Data, "operation_id"));
-            if (entry is not null && entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to a different drawing");
-            return new(r.RequestId, "completed", new { state = entry?.State ?? "not_found", result = entry?.Result,
-                persistence = journal.Persistence, retry = "Never automatically retry an unknown mutation; inspect drawing first" }, documents.SessionId, r.DocumentId);
-        }
+        if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
-        bool readOnly = r.Operation is "cad_context" or "cad_catalog" or "cad_render" or "cad_image_register" or "cad_image_point" or "cad_vertical_catalog" or "cad_vertical_get" or "cad_snapshot" or
+        bool readOnly = r.Operation is "cad_verify" or "cad_context" or "cad_catalog" or "cad_render" or "cad_image_register" or "cad_image_point" or "cad_vertical_catalog" or "cad_vertical_get" or "cad_snapshot" or
             "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get";
         var doc = documents.Active(r, checkRevision: !readOnly); var state = documents.Register(doc);
         using var reading = readOnly ? documents.ReadScope(doc) : null;
@@ -73,7 +121,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                             .Distinct().Take(50).ToArray(),
                         ucs_to_wcs = doc.Editor.CurrentUserCoordinateSystem.ToArray(),
                         view = new { width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
-                        capabilities = new[] { "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
+                        document_state = DrawingReview.DocumentState(doc),
+                        capabilities = new[] { "cad_verify", "cad_operation_list", "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
                         cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
                             ignored_read_side_effect_events = state.ReadSideEffectEvents },
@@ -83,6 +132,10 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 bool catalogHit = catalogCache.TryGet(state.Id, "catalog", state.Revision, out var catalog);
                 if (!catalogHit) { catalog = Wire.Element(Catalog.Read(doc.Database, tr)); catalogCache.Put(state.Id, "catalog", state.Revision, catalog); }
                 data = new { catalog, cached = catalogHit }; break;
+            case "cad_verify":
+                var reviewOptions = r.Data.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
+                reviewOptions["verified_document_id"] = state.Id;
+                data = DrawingReview.Verify(doc, tr, Wire.Element(reviewOptions), journal); break;
             case "cad_vertical_catalog":
                 data = Verticals.Catalog(doc.Database, tr); break;
             case "cad_vertical_get":
@@ -109,6 +162,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 int width = r.Data.Number("width", 1024), height = r.Data.Number("height", 768);
                 if (width < 128 || width > 1600 || height < 128 || height > 1600)
                     throw new CadFault("INVALID_IMAGE_SIZE", "Image dimensions must be 128..1600");
+                using (var framing = new DrawingReview.PreviewView(doc, tr, r.Data, width, height))
                 using (var view = doc.Editor.GetCurrentView())
                 using (var bitmap = doc.CapturePreviewImage((uint)width, (uint)height))
                 using (var png = new MemoryStream())
@@ -123,6 +177,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     data = new { mime_type = "image/png", image_base64 = Convert.ToBase64String(png.ToArray()), width = bitmap.Width, height = bitmap.Height,
                         image_id = imageId, pixel_origin = "top_left", coordinate_mapping = "requires_cad_image_register_control_points",
                         source = "AutoCAD.Document.CapturePreviewImage", captured_at = DateTimeOffset.UtcNow,
+                        requested_view = r.Data.Text("view_name") ?? "current", framed_handles = r.Data.Text("handles_json"),
                         view = new { width = view.Width, height = view.Height, center = new[] { view.CenterPoint.X, view.CenterPoint.Y },
                             target = new[] { view.Target.X, view.Target.Y, view.Target.Z }, direction = new[] { view.ViewDirection.X, view.ViewDirection.Y, view.ViewDirection.Z },
                             twist = view.ViewTwist, perspective = view.PerspectiveEnabled },
@@ -262,7 +317,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         var doc = documents.Active(r, checkRevision: false);
         var state = documents.Register(doc);
         string id = EditPlan.RequiredText(r.Data, "operation_id");
-        if (journal.Find(id) is not null)
+        if (journal.Find(id) is not null && (!mutationOwners.TryGetValue(id, out var owner) || owner != r.RequestId))
         {
             var prior = journal.Begin(id, r)!;
             return prior.Result is { } result ? result with { RequestId = r.RequestId, Data = new { replayed = true, result = result.Data } }
@@ -274,7 +329,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
-        if (r.Operation == "cad_edit") operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json"));
+        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
         else if (r.Operation == "cad_export")
         {
             exportFormat = EditPlan.RequiredText(r.Data, "format");
@@ -307,9 +362,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             journal.Running(id);
             var data = exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
                 : publishFolder is not null ? Exports.Publish(doc, publishFolder, publishLayouts!, ct)
-                : Edits.Execute(doc, operations!, ct);
+                : Edits.Execute(doc, operations!, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")));
             string status = publishFolder is not null && Wire.Element(data).Text("status") == "partial" ? "partial" : "completed";
-            var response = new Response(r.RequestId, status, new { operation_id = id, result = data }, documents.SessionId, state.Id, state.Revision);
+            var response = new Response(r.RequestId, status, new { operation_id = id, result = data, document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
             return journal.Complete(id, response);
         }
         catch (System.Exception error)
@@ -343,7 +398,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             documents.SessionId, job.Request.DocumentId, revision,
             success && sameDocument ? null : new("LISP_FAILED", sameDocument ? text.Substring(0, Math.Min(text.Length, 16384)) : "LISP changed or closed the active document; reconcile drawings"));
         job.Document.CommandCancelled -= LispInterrupted; job.Document.CommandFailed -= LispInterrupted;
-        journal.Complete(id, response); lisp = null;
+        journal.Complete(id, response); mutationOwners.TryRemove(id, out _); lisp = null;
     }
     private void LispInterrupted(object? sender, CommandEventArgs e)
     {
@@ -354,6 +409,11 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     {
         App.Idle -= Idle;
         if (lisp is { } script) FinishLisp(script.Id, false, "Worker stopped; reconcile any changes before retrying");
-        while (queue.TryDequeue(out var job)) job.Source.TrySetCanceled();
+        while (queue.TryDequeue(out var job))
+        {
+            var response = Response.Fail(job.Request, "WORKER_STOPPED", "Queued operation did not start before the worker stopped");
+            if (MutationRecovery.IsMutation(job.Request.Operation)) journal.Complete(EditPlan.RequiredText(job.Request.Data, "operation_id"), response);
+            job.Source.TrySetResult(response);
+        }
     }
 }

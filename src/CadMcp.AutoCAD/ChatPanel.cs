@@ -52,7 +52,7 @@ internal sealed class ChatPanel : UserControl
     private readonly SolidColorBrush panelBrush = new(), controlBrush = new(), foregroundBrush = new(), borderBrush = new();
     private readonly ChatStateStore store;
     private readonly StringBuilder streamedText = new();
-    private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private string codexExecutable = "codex.exe", claudeExecutable = "claude.exe";
     private ChatState? restored;
     private CancellationTokenSource? running;
@@ -368,13 +368,14 @@ internal sealed class ChatPanel : UserControl
         turnStarted = lastSignal = DateTimeOffset.Now;
         currentActivity = "Подключение";
         activity.Text = "Подключение…"; flushTimer.Start(); progressTimer.Start();
+        string? initialDocumentId = null, initialSessionId = null;
+        bool visibleCadResult = false;
         try
         {
             var files = ChatAttachments.Capture(attachments);
             await BrokerBootstrap.EnsureAsync(host.Text, running.Token);
             await RefreshCad();
-            string? initialDocumentId = cadContext?.DocumentId;
-            bool visibleCadResult = false;
+            initialDocumentId = cadContext?.DocumentId; initialSessionId = cadContext?.SessionId;
             var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
             var selectedModel = provider.SelectedIndex == 0 ? chosenModel : chosenClaudeModel;
             var selectedEffort = provider.SelectedIndex == 0 ? chosenEffort : chosenClaudeEffort;
@@ -413,18 +414,54 @@ internal sealed class ChatPanel : UserControl
                 UpdateProgress();
             }
             FlushText();
-            if (visibleCadResult) await AttachPreview(initialDocumentId);
+            await FinalizeCadResult(initialSessionId, initialDocumentId, visibleCadResult);
             attachments.Clear(); RefreshAttachments(); activity.Text = "Готово";
         }
         catch (OperationCanceledException)
         {
             FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Уже принятые CAD-запросы могут завершиться." }); activity.Text = "Остановлено";
+            await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         catch (System.Exception e)
         {
             LogError(e); FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОшибка: " + e.Message }); activity.Text = "Ошибка; подробности в журнале";
+            await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         finally { progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+    }
+    private async Task FinalizeCadResult(string? session, string? document, bool preview)
+    {
+        if (session is null || document is null) return;
+        currentActivity = "Проверяю результат и сохранение DWG"; UpdateProgress();
+        try
+        {
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var response=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_operation_list",session,document,
+                Data:Wire.Element(new{since=turnStarted.ToString("O"),limit=50})),timeout.Token);
+            if(response.Error is not null)throw new IOException(response.Error.Message);
+            if(response.Data is not JsonElement data || !data.TryGetProperty("operations",out var ops) || ops.GetArrayLength()==0)
+            { if(preview)await AttachPreview(document); return; }
+            var records=ops.EnumerateArray().ToArray(); JsonElement? review=null;
+            var completed=records.FirstOrDefault(o=>o.Text("state")=="completed" && o.Text("operation")=="cad_edit");
+            if(completed.ValueKind==JsonValueKind.Object)
+            {
+                await RefreshCad();
+                if(cadContext is { } context && context.DocumentId==document && context.SessionId==session)
+                {
+                    var checkedResult=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
+                        Wire.Element(new{operation_id=completed.Text("operation_id")})),timeout.Token);
+                    if(checkedResult.Error is null && checkedResult.Data is JsonElement checkedData) review=checkedData;
+                }
+            }
+            var summary=CadResultSummary.Describe(data,review);
+            UpdateAssistant(line=>line with{Text=line.Text+"\n\n"+summary});
+            bool pending=records.Any(o=>o.Text("state") is "queued" or "running" or "unknown");
+            if(!pending && (preview || completed.ValueKind==JsonValueKind.Object))await AttachPreview(document);
+        }
+        catch(System.Exception error) when(error is IOException or OperationCanceledException or InvalidOperationException)
+        {
+            LogError(error); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
+        }
     }
     private async Task AttachPreview(string? initialDocumentId)
     {

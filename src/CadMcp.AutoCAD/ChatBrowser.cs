@@ -19,6 +19,8 @@ internal sealed class ChatBrowser : Grid
     private IReadOnlyList<ChatLine> messages = Array.Empty<ChatLine>();
     private bool dark, ready;
     private int selected = -1;
+    private long sequence;
+    private string? lastRender;
     public string AssetRoot { get; }
     private readonly string userData;
     public event Action<int>? Selected;
@@ -62,7 +64,7 @@ internal sealed class ChatBrowser : Grid
             {
                 if (!args.Uri.StartsWith("https://cadmcp.local/", StringComparison.OrdinalIgnoreCase)) args.Cancel = true;
             };
-            browser.CoreWebView2.NavigationCompleted += (_, _) => { ready = true; Render(); };
+            browser.CoreWebView2.NavigationCompleted += (_, args) => { ready = args.IsSuccess; lastRender = null; if (ready) Render(); };
             browser.Source = new Uri("https://cadmcp.local/chat.html");
         }
         catch (Exception error)
@@ -102,7 +104,7 @@ internal sealed class ChatBrowser : Grid
     public void Update(IReadOnlyList<ChatLine> lines, bool isDark, int selectedIndex)
     {
         messages = lines.ToArray(); dark = isDark; selected = selectedIndex;
-        fallback.Text = ChatMarkup.PlainTranscript(messages);
+        if (fallback.Visibility == Visibility.Visible) fallback.Text = ChatMarkup.PlainTranscript(messages);
         browser.DefaultBackgroundColor = dark ? System.Drawing.Color.FromArgb(37, 40, 45) : System.Drawing.Color.FromArgb(245, 246, 248);
         if (ready) Render();
     }
@@ -111,8 +113,12 @@ internal sealed class ChatBrowser : Grid
         if (!ready) return;
         try
         {
-            var json = JsonSerializer.Serialize(new { html = ChatMarkup.ConversationHtml(messages, AssetRoot), dark, selected });
+            string html = ChatMarkup.ConversationHtml(messages, AssetRoot);
+            string signature = (dark ? "dark" : "light") + selected + html;
+            if (signature == lastRender) return;
+            var json = JsonSerializer.Serialize(new { html, dark, selected, sequence = ++sequence });
             browser.CoreWebView2.PostWebMessageAsJson(json);
+            lastRender = signature;
         }
         catch (Exception error) { Debug.WriteLine("CAD MCP chat render: " + error); }
     }

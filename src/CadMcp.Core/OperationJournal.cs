@@ -6,11 +6,13 @@ namespace CadMcp.Core;
 /// <summary>Durable receipts. Only terminal entries backed by disk leave the hot cache.</summary>
 public sealed class OperationJournal
 {
-    public sealed record Entry(string Hash, string DocumentId, string State, Response? Result);
+    public sealed record Entry(string Hash, string DocumentId, string State, Response? Result,
+        Request? Request = null, DateTimeOffset? CreatedAt = null, DateTimeOffset? UpdatedAt = null);
+    private readonly object sync = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly string? directory;
     private readonly HashSet<string> recorded = new(StringComparer.Ordinal);
-    public int Count => recorded.Count;
+    public int Count { get { lock (sync) return recorded.Count; } }
     public string Persistence => directory is null ? "memory" : "disk_worker_session";
     public OperationJournal(string? directory = null)
     {
@@ -25,6 +27,10 @@ public sealed class OperationJournal
             throw new CadFault("INVALID_OPERATION_ID", "Use 1..96 ASCII letters, digits, hyphens or underscores; retain this id for retries");
     }
     public Entry? Find(string id)
+    {
+        lock (sync) return FindCore(id);
+    }
+    private Entry? FindCore(string id)
     {
         Validate(id);
         if (entries.TryGetValue(id, out var cached)) return cached;
@@ -49,6 +55,7 @@ public sealed class OperationJournal
     }
     private void Save(string id, Entry entry)
     {
+        entry = entry with { UpdatedAt = DateTimeOffset.UtcNow };
         if (directory is not null)
         {
             var path = Path.Combine(directory, id + ".json"); var temp = path + ".tmp";
@@ -60,6 +67,10 @@ public sealed class OperationJournal
     }
     public Entry? Begin(string id, Request request)
     {
+        lock (sync) return BeginCore(id, request);
+    }
+    private Entry? BeginCore(string id, Request request)
+    {
         Validate(id);
         var hash = Portable.Hash(JsonSerializer.SerializeToUtf8Bytes(new
             { request.Operation, request.SessionId, request.DocumentId, request.ExpectedRevision, request.Data }, Wire.Json));
@@ -68,11 +79,15 @@ public sealed class OperationJournal
             if (prior.Hash != hash) throw new CadFault("OPERATION_ID_CONFLICT", "Operation id belongs to a different request; read its status");
             return prior;
         }
-        Save(id, new(hash, request.DocumentId!, "queued", null));
+        Save(id, new(hash, request.DocumentId!, "queued", null, request, DateTimeOffset.UtcNow));
         return null;
     }
-    public void Running(string id) => Save(id, (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = "running" });
+    public void Running(string id) { lock (sync) Save(id, (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = "running" }); }
     public Response Complete(string id, Response result)
+    {
+        lock (sync) return CompleteCore(id, result);
+    }
+    private Response CompleteCore(string id, Response result)
     {
         var entry = (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = result.Error is null ? "completed" : "failed", Result = result };
         try { Save(id, entry); }
@@ -86,5 +101,26 @@ public sealed class OperationJournal
             Cache(id, entry with { Result = result });
         }
         return result;
+    }
+    public IReadOnlyList<(string Id, Entry Entry)> Recent(string document, DateTimeOffset since, int limit = 50)
+    {
+        if (limit is < 1 or > 100) throw new CadFault("INVALID_LIMIT", "Operation list limit must be 1..100");
+        lock (sync)
+            return recorded.Select(id => (Id: id, Entry: FindCore(id)!))
+                .Where(p => p.Entry.DocumentId == document && (p.Entry.CreatedAt ?? DateTimeOffset.MinValue) >= since)
+                .OrderByDescending(p => p.Entry.CreatedAt).Take(limit).ToArray();
+    }
+    public static object Summary(string id, Entry entry, bool active = true)
+    {
+        var outer = Wire.Element(entry.Result?.Data ?? new { });
+        var result = outer.TryGetProperty("result", out var r) ? r : outer;
+        return new { operation_id = id, document_id = entry.DocumentId,
+            state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State,
+            operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
+            error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
+            changed_entities = result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? (int?)es.GetArrayLength() : null,
+            handles = es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).Take(500).ToArray() : null,
+            document_state = outer.TryGetProperty("document_state", out var d) ? (JsonElement?)d.Clone() : null,
+            transaction = result.Text("transaction"), historical = !active };
     }
 }

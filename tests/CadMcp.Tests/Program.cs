@@ -192,6 +192,70 @@ await Test("stable pagination and bounded snapshot retention", async () =>
     for (int i = 0; i < 4; i++) store.Add("d", 1, [], false);
     await Throws<CadFault>(() => Task.FromResult(store.Query(s.Id, "d", 1, Wire.Element(new { }))));
 });
+await Test("acceptance detects wrong actual geometry, units and missing measurements", async () =>
+{
+    var entity=Wire.Element(new{handle="A",type="Line",layer="Сеть",length=99d,start=new[]{0,0,0},end=new[]{99,0,0},bounds=new{min=new[]{0,0,0},max=new[]{99,0,0}}});
+    var plan=DrawingVerification.Parse("""{"units":"Millimeters","entity_count":1,"checks":[{"target":"beam","property":"length","expected":100,"tolerance":0.1},{"handle":"A","property":"layer","expected":"Сеть"},{"handle":"A","property":"radius","expected":5}]}""");
+    var result=DrawingVerification.Evaluate([entity],"Millimeters",plan,new Dictionary<string,string>{{"beam","A"}});
+    Assert(result.Failed==1&&result.Passed==3&&result.Unverified==1,"Actual drift/missing measurement was accepted");
+    var distance=DrawingVerification.Parse("""{"checks":[{"property":"distance","first":{"handle":"A","point":"start"},"second":{"handle":"A","point":"end"},"expected":99,"tolerance":0.0001}]}""");
+    Assert(DrawingVerification.Evaluate([entity],"Millimeters",distance).State=="passed","Distance readback failed");
+    Assert(DrawingVerification.Evaluate([entity],"Inches",plan,new Dictionary<string,string>{{"beam","A"}}).Failed==2,"Units mismatch ignored");
+    await Throws<CadFault>(()=>Task.FromResult(DrawingVerification.Parse("""{"checks":[{"handle":"A","property":"length","expected":99,"tolerance":-1}]}""")));
+});
+await Test("photo calibration recovers perspective, scale, inverse and rejects degenerate anchors", async () =>
+{
+    double[] World(double u,double v) { double d=1+.0002*u+.0001*v; return [(100+2*u+.2*v)/d,(200-.1*u+1.5*v)/d,7]; }
+    var pixels=new[]{new[]{0d,0d},new[]{1000d,0d},new[]{1000d,800d},new[]{0d,800d},new[]{200d,300d}};
+    var fit=PhotoReference.Fit(Wire.Element(pixels.Select(p=>new{pixel=p,world=World(p[0],p[1])})),1000,800,"projective");
+    var expected=World(350,275); var actual=fit.PixelToWorld(350,275);
+    Assert(fit.RmsError<1e-7 && Math.Abs(expected[0]-actual[0])<1e-7 && Math.Abs(expected[1]-actual[1])<1e-7,"Perspective calibration lost precision");
+    var inverse=fit.WorldToPixel(actual[0],actual[1]); Assert(Math.Abs(inverse[0]-350)<1e-7&&Math.Abs(inverse[1]-275)<1e-7,"Photo inverse failed");
+    var similarity=PhotoReference.Fit(Wire.Element(new[]{new{pixel=new[]{0,0},world=new[]{100,200,0}},new{pixel=new[]{100,0},world=new[]{300,200,0}}}),1000,800,"similarity");
+    var point=similarity.PixelToWorld(20,30); Assert(Math.Abs(point[0]-140)<1e-7&&Math.Abs(point[1]-140)<1e-7,"Top-left photo Y convention is wrong");
+    await Throws<CadFault>(()=>Task.FromResult(PhotoReference.Fit(Wire.Element(Enumerable.Range(0,4).Select(i=>new{pixel=new[]{i*10,0},world=new[]{i*20,0,0}})),100,100,"projective")));
+});
+await Test("silhouette comparison rejects mismatching shapes and reports its evidence", () =>
+{
+    var a=Wire.Element(new[]{new[]{.1,.1},new[]{.8,.1},new[]{.8,.8},new[]{.1,.8}});
+    var b=Wire.Element(new[]{new[]{.5,.5},new[]{.9,.5},new[]{.9,.9},new[]{.5,.9}});
+    Assert(Wire.Element(ReferenceComparison.Compare(a,a,.95,.01)).Text("state")=="passed","Identical silhouettes failed");
+    var result=Wire.Element(ReferenceComparison.Compare(a,b,.85,.05));
+    Assert(result.Text("state")=="failed"&&result.Text("evidence")=="agent_supplied_contours_in_comparable_views","Different silhouette accepted"); return Task.CompletedTask;
+});
+await Test("lost mutation response retrieves receipt without resending drawing edits", async () =>
+{
+    var request=new Request("r","cad_edit","s","d",1,Wire.Element(new{operation_id="one",operations_json="[]"})); int edits=0,statuses=0;
+    async Task<Response> Send(Request r,CancellationToken ct) { await Task.Yield(); if(r.Operation=="cad_edit"){edits++;throw new IOException("response lost after commit");}
+        statuses++; return new(r.RequestId,"completed",new{state="completed",result=new Response("r","completed",new{transaction="committed"},"s","d",2)}); }
+    var result=await MutationRecovery.CallAsync(request,Send,default);
+    Assert(edits==1&&statuses==1&&result.Revision==2&&result.Error is null,"Recovery repeated mutation or lost confirmed receipt");
+    var pending=await MutationRecovery.CallAsync(request,(r,ct)=>r.Operation=="cad_edit"?Task.FromException<Response>(new IOException("lost")):Task.FromResult(new Response(r.RequestId,"completed",new{state="running"})),default);
+    Assert(pending.Status=="pending"&&Wire.Element(pending.Data!).Text("state")=="running","Running operation was treated as failed/retriable");
+    var unknown=await MutationRecovery.CallAsync(request,(r,ct)=>Task.FromException<Response>(new IOException("unreachable")),default);
+    Assert(unknown.Error?.Code=="OPERATION_UNCERTAIN","Unknown mutation not identified");
+});
+await Test("concurrent operation acceptance is unique and archived receipts survive missing worker", async () =>
+{
+    string root=Path.Combine(Path.GetTempPath(),"cadmcp-recovery-"+Guid.NewGuid().ToString("N")),session=Guid.NewGuid().ToString("N");
+    var journal=new OperationJournal(Path.Combine(root,session)); var request=new Request("r","cad_edit",session,"d",1,Wire.Element(new{operation_id="shared"}));
+    var accepted=await Task.WhenAll(Enumerable.Range(0,16).Select(i=>Task.Run(()=>journal.Begin("shared",request))));
+    Assert(accepted.Count(e=>e is null)==1,"Concurrent retries created multiple accepted mutations");
+    journal.Running("shared");
+    var broker=new Broker(Path.Combine(root,"workers"),root);
+    var status=await broker.DispatchAsync(new("status","cad_operation_status",session,"d",Data:Wire.Element(new{operation_id="shared"})),default);
+    Assert(Wire.Element(status.Data!).Text("state")=="unknown"&&Wire.Element(status.Data!).GetProperty("historical").GetBoolean(),"Lost worker was reported as safe to retry");
+    journal.Complete("shared",new("r","completed",new{transaction="committed"},session,"d",2));
+    status=await broker.DispatchAsync(new("status","cad_operation_status",session,"d",Data:Wire.Element(new{operation_id="shared"})),default);
+    Assert(Wire.Element(status.Data!).Text("state")=="completed","Archived confirmed result lost");
+});
+await Test("result summary distinguishes checked geometry and an unsaved DWG", () =>
+{
+    var list=Wire.Element(new{operations=new[]{new{state="completed",operation="cad_edit"}}});
+    var report=Wire.Element(new{verification=new{state="passed",entity_count=4,erased_count=0,passed=2,failed=0,unverified=0},document_state=new{disk_save="unsaved"}});
+    var text=CadResultSummary.Describe(list,report);
+    Assert(text.Contains("объектов: 4")&&text.Contains("несохранённые изменения")&&!text.Contains("Выполняю cad_"),"User result is misleading or technical"); return Task.CompletedTask;
+});
 await Test("pipe stays responsive during a long CAD request and rejects expired requests", async () =>
 {
     string pipe = "cadmcp-test-" + Guid.NewGuid().ToString("N");
@@ -597,10 +661,12 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 20 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
+        Assert(names.Length == 25 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
             names.Contains("cad_export") && names.Contains("cad_publish") && names.Contains("cad_lisp") &&
             names.Contains("cad_operation_status") && names.Contains("cad_render") && names.Contains("cad_image_register") &&
-            names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get"), "Wrong tools");
+            names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get") &&
+            names.Contains("cad_verify") && names.Contains("cad_operation_list") && names.Contains("cad_reference_calibrate") &&
+            names.Contains("cad_reference_point") && names.Contains("cad_reference_compare"), "Wrong tools");
         var call = await Rpc(new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "cad_sessions", arguments = new { } } }, 3);
         Assert(call.GetProperty("content")[0].GetProperty("text").GetString()!.Contains("fixture"), "Tool did not reach broker");
         var render = await Rpc(new { jsonrpc = "2.0", id = 4, method = "tools/call", @params = new { name = "cad_render", arguments = new { session_id = "s", document_id = "d", expected_revision = 1 } } }, 4);

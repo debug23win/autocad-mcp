@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -15,6 +16,11 @@ internal static class Program
 {
     [STAThread]
     private static void Main()
+    {
+        try { Run(); }
+        catch (Exception error) { Console.Error.WriteLine("FAIL: " + error); Environment.ExitCode = 1; }
+    }
+    private static void Run()
     {
         var root = Path.GetFullPath(Path.Combine(".runtime", "panel-probe-" + Guid.NewGuid().ToString("N")));
         var store = new ChatStateStore(root);
@@ -37,7 +43,9 @@ internal static class Program
         var restored = new ChatPanel(store); restored.ApplyModels(models);
         Assert((string)((ComboBox)typeof(ChatPanel).GetField("model", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(restored)!).SelectedValue == "gpt-6-sol", "Reopened panel lost model");
         Field("provider").SelectedIndex = 1;
-        Assert(!model.IsEnabled && !reasoning.IsEnabled, "Codex controls applied to Claude");
+        Assert(model.IsEnabled && reasoning.IsEnabled && ((System.Collections.IEnumerable)model.ItemsSource).Cast<object>().Count() == 4, "Claude model controls are missing");
+        model.SelectedValue = "sonnet"; reasoning.SelectedValue = "high";
+        Assert(store.Load()!.ClaudeModel == "sonnet", "Claude selection was not saved");
         Field("provider").SelectedIndex = 0;
         Assert(model.IsEnabled && reasoning.IsEnabled, "Codex controls remained disabled");
         var note = Path.Combine(root, "plan.txt");
@@ -89,6 +97,30 @@ internal static class Program
                     throw new Exception("WebView2 did not load HTML: " + fallback.Text);
                 }
                 var view = (WebView2)typeof(ChatBrowser).GetField("browser", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(browserProbe)!;
+                async Task<bool> Js(string expression) => JsonSerializer.Deserialize<bool>(await view.CoreWebView2.ExecuteScriptAsync(expression));
+                var lines = Enumerable.Range(0, 40).Select(i => new ChatLine(i % 2 == 0 ? "user" : "assistant",
+                    "Сообщение " + i + "\n\n" + string.Join("\n\n", Enumerable.Repeat("Видимый текст и размеры **3,05 м**. Формула $A=ab$.", 4)))).ToList();
+                lines.Add(new ChatLine("assistant", "Ответ поступает…"));
+                browserProbe.Update(lines, true, -1); await Task.Delay(250);
+                await view.CoreWebView2.ExecuteScriptAsync("window.scrollTo(0,1800); window.dispatchEvent(new Event('scroll')); window.keptCard=document.querySelectorAll('article')[4]; window.keptScroll=document.scrollingElement.scrollTop;");
+                await Task.Delay(100);
+                for (int i = 0; i < 15; i++)
+                {
+                    lines[^1] = new ChatLine("assistant", string.Join("\n\n", Enumerable.Repeat("Новая часть ответа " + i, i + 1)));
+                    browserProbe.Update(lines, i % 2 == 0, -1); await Task.Delay(40);
+                }
+                await Task.Delay(150);
+                Assert(await Js("Math.abs(document.scrollingElement.scrollTop-window.keptScroll)<3"), "Streaming or theme switch moved the reader to another position");
+                Assert(await Js("window.keptCard===document.querySelectorAll('article')[4]"), "Unchanged message DOM was replaced");
+                Assert(await Js("[...document.querySelectorAll('.content p')].every(p=>getComputedStyle(p).visibility==='visible' && getComputedStyle(p).opacity!=='0' && p.getBoundingClientRect().height>0)"), "Text became hidden while streaming");
+                Assert(await Js("(()=>{const p=document.querySelector('.content p');return getComputedStyle(p).color!==getComputedStyle(p.closest('.message')).backgroundColor})()"), "Text has the same color as its background");
+                await view.CoreWebView2.ExecuteScriptAsync("window.scrollTo(0,document.scrollingElement.scrollHeight); window.dispatchEvent(new Event('scroll'));");
+                await Task.Delay(100);
+                lines[^1] = new ChatLine("assistant", string.Join("\n\n", Enumerable.Repeat("Окончательный результат с формулой $$A=ab$$", 30)));
+                browserProbe.Update(lines, true, -1); await Task.Delay(200);
+                Assert(await Js("document.scrollingElement.scrollHeight-document.scrollingElement.scrollTop-window.innerHeight<3"), "Chat stopped following the answer at the bottom");
+                Assert(await Js("document.querySelectorAll('.katex').length>0"), "Formula rendering disappeared");
+                Console.WriteLine("PASS real WebView2 streaming: stable scroll, preserved messages, visible text, theme changes, bottom follow and formulas");
                 string htmlPath = Path.Combine(root, "html-dark.png");
                 using (var file = File.Create(htmlPath))
                     await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, file);

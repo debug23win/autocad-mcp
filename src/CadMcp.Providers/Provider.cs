@@ -79,7 +79,9 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                     tools = new[] { "mcp__cad__cad_sessions", "mcp__cad__cad_context", "mcp__cad__cad_catalog", "mcp__cad__cad_search",
                         "mcp__cad__cad_snapshot", "mcp__cad__cad_query", "mcp__cad__cad_result_get", "mcp__cad__cad_entity_get",
                         "mcp__cad__cad_vertical_catalog", "mcp__cad__cad_vertical_get", "mcp__cad__cad_render",
-                        "mcp__cad__cad_image_register", "mcp__cad__cad_image_point", "mcp__cad__cad_edit_help", "WebSearch" }
+                        "mcp__cad__cad_image_register", "mcp__cad__cad_image_point", "mcp__cad__cad_edit_help", "mcp__cad__cad_verify",
+                        "mcp__cad__cad_operation_status", "mcp__cad__cad_operation_list", "mcp__cad__cad_reference_calibrate",
+                        "mcp__cad__cad_reference_point", "mcp__cad__cad_reference_compare", "WebSearch" }
                 }
             })]);
         }
