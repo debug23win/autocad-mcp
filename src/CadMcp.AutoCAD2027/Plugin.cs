@@ -25,7 +25,7 @@ public sealed class Plugin : IExtensionApplication
         int pid = Environment.ProcessId; string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
         server = new(pipe, dispatcher.Enqueue); server.Start(); Directory.CreateDirectory(Wire.WorkerRoot);
         descriptor = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
-        File.WriteAllText(descriptor + ".tmp", JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, pid, "0.8.0-preview"), Wire.Json));
+        File.WriteAllText(descriptor + ".tmp", JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, pid, "0.8.1-preview"), Wire.Json));
         File.Move(descriptor + ".tmp", descriptor, true);
         App.Idle += AddRibbon;
         }

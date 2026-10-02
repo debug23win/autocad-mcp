@@ -298,12 +298,15 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         if (!readOnly && r.ExpectedRevision.HasValue && r.ExpectedRevision != state.Revision)
             throw new CadFault("REVISION_CONFLICT", "Document changed during operation; discard result and refresh context");
-        if (r.Operation != "cad_render" && Wire.Element(data).GetRawText().Length > 512 * 1024)
+        // Materialize all CAD-backed values while the document lock and transaction
+        // are still alive. The pipe serializes the response on a background thread.
+        var detachedData = Wire.Element(data);
+        if (r.Operation != "cad_render" && detachedData.GetRawText().Length > 512 * 1024)
         {
-            var archiveId = archive.Put(documents.SessionId, state.Id, state.Revision, data);
-            data = new { archive_id = archiveId, captured_revision = state.Revision, detail = "Result archived; use cad_result_get to read bounded JSON text pages" }; status = "partial";
+            var archiveId = archive.Put(documents.SessionId, state.Id, state.Revision, detachedData);
+            detachedData = Wire.Element(new { archive_id = archiveId, captured_revision = state.Revision, detail = "Result archived; use cad_result_get to read bounded JSON text pages" }); status = "partial";
         }
-        return new(r.RequestId, status, data, documents.SessionId, state.Id, state.Revision);
+        return new(r.RequestId, status, detachedData, documents.SessionId, state.Id, state.Revision);
     }
     private static object SnapshotMetadata(Snapshot snapshot, string units, bool cached) => new { snapshot_id = snapshot.Id, captured = snapshot.Entities.Count,
         truncated = snapshot.Truncated, coverage = snapshot.Entities.GroupBy(x => x.Text("access") ?? "unsupported").ToDictionary(x => x.Key, x => x.Count()),
@@ -314,7 +317,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         {
             var selection = doc.Editor.SelectImplied();
             var ids = selection.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK ? selection.Value.GetObjectIds() : [];
-            return new { handles = ids.Take(500).Select(id => id.Handle.ToString()), count = ids.Length, truncated = ids.Length > 500, source = "implied_selection", status = selection.Status.ToString() };
+            return new { handles = ids.Take(500).Select(id => id.Handle.ToString()).ToArray(), count = ids.Length, truncated = ids.Length > 500, source = "implied_selection", status = selection.Status.ToString() };
         }
         catch (Autodesk.AutoCAD.Runtime.Exception e)
         { return new { handles = Array.Empty<string>(), available = false, source = "implied_selection", error = e.ErrorStatus.ToString() }; }

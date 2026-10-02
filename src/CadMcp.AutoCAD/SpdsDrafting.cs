@@ -89,10 +89,18 @@ internal static class SpdsDrafting
         void Text(double x,double y,string text,double height=2.5)=>Add(block,tr,new DBText{Position=new(ox+x,oy+y,0),TextString=text,Height=height,TextStyleId=style});
         void Attribute(string tag,double x,double y,double width,double height,string value)
         {
-            var definition=new AttributeDefinition{Tag=tag,Prompt=tag,TextString=value,Position=new(ox+x,oy+y,0),Height=2.5,TextStyleId=style,IsMTextAttributeDefinition=true};
+            var definition=new AttributeDefinition{Tag=tag,Prompt=tag,TextString=value,Position=new(ox+x,oy+y,0),Height=2.5,TextStyleId=style};
             var position=definition.Position;definition.Justify=AttachmentPoint.TopLeft;definition.AlignmentPoint=position;
-            definition.MTextAttributeDefinition=new MText{Location=position,Width=width,TextHeight=2.5,Contents=value,TextStyleId=style,Attachment=AttachmentPoint.TopLeft};
             Add(block,tr,definition);
+            // Initialize the attribute's own MText after it belongs to the transaction.
+            // A newly allocated MText must not be substituted for the internal entity:
+            // its wrapper can invalidate the attribute when collected or disposed.
+            definition.IsMTextAttributeDefinition=true;
+            definition.UpdateMTextAttributeDefinition();
+            using var contents=definition.MTextAttributeDefinition;
+            contents.Location=position;contents.Width=width;contents.TextHeight=2.5;
+            contents.Contents=value;contents.TextStyleId=style;contents.Attachment=AttachmentPoint.TopLeft;
+            definition.MTextAttributeDefinition=contents;
         }
         TLine(0,0,185,0,true);TLine(185,0,185,55,true);TLine(185,55,0,55,true);TLine(0,55,0,0,true);
         for(int y=5;y<55;y+=5)TLine(0,y,65,y);

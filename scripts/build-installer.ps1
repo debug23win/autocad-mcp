@@ -108,5 +108,5 @@ try {
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.8.0-preview-Setup.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.8.1-preview-Setup.exe') -Algorithm SHA256
 } finally { Pop-Location }

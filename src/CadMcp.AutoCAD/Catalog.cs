@@ -16,12 +16,14 @@ internal static class Catalog
         var layouts = layoutDictionary.Cast<System.Collections.DictionaryEntry>().Select(x => x.Value is ObjectId id
             ? (Layout)tr.GetObject(id, OpenMode.ForRead) : throw new InvalidOperationException("Invalid layout dictionary entry")).OrderBy(x => x.TabOrder).ToArray();
         var tableStyles = ((DBDictionary)tr.GetObject(db.TableStyleDictionaryId, OpenMode.ForRead)).Cast<System.Collections.DictionaryEntry>().Select(e => e.Key.ToString()).ToArray();
-        return new { table_styles = tableStyles.Take(limit), layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }),
+        // Return copied scalar data only. Deferred projections would retain open native
+        // database objects and touch them again during serialization on the pipe thread.
+        return new { table_styles = tableStyles.Take(limit).ToArray(), layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }).ToArray(),
             blocks = blocks.Take(limit).Select(b => new { name = b.Name, handle = b.Handle.ToString(), xref = b.IsFromExternalReference, dependent = b.IsDependent,
-                attributes = b.Cast<ObjectId>().Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<AttributeDefinition>().Take(100).Select(a => new { tag = a.Tag, text = a.TextString, constant = a.Constant }) }),
-            text_styles = styles.Take(limit).Select(s => new { name = s.Name, font = s.FileName, height = s.TextSize }),
-            dimension_styles = dimensionStyles.Take(limit).Select(s => s.Name), linetypes = types.Take(limit).Select(t => t.Name),
-            layouts = layouts.Take(limit).Select(l => LayoutInfo(l, tr)),
+                attributes = b.Cast<ObjectId>().Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<AttributeDefinition>().Take(100).Select(a => new { tag = a.Tag, text = a.TextString, constant = a.Constant }).ToArray() }).ToArray(),
+            text_styles = styles.Take(limit).Select(s => new { name = s.Name, font = s.FileName, height = s.TextSize }).ToArray(),
+            dimension_styles = dimensionStyles.Take(limit).Select(s => s.Name).ToArray(), linetypes = types.Take(limit).Select(t => t.Name).ToArray(),
+            layouts = layouts.Take(limit).Select(l => LayoutInfo(l, tr)).ToArray(),
             truncated = layers.Length > limit || blocks.Length > limit || styles.Length > limit || dimensionStyles.Length > limit || types.Length > limit || layouts.Length > limit, limit_per_category = limit };
     }
 
