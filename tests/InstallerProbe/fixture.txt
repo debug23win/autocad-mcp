@@ -1,0 +1,1 @@
+This isolated fixture exercises the production installer's process guard.

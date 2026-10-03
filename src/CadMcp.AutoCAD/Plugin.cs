@@ -31,7 +31,7 @@ public sealed class Plugin : IExtensionApplication
             Directory.CreateDirectory(Wire.WorkerRoot);
             descriptorPath = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
             var temp = descriptorPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.8.1-preview"), Wire.Json));
+            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.8.2-preview"), Wire.Json));
             File.Move(temp, descriptorPath, true);
             App.Idle += AddRibbon;
         }

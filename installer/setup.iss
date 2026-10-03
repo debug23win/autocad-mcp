@@ -7,7 +7,7 @@
 [Setup]
 AppId={{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}
 AppName=CAD MCP для AutoCAD, Map 3D и Civil 3D 2025–2027 (предварительная версия)
-AppVersion=0.8.1-preview
+AppVersion=0.8.2-preview
 AppPublisher=CAD MCP contributors
 AppPublisherURL=https://github.com/debug23win/autocad-mcp
 DefaultDirName={userappdata}\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle
@@ -19,7 +19,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=CAD-MCP-2025-2027-0.8.1-preview-Setup
+OutputBaseFilename=CAD-MCP-2025-2027-0.8.2-preview-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -46,6 +46,8 @@ Name: "{group}\Репозиторий проекта"; Filename: "https://github
 Name: "{group}\Удалить CAD MCP"; Filename: "{uninstallexe}"
 
 [Code]
+#include "processes.iss"
+
 function AutoCADRuntime(const Series: String): Integer;
 var
   Root, Location, Key: String;
@@ -117,36 +119,22 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  Locator, Services, Processes: Variant;
 begin
   Result := '';
-  try
-    Locator := CreateOleObject('WbemScripting.SWbemLocator');
-    Services := Locator.ConnectServer('', 'root\CIMV2');
-    Processes := Services.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE Name="acad.exe" OR Name="CadMcp.Host.exe" OR Name="CadMcp.Client.exe"');
-    if Processes.Count > 0 then
-      Result := 'Закройте AutoCAD и CAD MCP перед установкой. Установщик не закрывает чертежи автоматически.';
-  except
-    Result := 'Не удалось проверить запущенные процессы. Закройте AutoCAD и CAD MCP и повторите установку.';
-  end;
-  if Result = '' then
-  begin
-    if AutoCADRuntime('R25.0') = -1 then
-      Result := 'Продукты AutoCAD 2025 используют разные версии .NET. Установите согласованные обновления Autodesk.';
-    if AutoCADRuntime('R25.1') = -1 then
-      Result := 'Продукты AutoCAD 2026 используют разные версии .NET. Установите согласованные обновления Autodesk.';
-    if (AutoCADRuntime('R25.0') = -2) or (AutoCADRuntime('R25.1') = -2) then
-      Result := 'Не удалось определить среду .NET установленного AutoCAD. Проверьте файлы продукта или переустановите обновление Autodesk.';
-  end;
+  if AutoCADRuntime('R25.0') = -1 then
+    Result := 'Продукты AutoCAD 2025 используют разные версии .NET. Установите согласованные обновления Autodesk.';
+  if AutoCADRuntime('R25.1') = -1 then
+    Result := 'Продукты AutoCAD 2026 используют разные версии .NET. Установите согласованные обновления Autodesk.';
+  if (AutoCADRuntime('R25.0') = -2) or (AutoCADRuntime('R25.1') = -2) then
+    Result := 'Не удалось определить среду .NET установленного AutoCAD. Проверьте файлы продукта или переустановите обновление Autodesk.';
+  if Result = '' then Result := PrepareMcpFiles();
 end;
 
 function InitializeUninstall(): Boolean;
 var
-  NeedsRestart: Boolean;
   Reason: String;
 begin
-  Reason := PrepareToInstall(NeedsRestart);
+  Reason := PrepareMcpFiles();
   Result := Reason = '';
   if not Result then MsgBox(Reason, mbError, MB_OK);
 end;
