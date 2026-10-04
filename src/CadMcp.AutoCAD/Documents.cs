@@ -14,6 +14,9 @@ internal sealed class DocumentState(Database database)
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public long Revision { get; set; }
     public int ReadDepth { get; set; }
+    public bool TablesDirty { get; set; }
+    public bool Recalculating { get; set; }
+    public string? TableError { get; set; }
     public long ReadSideEffectEvents { get; set; }
 }
 internal sealed class Documents : IDisposable
@@ -28,8 +31,13 @@ internal sealed class Documents : IDisposable
     }
     private void Created(object sender, DocumentCollectionEventArgs e) => Register(e.Document);
     private void Destroyed(object sender, DocumentCollectionEventArgs e) => Remove(e.Document);
-    private void Changed(object sender, ObjectEventArgs e) => Touch((Database)sender);
-    private void Erased(object sender, ObjectErasedEventArgs e) => Touch((Database)sender);
+    private void Changed(object sender, ObjectEventArgs e)
+    {
+        var db=(Database)sender;Touch(db);
+        if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject && state.ReadDepth==0&&!state.Recalculating)state.TablesDirty=true;
+    }
+    private void Erased(object sender, ObjectErasedEventArgs e)
+    {var db=(Database)sender;Touch(db);if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject&&!state.Recalculating)state.TablesDirty=true;}
     private void Touch(Database db)
     {
         // Document.Database may return a different managed wrapper on each access.
@@ -62,7 +70,7 @@ internal sealed class Documents : IDisposable
     public DocumentState Register(Document d)
     {
         if (states.TryGetValue(d, out var state)) return state;
-        state = new(d.Database); states.Add(d, state);
+        state = new(d.Database) { TablesDirty=true }; states.Add(d, state);
         state.Database.ObjectAppended += Changed; state.Database.ObjectModified += Changed; state.Database.ObjectErased += Erased;
         return state;
     }
@@ -72,10 +80,12 @@ internal sealed class Documents : IDisposable
         state.Database.ObjectAppended -= Changed; state.Database.ObjectModified -= Changed; state.Database.ObjectErased -= Erased;
         states.Remove(d);
     }
-    public Document Active(Request r, bool checkRevision = true)
+    public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,
+        project_key=System.IO.Path.IsPathFullyQualified(p.Key.Name)?Portable.Hash(System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(p.Key.Name).ToUpperInvariant())):p.Value.Id}).ToArray();
+    public Document Active(Request r, bool checkRevision = true, bool allowInactive = false)
     {
         if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
-        var d = App.DocumentManager.MdiActiveDocument ?? throw new CadFault("NO_DOCUMENT", "No active drawing");
+        var d = allowInactive && r.DocumentId is not null ? states.FirstOrDefault(p=>p.Value.Id==r.DocumentId).Key ?? throw new CadFault("DOCUMENT_CLOSED", "The requested drawing is no longer open") : App.DocumentManager.MdiActiveDocument ?? throw new CadFault("NO_DOCUMENT", "No active drawing");
         var state = Register(d);
         if (r.Operation != "cad_context")
         {

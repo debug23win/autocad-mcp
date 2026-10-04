@@ -18,7 +18,7 @@ public sealed class Plugin : IExtensionApplication
     private static Dispatcher? dispatcher;
     private static PipeServer? server;
     private static PaletteSet? palette;
-    private static ChatPanel? panel;
+    private static ChatWorkspace? panel;
     private static RibbonTab? ribbon;
     private static string? descriptorPath;
     public void Initialize()
@@ -31,7 +31,7 @@ public sealed class Plugin : IExtensionApplication
             Directory.CreateDirectory(Wire.WorkerRoot);
             descriptorPath = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
             var temp = descriptorPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.8.2-preview"), Wire.Json));
+            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.9.0-preview"), Wire.Json));
             File.Move(temp, descriptorPath, true);
             App.Idle += AddRibbon;
         }
@@ -55,7 +55,7 @@ public sealed class Plugin : IExtensionApplication
         if (palette is null)
         {
             palette = new PaletteSet("CAD MCP — ассистент чертежей");
-            panel = new ChatPanel
+            panel = new ChatWorkspace
             {
                 CadSessionId = documents?.SessionId,
                 DarkThemeProvider = () => Convert.ToInt32(App.GetSystemVariable("COLORTHEME")) == 0
@@ -64,6 +64,7 @@ public sealed class Plugin : IExtensionApplication
             palette.MinimumSize = new System.Drawing.Size(360, 480);
         }
         palette.Visible = true;
+        _ = panel!.Refresh();
     }
     [LispFunction("CADMCPBEGIN")]
     public static string? BeginLisp(ResultBuffer args)

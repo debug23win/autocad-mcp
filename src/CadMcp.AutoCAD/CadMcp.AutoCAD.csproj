@@ -5,6 +5,7 @@
     <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="AcDbMgdBrep"><HintPath>$(AutoCADDir)/AcDbMgdBrep.dll</HintPath><Private>false</Private></Reference>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
     <Content Include="Resources/Chat/**" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />

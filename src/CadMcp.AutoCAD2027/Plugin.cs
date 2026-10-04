@@ -17,6 +17,9 @@ public sealed class Plugin : IExtensionApplication
     private static PipeServer? server;
     private static string? descriptor;
     private static object? ribbon;
+    private static Process? chatClient;
+    [System.Runtime.InteropServices.DllImport("user32.dll")]private static extern bool SetForegroundWindow(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]private static extern bool ShowWindow(IntPtr window,int command);
     public void Initialize()
     {
         try
@@ -25,7 +28,7 @@ public sealed class Plugin : IExtensionApplication
         int pid = Environment.ProcessId; string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
         server = new(pipe, dispatcher.Enqueue); server.Start(); Directory.CreateDirectory(Wire.WorkerRoot);
         descriptor = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
-        File.WriteAllText(descriptor + ".tmp", JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, pid, "0.8.2-preview"), Wire.Json));
+        File.WriteAllText(descriptor + ".tmp", JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, pid, "0.9.0-preview"), Wire.Json));
         File.Move(descriptor + ".tmp", descriptor, true);
         App.Idle += AddRibbon;
         }
@@ -52,9 +55,11 @@ public sealed class Plugin : IExtensionApplication
         if (documents is null) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP worker did not initialize"); return; }
         try
         {
+        if(chatClient is not null && !chatClient.HasExited){chatClient.Refresh();ShowWindow(chatClient.MainWindowHandle,9);SetForegroundWindow(chatClient.MainWindowHandle);return;}
+        chatClient?.Dispose();
         string root = Path.GetDirectoryName(typeof(Plugin).Assembly.Location)!;
         var start = new ProcessStartInfo(Path.GetFullPath(Path.Combine(root, "..", "Client", "CadMcp.Client.exe"))) { UseShellExecute = false };
-        start.ArgumentList.Add("--session"); start.ArgumentList.Add(documents!.SessionId); Process.Start(start);
+        start.ArgumentList.Add("--session"); start.ArgumentList.Add(documents!.SessionId); chatClient=Process.Start(start);
         }
         catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP chat: " + error.Message); }
     }

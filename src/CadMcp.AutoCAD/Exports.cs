@@ -28,6 +28,9 @@ internal static class Exports
             foreach (var name in names)
                 if (!dictionary.Contains(name!)) throw new CadFault("LAYOUT_NOT_FOUND", name!);
         }
+        object preflight;
+        using(var tr=document.Database.TransactionManager.StartOpenCloseTransaction())preflight=DrawingQuality.Release(document.Database,tr,names!);
+        if(Wire.Element(preflight).Text("state")=="failed")throw new CadFault("RELEASE_PREFLIGHT_FAILED",JsonSerializer.Serialize(preflight,Wire.Json));
         var manifestPath = Path.Combine(folder, "cad-mcp-manifest.json");
         var csvPath = Path.Combine(folder, "cad-mcp-manifest.csv");
         if (File.Exists(manifestPath) || File.Exists(csvPath)) throw new CadFault("OUTPUT_EXISTS", "Manifest already exists in the output folder");
@@ -45,8 +48,9 @@ internal static class Exports
                 PlotPdf(document, paths[i], names[i], null, ct);
                 if (!File.Exists(paths[i]) || new FileInfo(paths[i]).Length == 0)
                     throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty PDF");
+                var pdf=PdfVerification.Check(paths[i]);
                 using var file = File.OpenRead(paths[i]);
-                produced.Add(new { number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
+                produced.Add(new { pdf, number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
                     sha256 = Convert.ToHexString(SHA256.HashData(file)) });
             }
             catch (System.Exception exception)
@@ -55,7 +59,7 @@ internal static class Exports
                 break;
             }
         }
-        var manifest = new { drawing = document.Name, generated_at = DateTimeOffset.UtcNow,
+        var manifest = new { preflight, completeness = new { expected = names.Length, produced = produced.Count, missing_layouts = names.Skip(produced.Count).ToArray() }, drawing = document.Name, generated_at = DateTimeOffset.UtcNow,
             status = error is null ? "completed" : "partial", requested_layouts = names,
             produced, failed_layout = error is null ? null : names[produced.Count], error };
         var json = JsonSerializer.Serialize(manifest, Wire.Json);
@@ -72,8 +76,8 @@ internal static class Exports
         }
         File.WriteAllText(csvPath, csv.ToString(), Encoding.UTF8);
         return new { manifest.status, manifest_path = manifestPath, csv_path = csvPath,
-            files = produced, manifest.failed_layout, manifest.error,
-            verification = "each_output_file_exists_and_sha256_verified" };
+            files = produced, preflight, manifest.completeness, manifest.failed_layout, manifest.error,
+            verification = "strict_PDF_parse_page_count_and_manifest_completeness" };
     }
 
     private static string SafeFileName(string name)

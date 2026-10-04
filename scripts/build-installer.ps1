@@ -36,6 +36,11 @@ try {
     New-Item -ItemType Directory -Force -Path "$payload/Contents/Win64","$payload/Contents/Host","$payload/Contents/Net10","$payload/Contents/Net10R250","$payload/Contents/Net10R251","$payload/Contents/Client" | Out-Null
     dotnet build CadMcp.sln -c Release -m:1 /nodeReuse:false "-p:AutoCADDir=$AutoCADDir" --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+    $publishPackages=Join-Path $env:LOCALAPPDATA 'CadMcp/build-packages'
+    foreach($project in @('src/CadMcp.Host/CadMcp.Host.csproj','src/CadMcp.Client/CadMcp.Client.csproj')) {
+        dotnet restore $project -r win-x64 --force-evaluate --packages $publishPackages -p:RuntimeFrameworkVersion=8.0.31 -m:1 /nodeReuse:false
+        if($LASTEXITCODE -ne 0){throw 'Self-contained runtime restore failed'}
+    }
     dotnet publish src/CadMcp.Host/CadMcp.Host.csproj -c Release -r win-x64 --self-contained true -p:RuntimeFrameworkVersion=8.0.31 -p:PublishSingleFile=false -p:PublishTrimmed=false --no-restore -o "$payload/Contents/Host" -m:1 /nodeReuse:false
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
     dotnet publish src/CadMcp.Client/CadMcp.Client.csproj -c Release -r win-x64 --self-contained true -p:RuntimeFrameworkVersion=8.0.31 -p:PublishSingleFile=false -p:PublishTrimmed=false --no-restore -o "$payload/Contents/Client" -m:1 /nodeReuse:false
@@ -54,13 +59,17 @@ try {
             Copy-Item -LiteralPath (Join-Path $nativeEdition $name) -Destination "$payload/Contents/$($edition[1])"
         }
     }
+    foreach ($edition in @(@('2025Net10','Net10R250'),@('2026Net10','Net10R251'),@('2027','Net10'))) {
+        $nativeDependencies=Join-Path $repoRoot "src/CadMcp.AutoCAD$($edition[0])/bin/Release/net10.0-windows"
+        Get-ChildItem -LiteralPath $nativeDependencies -File -Filter '*.dll' | Where-Object { $_.Name -notmatch '^(AcMgd|AcCoreMgd|AcDbMgd|AcDbMgdBrep|AcWindows|AdWindows)\.dll$' } | Copy-Item -Destination "$payload/Contents/$($edition[1])"
+    }
     $native2027 = Join-Path $repoRoot 'src/CadMcp.AutoCAD2027/bin/Release/net10.0-windows'
     foreach ($name in @('CadMcp.AutoCAD2027.dll','CadMcp.Core.dll','CadMcp.AutoCAD2027.deps.json')) {
         Copy-Item -LiteralPath (Join-Path $native2027 $name) -Destination "$payload/Contents/Net10"
     }
     $native = Join-Path $repoRoot 'src/CadMcp.AutoCAD/bin/Release/net8.0-windows'
     Get-ChildItem -LiteralPath $native -File -Filter '*.dll' |
-        Where-Object { $_.Name -notmatch '^(AcMgd|AcCoreMgd|AcDbMgd|AcWindows|AdWindows)\.dll$' } |
+        Where-Object { $_.Name -notmatch '^(AcMgd|AcCoreMgd|AcDbMgd|AcDbMgdBrep|AcWindows|AdWindows)\.dll$' } |
         Copy-Item -Destination "$payload/Contents/Win64"
     Copy-Item -LiteralPath (Join-Path $native 'CadMcp.AutoCAD.deps.json') -Destination "$payload/Contents/Win64"
     Copy-Item -LiteralPath (Join-Path $native 'Resources') -Destination "$payload/Contents/Win64" -Recurse

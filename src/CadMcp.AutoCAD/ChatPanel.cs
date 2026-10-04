@@ -42,6 +42,7 @@ internal sealed class ChatPanel : UserControl
     private readonly System.Windows.Threading.DispatcherTimer progressTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Response? cadContext;
     private bool readingContext;
+    public string? CadDocumentId { get; set; }
     public string? CadSessionId { get; set; }
     public Func<bool>? DarkThemeProvider { get; set; }
     private bool darkTheme;
@@ -67,7 +68,7 @@ internal sealed class ChatPanel : UserControl
     private IReadOnlyList<CodexModel> catalog = Array.Empty<CodexModel>();
     private bool settingChoices, firstLoad, restoring;
     public ChatPanel() : this(null) { }
-    internal ChatPanel(ChatStateStore? stateStore)
+    internal ChatPanel(ChatStateStore? stateStore,string? projectDirectory=null)
     {
         store = stateStore ?? new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "chat"));
         var assemblyDir = Path.GetDirectoryName(typeof(ChatPanel).Assembly.Location)!;
@@ -82,17 +83,18 @@ internal sealed class ChatPanel : UserControl
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state); }
         catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
+        if(restored is null && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
         InstallThemeStyles();
         var root = new DockPanel { Margin = new Thickness(8), AllowDrop = true }; Content = root;
         root.PreviewDragOver += (_, e) =>
         {
-            e.Effects = running is null && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Effects = (running is null || acceptingInput) && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
             e.Handled = true;
         };
         root.PreviewDrop += (_, e) =>
         {
             e.Handled = true;
-            if (running is null && e.Data.GetData(DataFormats.FileDrop) is string[] paths) AddAttachments(paths);
+            if ((running is null || acceptingInput) && e.Data.GetData(DataFormats.FileDrop) is string[] paths) AddAttachments(paths);
         };
         var settings = new StackPanel(); DockPanel.SetDock(settings, Dock.Top); root.Children.Add(settings);
         settings.Children.Add(drawing);
@@ -199,7 +201,23 @@ internal sealed class ChatPanel : UserControl
         ApplyTheme();
         RenderChat();
     }
-    public void Stop() { running?.Cancel(); FlushText(); Persist(); }
+    internal bool IsWorking=>running is not null;
+    private readonly string operationOwner = Guid.NewGuid().ToString("N");
+    public async void Stop()
+    {
+        var stopping=running;
+        if (cadContext is { } target && stopping is not null)
+        {
+            try
+            {
+                using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_cancel", target.SessionId, target.DocumentId, Data: Wire.Element(new { }), OwnerId: operationOwner), cancel.Token);
+                activity.Text = "Отмена запрошена; текущая CAD-операция остановится на безопасной границе";
+            }
+            catch (System.Exception e) { LogError(e); activity.Text = "Не удалось подтвердить отмену CAD; проверьте состояние операции"; }
+        }
+        if(ReferenceEquals(stopping,running))stopping?.Cancel(); FlushText(); Persist();
+    }
     private void AddAttachments(IEnumerable<string> paths)
     {
         int added = 0;
@@ -250,11 +268,12 @@ internal sealed class ChatPanel : UserControl
                 if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
                 CadSessionId = descriptors[0].SessionId;
             }
-            var context = await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId), timeout.Token);
+            var context = await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId, CadDocumentId), timeout.Token);
             if (context.Error is { } error) throw new IOException(error.Message);
             cadContext = context;
             if (context.Data is JsonElement data)
             {
+                ApplyTheme();
                 drawing.Text = "Чертёж: " + Path.GetFileName(data.Text("name")) + " · " + data.Text("units");
                 if (data.TryGetProperty("editing", out var edit) && edit.TryGetProperty("pending_lisp", out var pending) && pending.ValueKind == JsonValueKind.String)
                     drawing.Text += " · CAD-скрипт ещё выполняется: " + pending.GetString();
@@ -395,14 +414,14 @@ internal sealed class ChatPanel : UserControl
             {
                 var previousSession = adapterKey == key ? adapter?.SessionId : null;
                 var options = new ProviderOptions(executable.Text, host.Text, directory.Text, selectedModel, selectedEffort,
-                    MaxSubagents: maxSubagents);
+                    MaxSubagents: maxSubagents, OwnerId: operationOwner, CadSessionId: CadSessionId, CadDocumentId: CadDocumentId ?? cadContext?.DocumentId);
                 adapter = provider.SelectedIndex == 0 ? new CodexProvider(options) : new ClaudeProvider(options); adapterKey = key;
                 adapterSelection = selection;
                 adapter.SessionId = previousSession ?? (restored?.AdapterKey == key ? restored.SessionId : null);
                 restored = null;
             }
             var prompt = initialPrompt;
-            if (cadContext is { } target) prompt += "\nPanel target (verify fresh with CAD tools): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
+            if (cadContext is { } target) prompt += "\nPinned project target (verify fresh with cad_context document_id; never use another drawing from cad_sessions): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
                 lastSignal = DateTimeOffset.Now;
@@ -427,7 +446,7 @@ internal sealed class ChatPanel : UserControl
         }
         catch (OperationCanceledException)
         {
-            FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Уже принятые CAD-запросы могут завершиться." }); activity.Text = "Остановлено";
+            FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Проверяю результат отмены и состояние чертежа." }); activity.Text = "Остановлено";
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         catch (System.Exception e)
@@ -638,7 +657,7 @@ internal sealed class ChatPanel : UserControl
     private void ApplyTheme()
     {
         bool next;
-        try { next = DarkThemeProvider?.Invoke() ?? SystemColors.WindowColor.R < 128; }
+        try { next = DarkThemeProvider?.Invoke() ?? (cadContext?.Data is JsonElement data && data.TryGetProperty("dark_theme",out var theme)?theme.GetBoolean():SystemColors.WindowColor.R < 128); }
         catch (System.Exception) { next = SystemColors.WindowColor.R < 128; }
         if (darkTheme == next && panelBrush.Color.A != 0) return;
         darkTheme = next;

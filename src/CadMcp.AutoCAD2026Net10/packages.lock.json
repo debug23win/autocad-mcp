@@ -24,8 +24,16 @@
         "resolved": "25.1.1",
         "contentHash": "SUbl6tXY5Ad6SSz2H5OYkzs0T+Buz1SUviZuBVBw86Pc2tt3KTnxS1vkvyAUWh1mMc1pgagJUfWj/znsY9LGZg=="
       },
+      "PdfPig": {
+        "type": "Transitive",
+        "resolved": "0.1.16",
+        "contentHash": "qQcbsNMYVY+K5ELptax2S8thNMk0+rSQq3H/KdYj3LLcko8yTCz8y5KIvsKxIyAuTN0ZYNnfsZkM+0EvxTwHVA=="
+      },
       "cadmcp.core": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "PdfPig": "[0.1.16, )"
+        }
       }
     }
   }

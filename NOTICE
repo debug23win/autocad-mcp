@@ -32,3 +32,5 @@ Open XML SDK 3.1.1 (MIT), Microsoft WebView2 SDK 1.0.4258.31 and
 System.IO.Packaging 8.0.1. Notices and licenses are in licenses/dependencies
 and licenses/KaTeX-MIT.txt. The Microsoft Edge WebView2 runtime is supplied by
 the user's Windows installation and is not bundled.
+
+PdfPig 0.1.16 is used for structural PDF validation. Copyright UglyToad and contributors. Apache-2.0 and retained external component notices: licenses/dependencies/PdfPig-0.1.16-LICENSE.txt. Source: https://github.com/UglyToad/PdfPig/tree/v0.1.16.

@@ -20,7 +20,7 @@ internal static class Edits
     private static bool Bool(JsonElement op, string field, bool fallback = false) => op.TryGetProperty(field, out var v) ? v.GetBoolean() : fallback;
     private static void Equal(Point3d a, Point3d b)
     { if (a.DistanceTo(b) < 1e-10) throw new CadFault("DEGENERATE_GEOMETRY", "Points must differ"); }
-    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default)
+    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default, Action<string>? progress = null)
     {
         using var undoGroup = new UndoGroup(doc);
         using var tr = doc.Database.TransactionManager.StartTransaction();
@@ -32,7 +32,7 @@ internal static class Edits
         foreach (var op in operations)
         {
             ct.ThrowIfCancellationRequested();
-            string kind = S(op, "op");
+            string kind = S(op, "op"); progress?.Invoke("action " + index + ": " + kind);
             if (kind == "layer")
             {
                 var name = S(op, "name");
@@ -106,6 +106,21 @@ internal static class Edits
                 if (op.TryGetProperty("id", out _)) throw new CadFault("INVALID_ALIAS", "Civil surfaces cannot be used as regular entity targets");
                 continue;
             }
+            if (kind.StartsWith("civil_",StringComparison.Ordinal) && kind is not ("civil_tin_create" or "civil_tin_add_points"))
+            {var detail=VerticalEditing.Civil(doc.Database,tr,op);results.Add(new {index=index++,op=kind,detail});continue;}
+            if (kind == "assembly_update")
+            {
+                var assembly = Editable(doc.Database,tr,Resolve(doc.Database, tr, op, aliases),true) as BlockReference ?? throw new CadFault("INVALID_ASSEMBLY", "Block required");
+                var detail = StructuralAssemblies.Update(doc.Database, tr, assembly, op); touched.Add(assembly.ObjectId);
+                if(op.Text("id") is {} alias)aliases.Add(alias,assembly.ObjectId);
+                results.Add(new { index = index++, op = kind,id=op.Text("id"),handle=assembly.Handle.ToString(),detail }); continue;
+            }
+            if (kind is "solid_fillet" or "solid_chamfer" or "solid_shell")
+            {
+                var solid = SolidModeling.Execute(doc.Database, tr, op, aliases);
+                touched.Add(solid.ObjectId);if(op.Text("id") is {} alias)aliases.Add(alias,solid.ObjectId); results.Add(new { index = index++, op = kind,id=op.Text("id"),handle = solid.Handle.ToString() });
+                continue;
+            }
             if (kind == "solid_boolean")
             {
                 var primaryId = Resolve(doc.Database, tr, op, aliases);
@@ -153,7 +168,7 @@ internal static class Edits
                 if (Editable(doc.Database, tr, tableId, true, tableSpace) is not Table nativeTable) throw new CadFault("INVALID_TABLE", "Target must be a native Table in the requested space");
                 if (kind == "table_cells") NativeTables.SetCells(nativeTable, doc.Database, tr, op.GetProperty("cells"), aliases);
                 if (kind == "table_merge") NativeTables.Merge(nativeTable, op.GetProperty("first_row").GetInt32(), op.GetProperty("first_column").GetInt32(), op.GetProperty("last_row").GetInt32(), op.GetProperty("last_column").GetInt32(), Bool(op, "unmerge"));
-                if (kind is "table_rows" or "table_columns") NativeTables.Resize(nativeTable, op);
+                if (kind is "table_rows" or "table_columns") NativeTables.Resize(nativeTable, doc.Database, tr, op);
                 NativeTables.Recalculate(nativeTable, doc.Database, tr);
                 touched.Add(tableId);
                 if (op.Text("id") is {} tableAlias) aliases.Add(tableAlias, tableId);
@@ -218,7 +233,7 @@ internal static class Edits
                     if (entity is RasterImage raster) RasterImages.Associate(raster, tr);
                 }
                 catch { if (entity.ObjectId.IsNull) entity.Dispose(); throw; }
-                if (entity is Table nativeTable) NativeTables.Populate(nativeTable, doc.Database, tr, op, aliases);
+                if (entity is Table nativeTable) { NativeTables.Populate(nativeTable, doc.Database, tr, op, aliases); if(kind=="assembly_schedule")StructuralAssemblies.RegisterSchedule(nativeTable,tr,op); }
                 if (entity is BlockReference block && entity is not Table) Attributes(doc.Database, tr, block, op, true);
                 if (entity is Viewport viewport) Sheets.TurnOnViewport(S(op, "layout"), viewport);
                 if (entity is Hatch hatch) SetupHatch(doc.Database, tr, hatch, op, aliases);
@@ -229,6 +244,8 @@ internal static class Edits
             results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = entity.Handle.ToString(), source_handle = sourceHandle, erased = entity.IsErased,
                 image_registration = imageRegistration });
         }
+        StructuralAssemblies.RefreshSchedules(doc.Database,tr);
+        var table_dependencies = TableLinks.Recalculate(doc.Database, tr);
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
         {
@@ -241,7 +258,8 @@ internal static class Edits
         bool enforce = expectations.ValueKind != JsonValueKind.Object || !expectations.TryGetProperty("enforce", out var enforcement) || enforcement.ValueKind != JsonValueKind.False;
         if (enforce && acceptance.State is "failed" or "unverified")
             throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
-        var data = new { transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback, acceptance,
+        var quality = DrawingQuality.Review(doc.Database, tr, touched, ct);
+        var data = new { quality, transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback, acceptance, table_dependencies,
             undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_vendor_API" } };
         if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
         ct.ThrowIfCancellationRequested();
@@ -272,6 +290,9 @@ internal static class Edits
     {
         switch (S(op, "op"))
         {
+            case "assembly_create": return StructuralAssemblies.Create(db, tr, op);
+            case "assembly_schedule": return StructuralAssemblies.Schedule(db, tr, op);
+            case "solid_loft": case "solid_section": return SolidModeling.Execute(db, tr, op, aliases);
             case "table_create": return NativeTables.Create(db, tr, op);
             case "spds_table": return NativeTables.Template(db, tr, op);
             case "spds_axis": return SpdsDrafting.Axis(db, tr, op);
@@ -446,7 +467,7 @@ internal static class Edits
     }
     private static void RequireUnlocked(Transaction tr, Entity e)
     { if (((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked) throw new CadFault("LAYER_LOCKED", e.Layer); }
-    private static Entity Editable(Database db, Transaction tr, ObjectId id, bool write, ObjectId? permittedSpace = null)
+    internal static Entity Editable(Database db, Transaction tr, ObjectId id, bool write, ObjectId? permittedSpace = null)
     {
         if (id.IsErased) throw new CadFault("ENTITY_ERASED", id.Handle.ToString());
         if (tr.GetObject(id, OpenMode.ForRead) is not Entity e || e.OwnerId != (permittedSpace ?? db.CurrentSpaceId)) throw new CadFault("UNSUPPORTED_SCOPE", "Only top-level entities in the current or explicitly named paper layout can be edited");

@@ -51,6 +51,7 @@ internal static class NativeTables
             var (r,c)=DraftingPlan.Address(item.Text("cell")!);Bounds(table,r,c);
             var range=mergedRanges.FirstOrDefault(m=>r>=m.TopRow&&r<=m.BottomRow&&c>=m.LeftColumn&&c<=m.RightColumn);
             if(range is not null&&(range.TopRow!=r||range.LeftColumn!=c))throw new CadFault("MERGED_CELL","Edit the top-left cell of a merged range");
+            TableLinks.Register(table,db,tr,item,aliases);
             var cell=table.Cells[r,c];
             cell.FieldId=ObjectId.Null;
             if(item.TryGetProperty("value",out var value))
@@ -108,13 +109,14 @@ internal static class NativeTables
         var range=CellRange.Create(table,firstRow,firstCol,lastRow,lastCol);
         if(unmerge)table.UnmergeCells(range);else table.MergeCells(range);
     }
-    public static void Resize(Table table,JsonElement op)
+    public static void Resize(Table table,Database db,Transaction tr,JsonElement op)
     {
         bool rows=op.Text("op")=="table_rows",insert=op.Text("action")=="insert";
         int index=op.GetProperty("index").GetInt32(),count=op.GetProperty("count").GetInt32(),existing=rows?table.Rows.Count:table.Columns.Count;
         if(index>existing||(!insert&&(index+count>existing||count==existing)))throw new CadFault("INVALID_CELL_RANGE","Cannot delete all rows/columns or resize outside the table");
         int nr=table.Rows.Count+(rows?(insert?count:-count):0),nc=table.Columns.Count+(!rows?(insert?count:-count):0);
         if(nr>500||nc>50||nr*nc>5000)throw new CadFault("TABLE_TOO_LARGE","Table exceeds bounded dimensions");
+        TableLinks.Resize(table,db,tr,op);
         double textHeight=table.Cells[Math.Min(index,table.Rows.Count-1),0].TextHeight??2.5;
         var textStyle=table.Cells[Math.Min(index,table.Rows.Count-1),0].TextStyleId;
         if(rows){if(insert)table.InsertRows(index,DraftingPlan.Positive(op,"height",8),count);else table.DeleteRows(index,count);}
@@ -174,7 +176,7 @@ internal static class NativeTables
             column_widths=table.Columns.Select(c=>c.Width).ToArray(),row_heights=table.Rows.Select(r=>r.Height).ToArray(),
             table_style=table.TableStyleName,cells,next_row=endRow<table.Rows.Count?(int?)endRow:null,source="native_AutoCAD_Table"};
     }
-    private static CellRange[] MergedRanges(Table table)
+    internal static CellRange[] MergedRanges(Table table)
     {
         var ranges=new List<CellRange>();
         for(int r=0;r<table.Rows.Count;r++)for(int c=0;c<table.Columns.Count;c++)

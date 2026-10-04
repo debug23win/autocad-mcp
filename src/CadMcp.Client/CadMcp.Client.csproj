@@ -4,7 +4,7 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
     <ProjectReference Include="../CadMcp.Providers/CadMcp.Providers.csproj" />
-    <Compile Include="../CadMcp.AutoCAD/ChatPanel.cs;../CadMcp.AutoCAD/GlobalUsings.cs" />
+    <Compile Include="../CadMcp.AutoCAD/ChatWorkspace.cs;../CadMcp.AutoCAD/ChatPanel.cs;../CadMcp.AutoCAD/GlobalUsings.cs" />
     <Compile Include="../CadMcp.AutoCAD/ChatBrowser.cs" Link="ChatBrowser.cs" />
     <Content Include="../CadMcp.AutoCAD/Resources/Chat/**" Link="Resources/Chat/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

@@ -6,7 +6,7 @@ namespace CadMcp.Core;
 
 public sealed record Request(string RequestId, string Operation, string? SessionId = null,
     string? DocumentId = null, long? ExpectedRevision = null, JsonElement Data = default,
-    DateTimeOffset? Deadline = null);
+    DateTimeOffset? Deadline = null, string? OwnerId = null);
 public sealed record Fault(string Code, string Message);
 public sealed record Response(string RequestId, string Status, object? Data = null,
     string? SessionId = null, string? DocumentId = null, long? Revision = null, Fault? Error = null)

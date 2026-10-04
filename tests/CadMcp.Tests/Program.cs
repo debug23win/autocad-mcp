@@ -22,6 +22,12 @@ if (args.Contains("--live-codex-approval-test"))
     return;
 }
 
+if(args.Contains("--cli-config-check"))
+{
+    string cli=args[Array.IndexOf(args,"--cli-config-check")+1];using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(35));
+    var models=await CodexCatalog.ReadAsync(new(cli,Path.GetFullPath("src/CadMcp.Host/bin/Release/net8.0-windows/CadMcp.Host.exe"),Environment.CurrentDirectory,OwnerId:"config-probe",CadSessionId:"fixture-session",CadDocumentId:"fixture-document"),timeout.Token);
+    Console.WriteLine("Official CLI parsed pinned MCP and custom read-only reviewer config; model count: "+models.Count);return;
+}
 // Child mode simulates only provider wire protocols; never invokes a real CLI/model.
 if (args.Contains("app-server"))
 {
@@ -170,7 +176,7 @@ await Test("HTML chat escapes input and Word export embeds images", async () =>
         Assert(document.MainDocumentPart!.ImageParts.Count() == 1, "Word image not embedded");
         Assert(document.MainDocumentPart.Document.Body!.InnerText.Contains("3,05 м"), "Word text missing");
         Assert(!document.MainDocumentPart.Document.Body.InnerText.Contains("cad_search"), "Raw CAD events should not appear in Word");
-        Assert(!new DocumentFormat.OpenXml.Validation.OpenXmlValidator().Validate(document).Any(), "Invalid Word document");
+        var wordErrors=new DocumentFormat.OpenXml.Validation.OpenXmlValidator().Validate(document).ToArray();Assert(wordErrors.Length==0,"Invalid Word document: "+string.Join(";",wordErrors.Select(e=>e.Description+" @ "+e.Path?.XPath)));
     }
     finally { Directory.Delete(folder, true); }
     await Task.CompletedTask;
@@ -665,6 +671,23 @@ await Test("provider arguments preserve paths and isolate Claude MCP config", ()
         selected[Array.IndexOf(selected, "--effort") + 1] == "high", "Claude model or effort selection missing");
     return Task.CompletedTask;
 });
+await Test("Owned CAD cancellation isolates chats and documents",()=>
+{
+    using var control=new OperationControl();var data=Wire.Element(new{});
+    var a=new Request("a","cad_edit","s","d1",Data:data,OwnerId:"chat1");var b=a with{RequestId="b",OwnerId="chat2"};var c=a with{RequestId="c",DocumentId="d2"};
+    var ta=control.Accept("a",a);var tb=control.Accept("b",b);var tc=control.Accept("c",c);
+    var stopped=control.Cancel(a with{Operation="cad_cancel"});Assert(stopped.SequenceEqual(new[]{"a"})&&ta.IsCancellationRequested&&!tb.IsCancellationRequested&&!tc.IsCancellationRequested,"Stop leaked into another chat/document");
+    control.Complete("a");Assert(!Wire.Element(control.Snapshot()).EnumerateArray().Any(x=>x.Text("operation_id")=="a"),"Completed job retained");return Task.CompletedTask;
+});
+await Test("Word exports editable engineering equations and tables",()=>
+{
+    string path=Environment.GetEnvironmentVariable("CADMCP_DOCX_FIXTURE")??Path.Combine(Path.GetTempPath(),"cad-native-math-"+Guid.NewGuid().ToString("N")+".docx");
+    ChatWordExporter.Save(path,[new ChatLine("user","Проверь прогиб и напряжение балки"),new ChatLine("assistant","## Проверка балки\n\nНапряжение $\\sigma=\\frac{M}{W}$ сравниваем с допускаемым.\n\n$$ f=\\frac{5qL^4}{384EI} \\leq \\frac{L}{250} $$\n\n$$ r=\\sqrt[3]{x^2+y^2},\\quad A=\\begin{bmatrix}1&2\\\\3&4\\end{bmatrix} $$\n\n| Параметр | Значение |\n|---|---|\n| Пролёт | **5000 мм** |\n| Формула | $A=ab$ |")]);
+    using var doc=DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(path,false);
+    var errors=new DocumentFormat.OpenXml.Validation.OpenXmlValidator().Validate(doc).ToArray();Assert(errors.Length==0,string.Join(";",errors.Select(e=>e.Description)));
+    var xml=doc.MainDocumentPart!.Document.OuterXml;Assert(xml.Contains("m:f")&&xml.Contains("m:rad")&&xml.Contains("m:m")&&xml.Contains("m:sSup")&&!xml.Contains("\\frac"),"Native OMML missing");
+    Assert(doc.MainDocumentPart.Document.Body!.Elements<DocumentFormat.OpenXml.Wordprocessing.Table>().Count()==1,"Word table missing");return Task.CompletedTask;
+});
 await Test("Codex grants CAD tools without global permission changes", () =>
 {
     var arguments = new CodexProvider(options).Arguments();
@@ -707,7 +730,7 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 27 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
+        Assert(names.Length == 37 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
             names.Contains("cad_export") && names.Contains("cad_publish") && names.Contains("cad_lisp") &&
             names.Contains("cad_operation_status") && names.Contains("cad_render") && names.Contains("cad_image_register") &&
             names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get") &&
@@ -728,6 +751,29 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         Assert(status.GetProperty("content")[0].GetProperty("text").GetString()!.Contains("cad_operation_status"), "Status not routed");
     }
     finally { ProviderProcess.Stop(process); await stderr; }
+});
+await Test("MCP enforces project pin for read edit render and review helpers",async()=>
+{
+    string pipe="cadmcp-pin-test-"+Guid.NewGuid().ToString("N");var requests=new System.Collections.Concurrent.ConcurrentQueue<Request>();
+    using var broker=new PipeServer(pipe,(r,ct)=>{requests.Enqueue(r);return Task.FromResult(new Response(r.RequestId,"completed",new{document_id=r.DocumentId,owner_id=r.OwnerId}));});broker.Start();
+    foreach(bool helper in new[]{false,true})
+    {
+        var info=ProviderProcess.StartInfo(new(Path.GetFullPath("src/CadMcp.Host/bin/Release/net8.0-windows/CadMcp.Host.exe"),"unused",Environment.CurrentDirectory),["--broker-pipe",pipe]);
+        info.Environment["CAD_MCP_SESSION_ID"]="s";info.Environment["CAD_MCP_DOCUMENT_ID"]="d";info.Environment["CAD_MCP_OWNER_ID"]="chat-a";if(helper)info.Environment["CAD_MCP_READ_ONLY"]="1";
+        using var process=Process.Start(info)!;var stderr=ProviderProcess.DrainErrors(process);using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        async Task<JsonElement> Rpc(int id,string method,object parameters)
+        {await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{jsonrpc="2.0",id,method,@params=parameters}));await process.StandardInput.FlushAsync();while(await process.StandardOutput.ReadLineAsync(timeout.Token) is {} line){var reply=JsonDocument.Parse(line).RootElement;if(reply.TryGetProperty("id",out var rid)&&rid.GetInt32()==id)return reply.GetProperty("result").Clone();}throw new IOException("MCP fixture stdout closed");}
+        try
+        {
+            await Rpc(1,"initialize",new{protocolVersion="2025-11-25",capabilities=new{},clientInfo=new{name="pin-test",version="1"}});
+            await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");await process.StandardInput.FlushAsync();
+            var context=await Rpc(2,"tools/call",new{name="cad_context",arguments=new{session_id="s"}});Assert(!context.TryGetProperty("isError",out var er)||!er.GetBoolean(),"Pinned context rejected");
+            Assert(requests.Last().DocumentId=="d"&&requests.Last().OwnerId=="chat-a","Scope/owner not forwarded");
+            foreach(var(name,arguments) in new (string,object)[]{("cad_context",new{session_id="s",document_id="foreign"}),("cad_render",new{session_id="s",document_id="foreign",expected_revision=0}),("cad_edit",new{session_id="s",document_id=helper?"d":"foreign",expected_revision=0,operation_id="pin",operations_json="[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]"})})
+            {int before=requests.Count;var reply=await Rpc(before+10,"tools/call",new{name,arguments});Assert(reply.GetProperty("isError").GetBoolean()&&requests.Count==before,"Foreign DWG or helper mutation reached CAD broker: "+name);}
+        }
+        finally{process.StandardInput.Close();await ProviderProcess.FinishAsync(process,stderr);}
+    }
 });
 await Test("broker automatic startup, reuse and shutdown", async () =>
 {

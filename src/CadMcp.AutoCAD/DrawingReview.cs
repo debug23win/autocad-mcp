@@ -73,6 +73,7 @@ internal static class DrawingReview
     {
         try
         {
+            if(!ReferenceEquals(doc,App.DocumentManager.MdiActiveDocument))return new {name=doc.Name,disk_save="unknown",evidence="DBMOD is only reliable for active drawing",automatic_save=false};
             int dbmod = Convert.ToInt32(App.GetSystemVariable("DBMOD"));
             var file = new FileInfo(doc.Name);
             bool exists = Path.IsPathRooted(doc.Name) && file.Exists;

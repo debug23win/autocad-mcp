@@ -7,7 +7,10 @@ namespace CadMcp.Providers;
 
 public sealed record ProviderOptions(string Executable, string McpExecutable, string WorkingDirectory,
     string? Model = null, string? ReasoningEffort = null, IReadOnlyList<string>? McpArguments = null,
-    int MaxSubagents = 3);
+    int MaxSubagents = 3, string? OwnerId = null, string? CadSessionId = null, string? CadDocumentId = null)
+{
+    public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
+}
 public sealed record ChatEvent(string Kind, string Text);
 public interface IChatProvider
 {
@@ -65,7 +68,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     public string[] Arguments(bool imageInput = false)
     {
         if (options.MaxSubagents is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(options.MaxSubagents));
-        var config = JsonSerializer.Serialize(new { mcpServers = new { cad = new { command = options.McpExecutable, args = Array.Empty<string>() } } });
+        var config = JsonSerializer.Serialize(new { mcpServers = new { cad = new { command = options.McpExecutable, args = options.McpArguments ?? Array.Empty<string>(), env = options.CadEnvironment } } });
         var args = new List<string> { "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__cad__*" };
         if (!string.IsNullOrWhiteSpace(options.Model)) args.AddRange(["--model", options.Model]);
@@ -79,7 +82,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 {
                     description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
                     prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
-                    tools = new[] { "mcp__cad__cad_sessions", "mcp__cad__cad_context", "mcp__cad__cad_catalog", "mcp__cad__cad_search",
+                    tools = new[] { "mcp__cad__cad_vertical_capabilities", "mcp__cad__cad_documents", "mcp__cad__cad_sessions", "mcp__cad__cad_review", "mcp__cad__cad_solid_get", "mcp__cad__cad_assembly_get", "mcp__cad__cad_table_dependencies", "mcp__cad__cad_release_check", "mcp__cad__cad_runtime_status", "mcp__cad__cad_context", "mcp__cad__cad_catalog", "mcp__cad__cad_search",
                         "mcp__cad__cad_table_get", "mcp__cad__cad_spds_help", "mcp__cad__cad_snapshot", "mcp__cad__cad_query", "mcp__cad__cad_result_get", "mcp__cad__cad_entity_get",
                         "mcp__cad__cad_vertical_catalog", "mcp__cad__cad_vertical_get", "mcp__cad__cad_render",
                         "mcp__cad__cad_image_register", "mcp__cad__cad_image_point", "mcp__cad__cad_edit_help", "mcp__cad__cad_verify",
@@ -187,6 +190,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         return ["-c", "mcp_servers.cad.command=" + JsonSerializer.Serialize(options.McpExecutable),
         "-c", "mcp_servers.cad.args=" + JsonSerializer.Serialize(options.McpArguments ?? Array.Empty<string>()),
         "-c", "mcp_servers.cad.enabled=true",
+        .. options.CadEnvironment.SelectMany(p => new[] {"-c", "mcp_servers.cad.env." + p.Key + "=" + JsonSerializer.Serialize(p.Value)}),
+        .. (options.MaxSubagents>0?ReviewerArguments(options):Array.Empty<string>()),
         "-c", "agents.enabled=" + (options.MaxSubagents > 0 ? "true" : "false"),
         "-c", "agents.max_concurrent_threads_per_session=" + Math.Max(1, options.MaxSubagents),
         // The user authorized direct CAD edits. `never` disables approval dialogs, but does
@@ -224,7 +229,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
         try
         {
-            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.8.0-preview" } } });
+            await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = "0.9.0-preview" } } });
             while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 using var doc = JsonDocument.Parse(line); var e = doc.RootElement;
@@ -339,6 +344,17 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
             throw new IOException("Codex exited before turn completion. " + await stderr);
         }
         finally { live.Close(); await ProviderProcess.FinishAsync(p, stderr); }
+    }
+    private static string[] ReviewerArguments(ProviderOptions options)
+    {
+        string root=Path.Combine(Path.GetTempPath(),"CadMcp","reviewers");Directory.CreateDirectory(root);
+        string key=CadMcp.Core.Portable.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(options.CadEnvironment)));
+        string path=Path.Combine(root,key+".toml");
+        var builder=new StringBuilder("developer_instructions = "+JsonSerializer.Serialize("You are the independent CAD reviewer. Read the assigned drawing only, inspect native geometry, units, quality reports and actual images. Never change the DWG, export, publish, focus or execute Lisp. Return measured evidence and concrete defects to the primary agent. Do not claim normative compliance or visual fidelity without evidence.")+"\n[mcp_servers.cad.env]\n");
+        foreach(var p in options.CadEnvironment)builder.Append(p.Key).Append(" = ").Append(JsonSerializer.Serialize(p.Value)).Append('\n');
+        builder.Append("CAD_MCP_READ_ONLY = \"1\"\n");
+        string content=builder.ToString();if(!File.Exists(path)||File.ReadAllText(path)!=content)File.WriteAllText(path,content,new UTF8Encoding(false));
+        return ["-c","agents.cad_reviewer.description=\"Independent read-only CAD geometry and release reviewer\"","-c","agents.cad_reviewer.config_file="+JsonSerializer.Serialize(path)];
     }
     public static string FriendlyError(string message)
     {

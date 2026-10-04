@@ -113,7 +113,7 @@ internal static class Verticals
             limitations = new[] { "vendor_geometry_requires_product_API", "object_data_record_limit_100_per_entity" } };
     }
 
-    private static object? CivilDocument()
+    internal static object? CivilDocument()
     {
         try
         {
@@ -212,7 +212,7 @@ internal static class Verticals
         return methods.ToDictionary(name => name, name => CivilCollection(obj, name, tr));
     }
 
-    private static object? MapProject(Database db)
+    internal static object? MapProject(Database db)
     {
         try
         {
@@ -229,7 +229,7 @@ internal static class Verticals
                 var path = root is null ? null : Path.Combine(root, "Map", "ManagedMapApi.dll");
                 if (path is not null && File.Exists(path)) assembly = Assembly.LoadFrom(path);
             }
-            var type = assembly?.GetType("Autodesk.Gis.Map.MapApplication");
+            var type = assembly?.GetType("Autodesk.Gis.Map.HostMapApplicationServices") ?? assembly?.GetType("Autodesk.Gis.Map.MapApplication");
             var application = type?.GetProperty("Application", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
             var method = application?.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 .FirstOrDefault(m => m.Name == "GetProjectForDB" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsAssignableFrom(typeof(Database)));

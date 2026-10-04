@@ -89,7 +89,7 @@ public sealed class OperationJournal
     }
     private Response CompleteCore(string id, Response result)
     {
-        var entry = (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = result.Error is null ? "completed" : "failed", Result = result };
+        var entry = (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = result.Error?.Code == "CANCELLED" ? "cancelled" : result.Error is null ? "completed" : "failed", Result = result };
         try { Save(id, entry); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

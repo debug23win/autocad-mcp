@@ -10,17 +10,52 @@ namespace CadMcp.Host;
 public sealed class CadTools
 {
     public static string BrokerPipe { get; set; } = Wire.BrokerPipe;
-    private static async Task<CallToolResult> Call(string operation, string? session, string? document, object data, long? revision, CancellationToken ct)
+    private static readonly string Owner = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")) ? Guid.NewGuid().ToString("N") : Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")!;
+    private static async Task<Response> ScopedResponse(string operation, string? session, string? document, object data, long? revision, CancellationToken ct)
     {
+        if(Environment.GetEnvironmentVariable("CAD_MCP_READ_ONLY")=="1"&&(MutationRecovery.IsMutation(operation)||operation is "cad_focus" or "cad_cancel"))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
+        string? pinnedSession=Environment.GetEnvironmentVariable("CAD_MCP_SESSION_ID"), pinnedDocument=Environment.GetEnvironmentVariable("CAD_MCP_DOCUMENT_ID");
+        if(string.IsNullOrWhiteSpace(pinnedSession))pinnedSession=null;if(string.IsNullOrWhiteSpace(pinnedDocument))pinnedDocument=null;
+        if(pinnedSession is not null && session is not null && pinnedSession!=session)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat is pinned to another AutoCAD session");
+        if(pinnedDocument is not null && document is not null && pinnedDocument!=document)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat and its helpers can access only their assigned DWG");
+        session ??= pinnedSession;document ??= pinnedDocument;
+        if(operation=="cad_sessions" && pinnedSession is not null)operation="cad_context";
         var response = await MutationRecovery.CallAsync(
-            new(Guid.NewGuid().ToString("N"), operation, session, document, revision, Wire.Element(data)),
+            new(Guid.NewGuid().ToString("N"), operation, session, document, revision, Wire.Element(data), OwnerId: Owner),
             (r, token) => PipeClient.CallAsync(BrokerPipe, r, token), ct);
-        return new() { IsError = response.Error is not null, Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response, Wire.Json) }] };
+        if(operation=="cad_documents" && pinnedDocument is not null && response.Error is null)
+            response=response with {Data=Wire.Element(response.Data!).EnumerateArray().Where(d=>d.Text("document_id")==pinnedDocument).Select(d=>d.Clone()).ToArray()};
+        return response;
     }
+    private static async Task<CallToolResult> Call(string operation,string? session,string? document,object data,long? revision,CancellationToken ct)
+    {
+        var response=await ScopedResponse(operation,session,document,data,revision,ct);
+        return new() { IsError=response.Error is not null,Content=[new TextContentBlock {Text=JsonSerializer.Serialize(response,Wire.Json)}] };
+    }
+    [McpServerTool(Name = "cad_vertical_capabilities",ReadOnly=true),Description("Read actually loaded Civil/Map API versions and exact supported method signatures before editing vertical objects. Missing API is explicitly unavailable.")]
+    public static Task<CallToolResult> VerticalCapabilities(string session_id,string document_id,CancellationToken ct)=>Call("cad_vertical_capabilities",session_id,document_id,new{},null,ct);
+    [McpServerTool(Name = "cad_documents", ReadOnly = true), Description("List open DWGs with document ids, project keys and active status. Pin every task to a specific document_id; concurrent chats are isolated.")]
+    public static Task<CallToolResult> Documents(string session_id,CancellationToken ct)=>Call("cad_documents",session_id,null,new{},null,ct);
+    [McpServerTool(Name = "cad_cancel", ReadOnly = false), Description("Cancel this chat owner queued/running operations in a drawing. Native calls finish at a safe boundary; a running Lisp command needs Esc. Does not cancel another chat work.")]
+    public static Task<CallToolResult> Cancel(string session_id,string document_id,CancellationToken ct,string? operation_id=null)=>Call("cad_cancel",session_id,document_id,new{operation_id},null,ct);
+    [McpServerTool(Name = "cad_runtime_status", ReadOnly = true), Description("Read worker operation phases and cancellation status without waiting for the CAD UI thread.")]
+    public static Task<CallToolResult> RuntimeStatus(string session_id,string document_id,CancellationToken ct)=>Call("cad_runtime_status",session_id,document_id,new{},null,ct);
+    [McpServerTool(Name = "cad_diagnostics", ReadOnly = true), Description("Read durable last-operation phase, plugin version and DWG checkpoint locations, including previous worker sessions. A nonterminal old phase means unknown outcome; never automatically retry it.")]
+    public static Task<CallToolResult> Diagnostics(string session_id,CancellationToken ct)=>Call("cad_diagnostics",session_id,null,new{},null,ct);
+    [McpServerTool(Name = "cad_review", ReadOnly = true), Description("Check up to 250 selected entities (or current space): actual solid interferences, annotation extents, native table text fit and configured paper boundaries. Review warnings and intentional joints; inspect the actual rendered view too.")]
+    public static Task<CallToolResult> Review(string session_id,string document_id,CancellationToken ct,string? handles_json=null)=>Call("cad_review",session_id,document_id,new{handles_json},null,ct);
+    [McpServerTool(Name = "cad_solid_get", ReadOnly = true), Description("Read native Solid3d volume, edge and face topology ids at the current revision. Refresh after each fillet/chamfer/shell; ids are not stable through topology changes.")]
+    public static Task<CallToolResult> SolidGet(string session_id,string document_id,string handle,CancellationToken ct)=>Call("cad_solid_get",session_id,document_id,new{handle},null,ct);
+    [McpServerTool(Name = "cad_assembly_get", ReadOnly = true), Description("Read parametric native structural assembly recipe, mark, material, volume and mass scope. Geometry is not a structural capacity calculation.")]
+    public static Task<CallToolResult> AssemblyGet(string session_id,string document_id,string handle,CancellationToken ct)=>Call("cad_assembly_get",session_id,document_id,new{handle},null,ct);
+    [McpServerTool(Name = "cad_table_dependencies", ReadOnly = true), Description("Read persisted stable cell identities and table formula dependency graph. CAD MCP edits automatically recalculate linked tables; deletion of referenced rows is rejected.")]
+    public static Task<CallToolResult> TableDependencies(string session_id,string document_id,CancellationToken ct)=>Call("cad_table_dependencies",session_id,document_id,new{},null,ct);
+    [McpServerTool(Name = "cad_release_check", ReadOnly = true), Description("Check a sheet set before publishing: missing external references/fonts, title/designation and sheet numbers, plot device, table fit and paper boundaries. layouts_json is an array of exact layout names.")]
+    public static Task<CallToolResult> ReleaseCheck(string session_id,string document_id,string layouts_json,CancellationToken ct)=>Call("cad_release_check",session_id,document_id,new{layouts_json},null,ct);
     [McpServerTool(Name = "cad_sessions", ReadOnly = true), Description("List CAD workers and current document contexts. Requires the local broker.")]
     public static Task<CallToolResult> Sessions(CancellationToken ct) => Call("cad_sessions", null, null, new { }, null, ct);
     [McpServerTool(Name = "cad_context", ReadOnly = true), Description("Read active document identity, revision, units and supported capabilities.")]
-    public static Task<CallToolResult> Context(string session_id, CancellationToken ct) => Call("cad_context", session_id, null, new { }, null, ct);
+    public static Task<CallToolResult> Context(string session_id, CancellationToken ct, string? document_id=null) => Call("cad_context", session_id, document_id, new { }, null, ct);
     [McpServerTool(Name = "cad_catalog", ReadOnly = true), Description("Read layers, local blocks and attributes, layouts, text/dimension styles and linetypes at the current revision. Use these names before inserting or editing objects.")]
     public static Task<CallToolResult> Catalog(string session_id, string document_id, long expected_revision, CancellationToken ct) => Call("cad_catalog", session_id, document_id, new { }, expected_revision, ct);
     [McpServerTool(Name = "cad_vertical_catalog", ReadOnly = true), Description("Read the optional Civil 3D and Map 3D product APIs in the running CAD process: bounded lists of surfaces, alignments and pipe networks; Map coordinate systems and object-data table names. Reports unavailable explicitly if a vertical API is not loaded. No vendor DLL is bundled.")]
@@ -36,7 +71,7 @@ public sealed class CadTools
     [McpServerTool(Name = "cad_spds_help", ReadOnly = true), Description("Read native Table/formula and SPDS drafting contract, verified form dimensions and KJ/KM working templates. All output uses standard editable AutoCAD objects through C#, without SPDS GraphiCS dependencies. Read before drafting structural sheets.")]
     public static CallToolResult SpdsHelp() => new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new {
         operations = DraftingPlan.Fields, templates = SpdsTemplates.Tables,
-        tables = "table_create: position, rows/columns, cells:[{cell:'A1',value:12}]. Formula starts with =. Local references use =A1*B1 or =SUM(A1:A3). Linked references use ={{qty}}*2 with references:[{name:'qty',table_handle:'HEX',cell:'B2'}] (or earlier table_target alias). These become native DWG AcExpr fields, not copied numbers. Recalculate dependent tables explicitly with table_recalculate after source changes; verify values with cad_table_get. Avoid cycles. Merges use zero-based [first_row,first_column,last_row,last_column]. table_rows/columns insert/delete with index/count; linked-cell positions require review after row/column insertion.",
+        tables = "table_create: position, rows/columns, cells:[{cell:'A1',value:12}]. Formula starts with =. Local references use =A1*B1 or =SUM(A1:A3). Linked references use ={{qty}}*2 with references:[{name:'qty',table_handle:'HEX',cell:'B2'}] (or earlier table_target alias). These become native DWG AcExpr fields, not copied numbers. Linked tables created by CAD MCP recalculate automatically after source changes; verify values with cad_table_get. Avoid cycles. Merges use zero-based [first_row,first_column,last_row,last_column]. table_rows/columns insert/delete with index/count; linked-cell identities survive CAD MCP row/column insertion; delete referenced cells only after removing dependents.",
         drafting = "spds_table: template, position, data array, optional title/scale. Sheet and table coordinates on layouts are paper millimetres. In model space supply scale converting paper millimetres into drawing units. spds_dimstyle creates a new style with drawing_scale and millimetre measurement_factor inferred from INSUNITS or explicitly supplied; use it in native dimensions. Linear dimensions use ticks, radial/diametric dimensions arrow overrides. spds_axis and spds_level create editable blocks of native primitives; elevation is explicitly metres with 3 decimals. spds_sheet builds an editable attributed form-3 title block and frame on an existing A0..A4 layout. Configure plot media and locked viewports separately before cad_publish.",
         structural_workflow = "KJ: obtain actual dimensions, materials, reinforcement scheme and design data; create concrete geometry, sections, reinforcement, axes/elevations, dimensions, specification and reinforcement/steel schedules. KM: obtain profiles, steel grades, lengths and joint data; create member geometry, assembly/section drawings, marks, dimensions, specification and member/steel schedules. Link quantities/masses between native tables. Use existing C# line/polyline/block/hatch/solid tools. Never invent reinforcement, connections or structural design loads. VerifiedForm=false marks a project template, not a mandatory standard form. Complete structural/normative compliance needs project inputs and review, not just placing a table.",
         standards = new[] { "ГОСТ Р 21.101-2026", "ГОСТ 21.501-2018 (КЖ)", "ГОСТ 21.502-2016 (КМ)" }
@@ -120,7 +155,7 @@ public sealed class CadTools
     public static async Task<CallToolResult> Render(string session_id, string document_id, long expected_revision, CancellationToken ct, int width = 1024, int height = 768,
         string? handles_json = null, string view_name = "current", string? view_direction_json = null)
     {
-        var response = await PipeClient.CallAsync(BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_render", session_id, document_id, expected_revision, Wire.Element(new { width, height, handles_json, view_name, view_direction_json })), ct);
+        var response = await ScopedResponse("cad_render",session_id,document_id,new {width,height,handles_json,view_name,view_direction_json},expected_revision,ct);
         if (response.Error is not null) return new() { IsError = true, Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response, Wire.Json) }] };
         var data = (JsonElement)response.Data!;
         var metadata = data.EnumerateObject().Where(p => p.Name != "image_base64").ToDictionary(p => p.Name, p => p.Value);
