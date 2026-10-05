@@ -9,22 +9,32 @@ namespace CadMcp.Host;
 [McpServerToolType]
 public sealed class CadTools
 {
+    [McpServerTool(Name="cad_steel_catalog",ReadOnly=true),Description("Read nominal steel section codes, millimetre dimensions, root radii and theoretical mass at 7850 kg/m3. Use exact profile in assembly_create beam/column; the native adapter converts catalog mm to DWG units. Grade and structural capacity are separate. Catalog source links are included.")]
+    public static object SteelCatalog()=>new {sections=SteelSections.Catalog,units="millimetres",density_kg_m3=7850,scope="nominal geometry; verify availability and order tolerances with the manufacturer"};
     public static string BrokerPipe { get; set; } = Wire.BrokerPipe;
     private static readonly string Owner = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")) ? Guid.NewGuid().ToString("N") : Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")!;
     private static async Task<Response> ScopedResponse(string operation, string? session, string? document, object data, long? revision, CancellationToken ct)
     {
-        if(Environment.GetEnvironmentVariable("CAD_MCP_READ_ONLY")=="1"&&(MutationRecovery.IsMutation(operation)||operation is "cad_focus" or "cad_cancel"))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
+        if(CadAccess.ReadOnly&&(MutationRecovery.IsMutation(operation)||operation is "cad_focus" or "cad_cancel"))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
         string? pinnedSession=Environment.GetEnvironmentVariable("CAD_MCP_SESSION_ID"), pinnedDocument=Environment.GetEnvironmentVariable("CAD_MCP_DOCUMENT_ID");
         if(string.IsNullOrWhiteSpace(pinnedSession))pinnedSession=null;if(string.IsNullOrWhiteSpace(pinnedDocument))pinnedDocument=null;
         if(pinnedSession is not null && session is not null && pinnedSession!=session)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat is pinned to another AutoCAD session");
         if(pinnedDocument is not null && document is not null && pinnedDocument!=document)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat and its helpers can access only their assigned DWG");
         session ??= pinnedSession;document ??= pinnedDocument;
         if(operation=="cad_sessions" && pinnedSession is not null)operation="cad_context";
+        bool readOnlyClient=CadAccess.ReadOnly;
+        if(operation=="cad_context")data=new{client_access=readOnlyClient?"read_only":"primary"};
         var response = await MutationRecovery.CallAsync(
             new(Guid.NewGuid().ToString("N"), operation, session, document, revision, Wire.Element(data), OwnerId: Owner),
             (r, token) => PipeClient.CallAsync(BrokerPipe, r, token), ct);
         if(operation=="cad_documents" && pinnedDocument is not null && response.Error is null)
             response=response with {Data=Wire.Element(response.Data!).EnumerateArray().Where(d=>d.Text("document_id")==pinnedDocument).Select(d=>d.Clone()).ToArray()};
+        if(operation=="cad_context"&&response.Error is null&&Wire.Element(response.Data!).ValueKind==JsonValueKind.Object)
+        {
+            var fields=Wire.Element(response.Data!).EnumerateObject().ToDictionary(p=>p.Name,p=>(object?)p.Value.Clone());
+            fields["access"]=new{read_only=readOnlyClient,document_pin=pinnedDocument,changes=readOnlyClient?"server rejects mutations, focus and cancellation":"primary writer"};
+            response=response with{Data=fields};
+        }
         return response;
     }
     private static async Task<CallToolResult> Call(string operation,string? session,string? document,object data,long? revision,CancellationToken ct)
@@ -82,8 +92,10 @@ public sealed class CadTools
         contract = "operations_json is a JSON array of 1..100 objects. Every object has op. Optional id names an entity for later target references. Existing entities use handle; handle and target are mutually exclusive. Create a missing layer first. Read cad_catalog for block/style names. Native C# supports meshes, spatial curves, 3D solids, extrude, sweep, revolve and solid Boolean operations; use these before cad_lisp. Repeat only the EXACT request with the SAME operation_id; do not change expected_revision when replaying. Read cad_operation_status after an ambiguous response. After success use returned revision for further calls. Locked layers, xref and most specialized objects are not edited through the native path. The whole native batch rolls back on any pre-commit error. Do not repeat unknown mutations automatically.",
         acceptance = new { parameter = "expectations_json", enforcement = "Default enforce=true: failed or unavailable measurements roll back the native transaction before commit. Set enforce=false only for an explicitly diagnostic check. entity_count counts live entities affected by this batch, not the whole drawing.",
             example = new { units = "Millimeters", entity_count = 1, checks = new[] { new { target = "beam", property = "length", expected = 5000, tolerance = 0.01 } } },
+            task_contract = "Optional task:string, bounds_size:[x,y,z], bounds_tolerance:number, type_counts:{nativeType:count}, review_views:[current/front/back/left/right/top/isometric], visual_requirements:[strings]. Numeric checks accept either expected or minimum/maximum (inclusive), plus tolerance. Assembly properties: assembly.solid_mass_kg, assembly.solid_volume_m3, assembly.centerline_length, assembly.profile_code. Bounds/counts refer to the supplied verification handles or affected batch; final task verification must include every final object. Visual requirements remain pending until actual renders are reviewed.",
             verification = "Use cad_verify after commit for fresh checks. Geometry acceptance does not prove visual similarity or disk save." },
-        notes = new { polyline = "points share WCS Z; bulges: one number per vertex; closed:boolean; width:nonnegative constant segment width",
+        notes = new { assembly_profiles = "Read cad_steel_catalog. beam/column parameters:{length,profile:exact_catalog_code}; length uses drawing units, catalog millimetres convert using DWG units. Or supply explicit width,height,web_thickness,flange_thickness, optional root_radius. Do not combine profile with explicit dimensions. Rebar points are the sharp centerline vertices, bend_radius is the centerline radius (default 2*diameter), adjacent legs must accommodate tangency. Screw-pile blade is a native volumetric 48-segment ruled solid; mass includes blade. Existing version-1 assemblies retain their geometry until assembly_update, with legacy mass limitations reported.",
+            polyline = "points share WCS Z; bulges: one number per vertex; closed:boolean; width:nonnegative constant segment width",
             polyline3d = "points is 2..2000 full [x,y,z] WCS points; optional closed:boolean",
             spline = "fit_points is 3..2000 full [x,y,z] WCS points; optional degree 1..11 below point count, closed:boolean; zero fit tolerance",
             mesh = "vertices is 3..5000 full [x,y,z] WCS points; faces is 1..2000 arrays of 3 or 4 distinct zero-based vertex indices. Produces an unsmoothed native SubDMesh, not an inferred mesh from a photograph",

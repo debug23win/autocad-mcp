@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
-    <Compile Include="../CadMcp.AutoCAD/WorkSafety.cs;../CadMcp.AutoCAD/TableLinks.cs;../CadMcp.AutoCAD/DrawingQuality.cs;../CadMcp.AutoCAD/SolidModeling.cs;../CadMcp.AutoCAD/StructuralAssemblies.cs;../CadMcp.AutoCAD/VerticalEditing.cs" />
+    <Compile Include="../CadMcp.AutoCAD/WorkSafety.cs;../CadMcp.AutoCAD/TableLinks.cs;../CadMcp.AutoCAD/DrawingQuality.cs;../CadMcp.AutoCAD/SolidModeling.cs;../CadMcp.AutoCAD/StructuralAssemblies.cs;../CadMcp.AutoCAD/StructuralSolids.cs;../CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../CadMcp.AutoCAD/NativeTables.cs;../CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../CadMcp.AutoCAD/DrawingReview.cs" />
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />

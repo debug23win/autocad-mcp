@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-if (args.Contains("--version")) { Console.WriteLine("CAD MCP 0.9.0-preview (AutoCAD / Map 3D / Civil 3D 2025–2027)"); return; }
+if (args.Contains("--version")) { Console.WriteLine("CAD MCP 0.10.0-preview (AutoCAD / Map 3D / Civil 3D 2025–2027)"); return; }
 int pipeOption = Array.IndexOf(args, "--broker-pipe");
 string pipeName = pipeOption >= 0 ? args[pipeOption + 1] : Wire.BrokerPipe;
 if (args.Contains("--stop-broker"))
@@ -39,5 +39,7 @@ if (pipeOption >= 0) CadTools.BrokerPipe = pipeName;
 else await BrokerBootstrap.EnsureAsync(Path.Combine(AppContext.BaseDirectory, "CadMcp.Host.exe"), CancellationToken.None);
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
-builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<CadTools>();
+builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<CadTools>()
+    .WithRequestFilters(filters=>filters.AddCallToolFilter(next=>async(context,ct)=>
+    {using var access=CadAccess.Scope(context.Params?.Meta);return await next(context,ct);}));
 await builder.Build().RunAsync();

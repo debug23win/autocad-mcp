@@ -17,6 +17,7 @@ internal sealed class DocumentState(Database database)
     public bool TablesDirty { get; set; }
     public bool Recalculating { get; set; }
     public string? TableError { get; set; }
+    public bool HistoryCommand { get; set; }
     public long ReadSideEffectEvents { get; set; }
 }
 internal sealed class Documents : IDisposable
@@ -34,10 +35,20 @@ internal sealed class Documents : IDisposable
     private void Changed(object sender, ObjectEventArgs e)
     {
         var db=(Database)sender;Touch(db);
-        if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject && state.ReadDepth==0&&!state.Recalculating)state.TablesDirty=true;
+        if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject && state.ReadDepth==0&&!state.Recalculating&&!state.HistoryCommand)state.TablesDirty=true;
     }
     private void Erased(object sender, ObjectErasedEventArgs e)
-    {var db=(Database)sender;Touch(db);if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject&&!state.Recalculating)state.TablesDirty=true;}
+    {var db=(Database)sender;Touch(db);if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject&&state.ReadDepth==0&&!state.Recalculating&&!state.HistoryCommand)state.TablesDirty=true;}
+    private void CommandStarting(object sender,CommandEventArgs e)
+    {
+        if(sender is Document doc && states.TryGetValue(doc,out var state) && e.GlobalCommandName.TrimStart('_','.').ToUpperInvariant() is "UNDO" or "U" or "REDO" or "MREDO")
+        {state.HistoryCommand=true;state.TablesDirty=false;}
+    }
+    private void CommandFinished(object sender,CommandEventArgs e)
+    {
+        if(sender is Document doc && states.TryGetValue(doc,out var state) && state.HistoryCommand && e.GlobalCommandName.TrimStart('_','.').ToUpperInvariant() is "UNDO" or "U" or "REDO" or "MREDO")
+        {state.HistoryCommand=false;state.TablesDirty=false;state.TableError=null;}
+    }
     private void Touch(Database db)
     {
         // Document.Database may return a different managed wrapper on each access.
@@ -71,12 +82,14 @@ internal sealed class Documents : IDisposable
     {
         if (states.TryGetValue(d, out var state)) return state;
         state = new(d.Database) { TablesDirty=true }; states.Add(d, state);
+        d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
         state.Database.ObjectAppended += Changed; state.Database.ObjectModified += Changed; state.Database.ObjectErased += Erased;
         return state;
     }
     private void Remove(Document d)
     {
         if (!states.TryGetValue(d, out var state)) return;
+        d.CommandWillStart-=CommandStarting;d.CommandEnded-=CommandFinished;d.CommandCancelled-=CommandFinished;d.CommandFailed-=CommandFinished;
         state.Database.ObjectAppended -= Changed; state.Database.ObjectModified -= Changed; state.Database.ObjectErased -= Erased;
         states.Remove(d);
     }

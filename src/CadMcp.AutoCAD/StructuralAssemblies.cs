@@ -6,12 +6,12 @@ namespace CadMcp.AutoCAD;
 internal static class StructuralAssemblies
 {
     private const string Key="CADMCP_ASSEMBLY_V1";
-    internal sealed record Recipe(string Kind,JsonElement Parameters,string Mark,string Material,double Density,bool Annotations);
+    internal sealed record Recipe(string Kind,JsonElement Parameters,string Mark,string Material,double Density,bool Annotations,int GeometryVersion=1);
     private static double P(JsonElement p,string name,double? fallback=null)
     {double n=EditPlan.Numeric(p,name,fallback);if(n<=0||n>1e8)throw new CadFault("INVALID_ASSEMBLY",name+" must be positive drawing units");return n;}
     internal static BlockReference Create(Database db,Transaction tr,JsonElement op)
     {
-        var recipe=new Recipe(op.Text("kind")!,op.GetProperty("parameters").Clone(),op.Text("mark")!,op.Text("material")!,EditPlan.Numeric(op,"density",7850),op.TryGetProperty("show_annotations",out var a)?a.GetBoolean():true);
+        var recipe=new Recipe(op.Text("kind")!,op.GetProperty("parameters").Clone(),op.Text("mark")!,op.Text("material")!,EditPlan.Numeric(op,"density",7850),op.TryGetProperty("show_annotations",out var a)?a.GetBoolean():true,2);
         if(recipe.Density<=0)throw new CadFault("INVALID_ASSEMBLY","Positive density in kg/m3 required");
         var blocks=(BlockTable)tr.GetObject(db.BlockTableId,OpenMode.ForWrite);
         var definition=new BlockTableRecord{Name="CADMCP_ASM_"+Guid.NewGuid().ToString("N")};blocks.Add(definition);tr.AddNewlyCreatedDBObject(definition,true);
@@ -22,7 +22,7 @@ internal static class StructuralAssemblies
     {
         var definition=(BlockTableRecord)tr.GetObject(reference.BlockTableRecord,OpenMode.ForWrite);var old=Load(definition,tr)??throw new CadFault("NOT_PARAMETRIC_ASSEMBLY","Select an assembly created by CAD MCP");
         if(definition.GetBlockReferenceIds(true,false).Count>1)throw new CadFault("SHARED_ASSEMBLY","This definition has multiple instances; updating it would change all. Make it unique first.");
-        var recipe=old with{Parameters=op.GetProperty("parameters").Clone(),Mark=op.Text("mark")??old.Mark,Material=op.Text("material")??old.Material,Density=EditPlan.Numeric(op,"density",old.Density),Annotations=op.TryGetProperty("show_annotations",out var a)?a.GetBoolean():old.Annotations};
+        var recipe=old with{Parameters=op.GetProperty("parameters").Clone(),Mark=op.Text("mark")??old.Mark,Material=op.Text("material")??old.Material,Density=EditPlan.Numeric(op,"density",old.Density),Annotations=op.TryGetProperty("show_annotations",out var a)?a.GetBoolean():old.Annotations,GeometryVersion=2};
         foreach(ObjectId id in definition){var entity=(Entity)tr.GetObject(id,OpenMode.ForWrite);entity.Erase();}
         Build(db,tr,definition,recipe);Store(definition,tr,recipe);reference.RecordGraphicsModified(true);
         return Inspect(db,tr,reference);
@@ -37,19 +37,26 @@ internal static class StructuralAssemblies
         switch(recipe.Kind)
         {
             case "beam":case "column":
-                l=P(p,"length");w=P(p,"width");h=P(p,"height");double tw=P(p,"web_thickness"),tf=P(p,"flange_thickness");
-                if(tw>=w||2*tf>=h)throw new CadFault("INVALID_PROFILE","Web/flanges exceed section size");
-                Box(l,w,tf,new(l*.5,0,tf*.5));Box(l,tw,h-2*tf,new(l*.5,0,h*.5));Box(l,w,tf,new(l*.5,0,h-tf*.5));
+                l=P(p,"length");
+                if(p.Text("profile") is { } code)
+                {
+                    var section=SteelSections.Get(code);double scale=.001/SteelSections.MetersPerUnit(db.Insunits.ToString());
+                    if(new[]{"width","height","web_thickness","flange_thickness","diameter","wall_thickness","root_radius"}.Any(name=>p.TryGetProperty(name,out _)))throw new CadFault("PROFILE_DIMENSION_CONFLICT","Use catalog profile or explicit dimensions, not both");
+                    w=section.WidthMm*scale;h=section.HeightMm*scale;
+                    if(section.Shape=="pipe"){var pipe=StructuralSolids.Tube(l,h,section.WebMm*scale);pipe.TransformBy(Matrix3d.Rotation(Math.PI/2,Vector3d.YAxis,Point3d.Origin));Add(pipe);}
+                    else Add(StructuralSolids.IBeam(l,w,h,section.WebMm*scale,section.FlangeMm*scale,section.RootRadiusMm*scale));
+                }
+                else
+                {
+                    w=P(p,"width");h=P(p,"height");double tw=P(p,"web_thickness"),tf=P(p,"flange_thickness");
+                    if(tw>=w||2*tf>=h)throw new CadFault("INVALID_PROFILE","Web/flanges exceed section size");
+                    Add(StructuralSolids.IBeam(l,w,h,tw,tf,EditPlan.Numeric(p,"root_radius",0)));
+                }
                 if(recipe.Kind=="column")foreach(var e in created)e.TransformBy(Matrix3d.Rotation(-Math.PI/2,Vector3d.YAxis,Point3d.Origin));break;
             case "screw_pile":
                 l=P(p,"length");double d=P(p,"diameter"),wall=P(p,"wall_thickness"),blade=P(p,"blade_diameter"),pitch=P(p,"pitch"),bt=P(p,"blade_thickness");
-                if(wall*2>=d||blade<=d||pitch>l)throw new CadFault("INVALID_PILE","Invalid shaft/blade dimensions");
-                var tube=new Solid3d();try{tube.CreateFrustum(l,d/2,d/2,d/2);using var bore=new Solid3d();bore.CreateFrustum(l*1.01,d/2-wall,d/2-wall,d/2-wall);tube.BooleanOperation(BooleanOperationType.BoolSubtract,bore);tube.TransformBy(Matrix3d.Displacement(new(0,0,l/2)));Add(tube);}catch{if(tube.ObjectId.IsNull)tube.Dispose();throw;}
-                var points=new List<Point3d>();var faces=new List<int>();const int steps=32;
-                for(int n=0;n<=steps;n++){double angle=n*2*Math.PI/steps,z=pitch*n/steps;foreach(double dz in new[]{0d,bt})foreach(double br in new[]{d/2,blade/2})points.Add(new(br*Math.Cos(angle),br*Math.Sin(angle),z+dz));}
-                void Face(params int[] ids){faces.Add(ids.Length);faces.AddRange(ids);}
-                for(int n=0;n<steps;n++){int b=n*4,k=b+4;Face(b,b+1,k+1,k);Face(b+2,k+2,k+3,b+3);Face(b,k,k+2,b+2);Face(b+1,b+3,k+3,k+1);}Face(0,2,3,1);int end=steps*4;Face(end,end+1,end+3,end+2);
-                var mesh=new SubDMesh();try{mesh.SetSubDMesh(new Point3dCollection(points.ToArray()),new Int32Collection(faces.ToArray()),0);Add(mesh);}catch{if(mesh.ObjectId.IsNull)mesh.Dispose();throw;}
+                if(wall*2>=d||blade<=d||pitch+bt>l||bt>=pitch)throw new CadFault("INVALID_PILE","Invalid shaft/blade dimensions");
+                Add(StructuralSolids.Tube(l,d,wall));Add(StructuralSolids.HelicalBlade(d,blade,pitch,bt));
                 w=h=blade;break;
             case "stairs":
                 l=P(p,"run");h=P(p,"rise");w=P(p,"width");int count=DraftingPlan.Integer(p,"steps",1,200,0);double tread=P(p,"tread_thickness"),stringer=P(p,"stringer_diameter");
@@ -63,8 +70,11 @@ internal static class StructuralAssemblies
             case "rebar":
                 double radius=P(p,"diameter")/2;var path=p.GetProperty("points").EnumerateArray().Select(v=>{var a=EditPlan.Point(v);return new Point3d(a[0],a[1],a[2]);}).ToArray();
                 if(path.Length is <2 or >100)throw new CadFault("INVALID_REBAR","2..100 path points required");
-                // Exact straight segments; bend geometry must be supplied as a sweep when bend radii matter.
-                for(int n=1;n<path.Length;n++)Bar(path[n-1],path[n],radius);l=path.Zip(path.Skip(1),(a,b)=>a.DistanceTo(b)).Sum();w=h=radius*2;break;
+                double bendRadius=EditPlan.Numeric(p,"bend_radius",radius*4);
+                var rounded=BendPath.Create(path.Select(v=>new[]{v.X,v.Y,v.Z}).ToArray(),bendRadius);
+                foreach(var line in rounded.Lines)Bar(new(line.Start[0],line.Start[1],line.Start[2]),new(line.End[0],line.End[1],line.End[2]),radius);
+                foreach(var bend in rounded.Bends)Add(StructuralSolids.Bend(bend,radius));
+                l=rounded.Length;w=h=radius*2;break;
             case "steel_joint":
                 l=P(p,"plate_length");w=P(p,"plate_width");h=P(p,"plate_thickness");double hole=P(p,"hole_diameter");
                 var plate=new Solid3d();try{plate.CreateBox(l,w,h);plate.TransformBy(Matrix3d.Displacement(new(l/2,0,h/2)));
@@ -85,7 +95,7 @@ internal static class StructuralAssemblies
         if(dictionary.Contains(Key))record=(Xrecord)tr.GetObject(dictionary.GetAt(Key),OpenMode.ForWrite);else{record=new();dictionary.SetAt(Key,record);tr.AddNewlyCreatedDBObject(record,true);}
         string json=JsonSerializer.Serialize(recipe,Wire.Json);using var data=new ResultBuffer(Enumerable.Range(0,(json.Length+999)/1000).Select(n=>new TypedValue((int)DxfCode.Text,json.Substring(n*1000,Math.Min(1000,json.Length-n*1000)))).ToArray());record.Data=data;
     }
-    private static Recipe? Load(BlockTableRecord definition,Transaction tr)
+    internal static Recipe? Load(BlockTableRecord definition,Transaction tr)
     {
         if(definition.ExtensionDictionary.IsNull)return null;var dictionary=(DBDictionary)tr.GetObject(definition.ExtensionDictionary,OpenMode.ForRead);if(!dictionary.Contains(Key))return null;
         using var data=((Xrecord)tr.GetObject(dictionary.GetAt(Key),OpenMode.ForRead)).Data;return JsonSerializer.Deserialize<Recipe>(string.Concat(data.AsArray().Select(v=>(string)v.Value)),Wire.Json);
@@ -96,7 +106,17 @@ internal static class StructuralAssemblies
         var solids=definition.Cast<ObjectId>().Where(id=>!id.IsErased).Select(id=>tr.GetObject(id,OpenMode.ForRead)).OfType<Solid3d>().ToArray();
         double meters=db.Insunits switch{UnitsValue.Millimeters=>.001,UnitsValue.Centimeters=>.01,UnitsValue.Meters=>1,UnitsValue.Inches=>.0254,UnitsValue.Feet=>.3048,_=>throw new CadFault("UNITS_REQUIRED","Define drawing units before assembly mass")};
         double volume=solids.Sum(s=>s.MassProperties.Volume)*Math.Abs(reference.ScaleFactors.X*reference.ScaleFactors.Y*reference.ScaleFactors.Z)*Math.Pow(meters,3);
-        return new{handle=reference.Handle.ToString(),recipe,solid_volume_m3=volume,solid_mass_kg=volume*recipe.Density,mass_scope=recipe.Kind=="screw_pile"?"shaft only; helical mesh blade excluded": "native solid volumes; overlapping rebar segments may double-count bend junctions",design="Geometry and schedule only; bearing capacity and joint design require calculation"};
+        double? centerline=null;
+        if(recipe.Kind=="rebar")
+        {
+            var points=recipe.Parameters.GetProperty("points").EnumerateArray().Select(EditPlan.Point).ToArray();
+            centerline=recipe.GeometryVersion>=2?BendPath.Create(points,EditPlan.Numeric(recipe.Parameters,"bend_radius",P(recipe.Parameters,"diameter")*2)).Length
+                :points.Skip(1).Zip(points,(b,a)=>Math.Sqrt(b.Zip(a,(x,y)=>(x-y)*(x-y)).Sum())).Sum();
+        }
+        return new{handle=reference.Handle.ToString(),recipe,solid_volume_m3=volume,solid_mass_kg=volume*recipe.Density,
+            centerline_length=centerline,profile_code=recipe.Parameters.Text("profile"),
+            mass_scope=recipe.GeometryVersion>=2?"all native solid components; rounded tangent rebar bends included; helical blade is a 48-segment ruled solid":"legacy recipe: native solids only, mesh blade excluded; straight rebar parts may overlap at corners. assembly_update rebuilds to geometry version 2",
+            design="Geometry and schedule only; bearing capacity and joint design require calculation"};
     }
     private const string ScheduleKey="CADMCP_ASSEMBLY_SCHEDULE_V1";
     internal static void RegisterSchedule(Table table,Transaction tr,JsonElement op)

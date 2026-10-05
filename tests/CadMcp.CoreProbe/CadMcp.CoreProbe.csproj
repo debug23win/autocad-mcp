@@ -2,7 +2,7 @@
   <PropertyGroup><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><AutoCADDir>C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir><DefineConstants>$(DefineConstants);CORE_CONSOLE</DefineConstants></PropertyGroup>
   <ItemGroup>
     <Reference Include="AcDbMgdBrep"><HintPath>$(AutoCADDir)/AcDbMgdBrep.dll</HintPath><Private>false</Private></Reference>
-    <Compile Include="../../src/CadMcp.AutoCAD/WorkSafety.cs;../../src/CadMcp.AutoCAD/TableLinks.cs;../../src/CadMcp.AutoCAD/DrawingQuality.cs;../../src/CadMcp.AutoCAD/SolidModeling.cs;../../src/CadMcp.AutoCAD/StructuralAssemblies.cs;../../src/CadMcp.AutoCAD/VerticalEditing.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/WorkSafety.cs;../../src/CadMcp.AutoCAD/TableLinks.cs;../../src/CadMcp.AutoCAD/DrawingQuality.cs;../../src/CadMcp.AutoCAD/SolidModeling.cs;../../src/CadMcp.AutoCAD/StructuralAssemblies.cs;../../src/CadMcp.AutoCAD/StructuralSolids.cs;../../src/CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/NativeTables.cs;../../src/CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
     <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />

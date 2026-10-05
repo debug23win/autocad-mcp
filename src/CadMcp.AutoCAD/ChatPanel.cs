@@ -500,13 +500,14 @@ internal sealed class ChatPanel : UserControl
         currentActivity = "Проверяю результат и сохранение DWG"; UpdateProgress();
         try
         {
-            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var response=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_operation_list",session,document,
-                Data:Wire.Element(new{since=turnStarted.ToString("O"),limit=50})),timeout.Token);
+                Data:Wire.Element(new{since=turnStarted.ToString("O"),limit=100}),OwnerId:operationOwner),timeout.Token);
             if(response.Error is not null)throw new IOException(response.Error.Message);
             if(response.Data is not JsonElement data || !data.TryGetProperty("operations",out var ops) || ops.GetArrayLength()==0)
             { if(preview)await AttachPreview(document); return; }
             var records=ops.EnumerateArray().ToArray(); JsonElement? review=null;
+            var changedHandles=CadResultSummary.ChangedHandles(ops);var liveHandles=new List<string>();
             var completed=records.FirstOrDefault(o=>o.Text("state")=="completed" && o.Text("operation")=="cad_edit");
             if(completed.ValueKind==JsonValueKind.Object)
             {
@@ -516,19 +517,39 @@ internal sealed class ChatPanel : UserControl
                     var checkedResult=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
                         Wire.Element(new{operation_id=completed.Text("operation_id")})),timeout.Token);
                     if(checkedResult.Error is null && checkedResult.Data is JsonElement checkedData) review=checkedData;
+                    var allEntities=new List<JsonElement>();
+                    foreach(var chunk in changedHandles.Chunk(500))
+                    {
+                        var allResult=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
+                            Wire.Element(new{handles_json=JsonSerializer.Serialize(chunk)})),timeout.Token);
+                        if(allResult.Error is not null)throw new IOException(allResult.Error.Message);
+                        if(allResult.Data is JsonElement allData)allEntities.AddRange(allData.GetProperty("entities").EnumerateArray().Select(e=>e.Clone()));
+                    }
+                    liveHandles.AddRange(allEntities.Where(e=>!e.TryGetProperty("erased",out var erased)||erased.ValueKind!=JsonValueKind.True).Select(e=>e.Text("handle")!));
+                    if(review is {} latest)
+                    {
+                        var fields=latest.EnumerateObject().ToDictionary(p=>p.Name,p=>(object?)p.Value.Clone());
+                        fields["turn_geometry"]=DrawingVerification.Evaluate(allEntities,Wire.Element(context.Data!).Text("units")??"unknown",DrawingVerification.Parse(null));
+                        review=Wire.Element(fields);
+                    }
                 }
             }
             var summary=CadResultSummary.Describe(data,review);
             UpdateAssistant(line=>line with{Text=line.Text+"\n\n"+summary});
             bool pending=records.Any(o=>o.Text("state") is "queued" or "running" or "unknown");
-            if(!pending && (preview || completed.ValueKind==JsonValueKind.Object))await AttachPreview(document);
+            if(!pending && (preview || completed.ValueKind==JsonValueKind.Object))
+            {
+                var views=review is {} rr&&rr.TryGetProperty("verification",out var vr)&&vr.TryGetProperty("review_views",out var v)?v.EnumerateArray().Select(x=>x.GetString()!).Distinct().ToArray():[];
+                if(views.Length==0)views=["current"];
+                foreach(string view in views)await AttachPreview(document,view,liveHandles.Count is >0 and <=500?liveHandles:null);
+            }
         }
         catch(System.Exception error) when(error is IOException or OperationCanceledException or InvalidOperationException)
         {
             LogError(error); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
         }
     }
-    private async Task AttachPreview(string? initialDocumentId)
+    private async Task AttachPreview(string? initialDocumentId,string viewName="current",IReadOnlyList<string>? handles=null)
     {
         currentActivity = "Получаю итоговый вид чертежа";
         UpdateProgress();
@@ -541,7 +562,7 @@ internal sealed class ChatPanel : UserControl
                 throw new IOException("активный чертёж изменился");
             var result = await PipeClient.CallAsync(Wire.BrokerPipe,
                 new(Guid.NewGuid().ToString("N"), "cad_render", context.SessionId, context.DocumentId,
-                    context.Revision, Wire.Element(new { width = 1024, height = 768 })), timeout.Token);
+                    context.Revision, Wire.Element(new { width = 1024, height = 768,view_name=viewName,handles_json=handles is null?null:JsonSerializer.Serialize(handles) })), timeout.Token);
             if (result.Error is not null) throw new IOException(result.Error.Message);
             if (result.Data is not JsonElement data) throw new IOException("AutoCAD не вернул изображение");
             var preview = transcript.SavePreview(data.Text("image_base64") ?? throw new IOException("изображение пусто"),

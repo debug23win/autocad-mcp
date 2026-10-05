@@ -5,6 +5,7 @@ using System.Text.Json;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.PlottingServices;
+using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 using CadMcp.Core;
 
 namespace CadMcp.AutoCAD;
@@ -114,17 +115,24 @@ internal static class Exports
         if (PlotFactory.ProcessPlotState != ProcessPlotState.NotPlotting) throw new CadFault("PLOT_BUSY", "Another AutoCAD plot is running");
         var layoutManager = LayoutManager.Current;
         var originalLayout = layoutManager.CurrentLayout;
+        var originalBackgroundPlot=App.GetSystemVariable("BACKGROUNDPLOT");
         layoutName ??= originalLayout;
         try
         {
+            // PlotEngine may otherwise only queue output. Receipts/hash/repair need the finished file.
+            App.SetSystemVariable("BACKGROUNDPLOT",0);
             if (!string.Equals(originalLayout, layoutName, StringComparison.OrdinalIgnoreCase)) layoutManager.CurrentLayout = layoutName;
             PlotCurrentPdf(document, path, layoutName, mediaName, ct);
             PdfRepair.NormalizeStructure(path);
         }
         finally
         {
-            if (!string.Equals(layoutManager.CurrentLayout, originalLayout, StringComparison.OrdinalIgnoreCase))
-                layoutManager.CurrentLayout = originalLayout;
+            try
+            {
+                if (!string.Equals(layoutManager.CurrentLayout, originalLayout, StringComparison.OrdinalIgnoreCase))
+                    layoutManager.CurrentLayout = originalLayout;
+            }
+            finally { App.SetSystemVariable("BACKGROUNDPLOT",originalBackgroundPlot); }
         }
     }
 

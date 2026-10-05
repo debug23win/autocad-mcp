@@ -7,6 +7,10 @@ try
 {
 Console.InputEncoding = new System.Text.UTF8Encoding(false);
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if(args.Contains("--live-subagent-test"))
+{
+    int index=Array.IndexOf(args,"--live-subagent-test");await CadMcp.Tests.SubagentProbe.Run(args[index+1],args[index+2]);return;
+}
 if (args.Contains("--live-codex-model-test"))
 {
     var resumeIndex = Array.IndexOf(args, "--resume-conversation");
@@ -223,6 +227,43 @@ await Test("acceptance detects wrong actual geometry, units and missing measurem
     Assert(DrawingVerification.Evaluate([entity],"Millimeters",distance).State=="passed","Distance readback failed");
     Assert(DrawingVerification.Evaluate([entity],"Inches",plan,new Dictionary<string,string>{{"beam","A"}}).Failed==2,"Units mismatch ignored");
     await Throws<CadFault>(()=>Task.FromResult(DrawingVerification.Parse("""{"checks":[{"handle":"A","property":"length","expected":99,"tolerance":-1}]}""")));
+});
+await Test("whole task bounds, type counts, mass range and pending visual review use actual evidence",()=>
+{
+    var entities=new[]{Wire.Element(new{handle="A",type="BlockReference",assembly=new{solid_mass_kg=12d,profile_code="20Б1"},bounds=new{min=new[]{0,0,0},max=new[]{100,20,30}}}),Wire.Element(new{handle="B",type="Line",length=200d,bounds=new{min=new[]{100,0,0},max=new[]{300,0,0}}})};
+    var plan=DrawingVerification.Parse("""{"task":"Frame","units":"Millimeters","bounds_size":[300,20,30],"type_counts":{"BlockReference":1,"Line":1},"checks":[{"handle":"A","property":"assembly.solid_mass_kg","minimum":11.9,"maximum":12.1},{"handle":"A","property":"assembly.profile_code","expected":"20Б1"}],"review_views":["front","isometric"],"visual_requirements":["silhouette"]}""");
+    var report=DrawingVerification.Evaluate(entities,"Millimeters",plan);Assert(report.State=="passed"&&report.OverallState=="visual_review_required"&&report.Passed==6,"Measured contract lost a constraint or passed unreviewed visual requirements");
+    var wrong=DrawingVerification.Evaluate(entities.Take(1),"Millimeters",plan);Assert(wrong.Failed>=2,"Subset verification accepted missing task geometry");return Task.CompletedTask;
+});
+await Test("invalid task contracts fail before native calls",async()=>
+{
+    foreach(string json in new[]{"""{"type_counts":{"Line":"1"}}""","""{"checks":[{"handle":"A","property":"length","minimum":2,"maximum":1}]}""","""{"checks":[{"handle":"A","property":"length","expected":1,"minimum":0}]}""","""{"review_views":["made-up"]}""","""{"bounds_size":[1,-2,3]}"""})await Throws<CadFault>(()=>Task.FromResult(DrawingVerification.Parse(json)));
+});
+await Test("native steel catalog converts millimetres independently of material grade",async()=>
+{
+    Assert(SteelSections.Get("20б1").RootRadiusMm==11&&Math.Abs(SteelSections.Get("PIPE-108x4").AreaMm2-Math.PI*(54*54-50*50))<1e-8,"Nominal section data is incorrect");
+    Assert(SteelSections.MetersPerUnit("Meters")==1&&SteelSections.MetersPerUnit("Millimeters")==.001,"Catalog unit conversion is incorrect");
+    await Throws<CadFault>(()=>Task.FromResult(SteelSections.Get("guessed-profile")));await Throws<CadFault>(()=>Task.FromResult(SteelSections.MetersPerUnit("Undefined")));
+});
+await Test("rounded rebar rejects overlapping bends and preserves spatial tangent length",async()=>
+{
+    var path=BendPath.Create([new[]{0d,0,0},new[]{100d,0,0},new[]{100d,0,100}],10);Assert(path.Bends.Count==1&&Math.Abs(path.Length-(180+5*Math.PI))<1e-8,"Spatial bend centerline length is incorrect");
+    await Throws<CadFault>(()=>Task.FromResult(BendPath.Create([new[]{0d,0,0},new[]{10d,0,0},new[]{10d,10,0},new[]{20d,10,0}],8)));
+});
+await Test("custom Codex roles all receive pinned read-only MCP overrides",()=>
+{
+    string root=Path.Combine(Path.GetTempPath(),"cad-roles-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(Path.Combine(root,".codex","agents"));
+    try{
+        File.WriteAllText(Path.Combine(root,".codex","config.toml"),"[agents.'planner']\n[agents.\"drafter\"]\n");File.WriteAllText(Path.Combine(root,".codex","agents","inspector.toml"),"name = 'inspector'\n");
+        var option=new ProviderOptions("unused","unused",root,OwnerId:"owner",CadSessionId:"session",CadDocumentId:"drawing");
+        var arguments=CadSubagentPolicy.Arguments(option);foreach(string role in new[]{"default","worker","explorer","cad_reviewer","planner","drafter","inspector"})
+        {string assignment=arguments.Single(a=>a.StartsWith("agents."+role+".config_file="));string path=JsonSerializer.Deserialize<string>(assignment[(assignment.IndexOf('=')+1)..])!;string config=File.ReadAllText(path);Assert(config.Contains("sandbox_mode = \"read-only\"")&&config.Contains("CAD_MCP_READ_ONLY = \"1\"")&&config.Contains("CAD_MCP_DOCUMENT_ID = \"drawing\""),"Custom role acquired write access or lost its document scope");}
+    }finally{Directory.Delete(root,true);}return Task.CompletedTask;
+});
+await Test("result handles include the whole response and exclude failed edits",()=>
+{
+    var operations=Wire.Element(new[]{new{state="completed",operation="cad_edit",handles=new[]{"A","B"}},new{state="completed",operation="cad_edit",handles=new[]{"a","C"}},new{state="failed",operation="cad_edit",handles=new[]{"D"}}});
+    Assert(CadResultSummary.ChangedHandles(operations).SequenceEqual(new[]{"A","B","C"}),"Final geometry review considered only the last edit or duplicated a handle");return Task.CompletedTask;
 });
 await Test("photo calibration recovers perspective, scale, inverse and rejects degenerate anchors", async () =>
 {
@@ -659,9 +700,10 @@ await Test("provider arguments preserve paths and isolate Claude MCP config", ()
     var config = JsonDocument.Parse(a[Array.IndexOf(a, "--mcp-config") + 1]);
     Assert(config.RootElement.GetProperty("mcpServers").GetProperty("cad").GetProperty("command").GetString() == options.McpExecutable, "Path escaped incorrectly");
     Assert(a.Contains("--strict-mcp-config"), "Claude config not isolated");
-    Assert(a.Contains("Agent") && a.Contains("--agents"), "Claude subagents not enabled");
+    Assert(a.Contains("Agent(cad_researcher)") && a.Contains("--agents") && a[Array.IndexOf(a,"--agent")+1]=="cad_primary", "Claude helper types must be restricted by the primary role");
     using var helper = JsonDocument.Parse(a[Array.IndexOf(a, "--agents") + 1]);
     var helperTools = helper.RootElement.GetProperty("cad_researcher").GetProperty("tools").EnumerateArray().Select(x => x.GetString()).ToArray();
+    Assert(helper.RootElement.GetProperty("cad_researcher").GetProperty("mcpServers")[0].GetProperty("cad").GetProperty("env").Text("CAD_MCP_READ_ONLY")=="1","Claude helper needs server-enforced read-only access");
     Assert(helperTools.Contains("mcp__cad__cad_search") && !helperTools.Contains("mcp__cad__cad_edit") &&
         !helperTools.Contains("mcp__cad__cad_lisp"), "Claude helper must be read-only");
     var single = new ClaudeProvider(options with { MaxSubagents = 0 }).Arguments();
@@ -730,7 +772,7 @@ await Test("MCP initialize/list/call/image over actual stdio SDK", async () =>
         await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"); await process.StandardInput.FlushAsync();
         var list = await Rpc(new { jsonrpc = "2.0", id = 2, method = "tools/list", @params = new { } }, 2);
         var names = list.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        Assert(names.Length == 37 && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
+        Assert(names.Length == 38 && names.Contains("cad_steel_catalog") && names.Contains("cad_search") && names.Contains("cad_result_get") && names.Contains("cad_edit") &&
             names.Contains("cad_export") && names.Contains("cad_publish") && names.Contains("cad_lisp") &&
             names.Contains("cad_operation_status") && names.Contains("cad_render") && names.Contains("cad_image_register") &&
             names.Contains("cad_image_point") && names.Contains("cad_vertical_catalog") && names.Contains("cad_vertical_get") &&
@@ -769,11 +811,31 @@ await Test("MCP enforces project pin for read edit render and review helpers",as
             await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");await process.StandardInput.FlushAsync();
             var context=await Rpc(2,"tools/call",new{name="cad_context",arguments=new{session_id="s"}});Assert(!context.TryGetProperty("isError",out var er)||!er.GetBoolean(),"Pinned context rejected");
             Assert(requests.Last().DocumentId=="d"&&requests.Last().OwnerId=="chat-a","Scope/owner not forwarded");
+            using(var contextBody=JsonDocument.Parse(context.GetProperty("content")[0].GetProperty("text").GetString()!))Assert(contextBody.RootElement.GetProperty("data").GetProperty("access").GetProperty("read_only").GetBoolean()==helper,"Context must report actual enforced helper access");
             foreach(var(name,arguments) in new (string,object)[]{("cad_context",new{session_id="s",document_id="foreign"}),("cad_render",new{session_id="s",document_id="foreign",expected_revision=0}),("cad_edit",new{session_id="s",document_id=helper?"d":"foreign",expected_revision=0,operation_id="pin",operations_json="[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]"})})
             {int before=requests.Count;var reply=await Rpc(before+10,"tools/call",new{name,arguments});Assert(reply.GetProperty("isError").GetBoolean()&&requests.Count==before,"Foreign DWG or helper mutation reached CAD broker: "+name);}
         }
         finally{process.StandardInput.Close();await ProviderProcess.FinishAsync(process,stderr);}
     }
+});
+await Test("inherited Codex MCP connections enforce primary thread metadata and fail closed",async()=>
+{
+    string pipe="cad-meta-test-"+Guid.NewGuid().ToString("N"),binding=Path.Combine(Path.GetTempPath(),"cad-primary-"+Guid.NewGuid().ToString("N")+".txt");File.WriteAllText(binding,"primary");int calls=0;
+    using var broker=new PipeServer(pipe,(r,ct)=>{Interlocked.Increment(ref calls);return Task.FromResult(new Response(r.RequestId,"completed",new{ok=true}));});broker.Start();
+    var info=ProviderProcess.StartInfo(new(Path.GetFullPath("src/CadMcp.Host/bin/Release/net8.0-windows/CadMcp.Host.exe"),"unused",Environment.CurrentDirectory),["--broker-pipe",pipe]);info.Environment["CAD_MCP_PRIMARY_THREAD_FILE"]=binding;
+    using var process=Process.Start(info)!;var errors=ProviderProcess.DrainErrors(process);using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    async Task<JsonElement> Rpc(int id,string method,object parameters)
+    {await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{jsonrpc="2.0",id,method,@params=parameters}));await process.StandardInput.FlushAsync();while(await process.StandardOutput.ReadLineAsync(timeout.Token) is {} line){var reply=JsonDocument.Parse(line).RootElement;if(reply.TryGetProperty("id",out var rid)&&rid.GetInt32()==id)return reply.GetProperty("result").Clone();}throw new IOException("Closed fixture");}
+    try{
+        await Rpc(1,"initialize",new{protocolVersion="2025-11-25",capabilities=new{},clientInfo=new{name="metadata-test",version="1"}});await process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");await process.StandardInput.FlushAsync();
+        int id=2;foreach(string? thread in new string?[]{"primary","child",null})
+        {
+            var result=await Rpc(id++,"tools/call",new{name="cad_edit",arguments=new{session_id="s",document_id="d",expected_revision=0,operation_id="fake",operations_json="[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]"},_meta=thread is null?null:new{threadId=thread}});
+            bool failed=result.TryGetProperty("isError",out var er)&&er.GetBoolean();Assert(failed==(thread!="primary"),"MCP caller identity was not enforced");
+        }
+        Assert(calls==1,"Child or unidentified caller reached the CAD broker");
+        File.Delete(binding);var blocked=await Rpc(id,"tools/call",new{name="cad_focus",arguments=new{session_id="s",document_id="d",expected_revision=0,handle="A"},_meta=new{threadId="primary"}});Assert(blocked.GetProperty("isError").GetBoolean()&&calls==1,"Missing primary binding opened write access");
+    }finally{process.StandardInput.Close();await ProviderProcess.FinishAsync(process,errors);File.Delete(binding);}
 });
 await Test("broker automatic startup, reuse and shutdown", async () =>
 {

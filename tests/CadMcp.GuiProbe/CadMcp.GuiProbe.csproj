@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><PlatformTarget>x64</PlatformTarget><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><AutoCADDir>C:\Program Files\Autodesk\AutoCAD 2025</AutoCADDir></PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the production code into a separate test assembly, avoiding the installed plugin's Core/Providers assembly identities. -->
+    <Compile Include="../../src/CadMcp.Core/*.cs;../../src/CadMcp.Providers/*.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/*.cs" Exclude="../../src/CadMcp.AutoCAD/Plugin.cs" />
+    <Content Include="../../src/CadMcp.AutoCAD/Resources/Chat/**" Link="Resources/Chat/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <PackageReference Include="PdfPig" Version="0.1.16" /><PackageReference Include="Markdig" Version="1.3.2" /><PackageReference Include="DocumentFormat.OpenXml" Version="3.1.1" /><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+    <Reference Include="AcMgd"><HintPath>$(AutoCADDir)/AcMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcCoreMgd"><HintPath>$(AutoCADDir)/AcCoreMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcDbMgd"><HintPath>$(AutoCADDir)/AcDbMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcDbMgdBrep"><HintPath>$(AutoCADDir)/AcDbMgdBrep.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcWindows"><HintPath>$(AutoCADDir)/AcWindows.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AdWindows"><HintPath>$(AutoCADDir)/AdWindows.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

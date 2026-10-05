@@ -65,7 +65,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (r.Operation == "cad_operation_list")
         {
             DateTimeOffset since = DateTimeOffset.TryParse(r.Data.Text("since"), out var value) ? value : DateTimeOffset.MinValue;
-            var recent = journal.Recent(r.DocumentId ?? "", since, r.Data.Number("limit", 50));
+            var recent = journal.Recent(r.DocumentId ?? "", since, r.Data.Number("limit", 50),r.OwnerId);
             return new(r.RequestId, "completed", new { operations = recent.Select(p => OperationJournal.Summary(p.Id, p.Entry,
                 p.Entry.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(p.Id) || lisp?.Id == p.Id)),
                 truncated = recent.Count == r.Data.Number("limit", 50) }, documents.SessionId, r.DocumentId);
@@ -86,7 +86,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)
             {
                 var state=documents.Register(doc);
-                if(state.TablesDirty)
+                if(state.TablesDirty&&!state.HistoryCommand)
                 {
                     state.TablesDirty=false;state.Recalculating=true;
                     try{using var locked=doc.LockDocument();using var undo=new UndoGroup(doc);using var tr=doc.Database.TransactionManager.StartTransaction();StructuralAssemblies.RefreshSchedules(doc.Database,tr);TableLinks.Recalculate(doc.Database,tr);tr.Commit();state.TableError=null;}

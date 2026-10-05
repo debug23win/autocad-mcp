@@ -102,24 +102,24 @@ public sealed class OperationJournal
         }
         return result;
     }
-    public IReadOnlyList<(string Id, Entry Entry)> Recent(string document, DateTimeOffset since, int limit = 50)
+    public IReadOnlyList<(string Id, Entry Entry)> Recent(string document, DateTimeOffset since, int limit = 50,string? owner=null)
     {
         if (limit is < 1 or > 100) throw new CadFault("INVALID_LIMIT", "Operation list limit must be 1..100");
         lock (sync)
             return recorded.Select(id => (Id: id, Entry: FindCore(id)!))
-                .Where(p => p.Entry.DocumentId == document && (p.Entry.CreatedAt ?? DateTimeOffset.MinValue) >= since)
+                .Where(p => p.Entry.DocumentId == document && (owner is null||p.Entry.Request?.OwnerId==owner) && (p.Entry.CreatedAt ?? DateTimeOffset.MinValue) >= since)
                 .OrderByDescending(p => p.Entry.CreatedAt).Take(limit).ToArray();
     }
     public static object Summary(string id, Entry entry, bool active = true)
     {
         var outer = Wire.Element(entry.Result?.Data ?? new { });
         var result = outer.TryGetProperty("result", out var r) ? r : outer;
-        return new { operation_id = id, document_id = entry.DocumentId,
+        return new { operation_id = id, document_id = entry.DocumentId, owner_id=entry.Request?.OwnerId,
             state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State,
             operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
             error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
             changed_entities = result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? (int?)es.GetArrayLength() : null,
-            handles = es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).Take(500).ToArray() : null,
+            handles = es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).ToArray() : null,
             document_state = outer.TryGetProperty("document_state", out var d) ? (JsonElement?)d.Clone() : null,
             transaction = result.Text("transaction"), historical = !active };
     }

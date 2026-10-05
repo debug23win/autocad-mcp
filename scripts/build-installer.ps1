@@ -5,6 +5,7 @@ param(
     [string]$CodexPayloadDir,
     [string]$StageRoot,
     [string]$InstallerOutput,
+    [string]$PublishPackageCache,
     [Parameter(Mandatory=$true)][string]$DotNet2027
 )
 $ErrorActionPreference = 'Stop'
@@ -36,7 +37,7 @@ try {
     New-Item -ItemType Directory -Force -Path "$payload/Contents/Win64","$payload/Contents/Host","$payload/Contents/Net10","$payload/Contents/Net10R250","$payload/Contents/Net10R251","$payload/Contents/Client" | Out-Null
     dotnet build CadMcp.sln -c Release -m:1 /nodeReuse:false "-p:AutoCADDir=$AutoCADDir" --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
-    $publishPackages=Join-Path $env:LOCALAPPDATA 'CadMcp/build-packages'
+    $publishPackages=if($PublishPackageCache){[IO.Path]::GetFullPath($PublishPackageCache)}else{Join-Path $env:LOCALAPPDATA 'CadMcp/build-packages'}
     foreach($project in @('src/CadMcp.Host/CadMcp.Host.csproj','src/CadMcp.Client/CadMcp.Client.csproj')) {
         dotnet restore $project -r win-x64 --force-evaluate --packages $publishPackages -p:RuntimeFrameworkVersion=8.0.31 -m:1 /nodeReuse:false
         if($LASTEXITCODE -ne 0){throw 'Self-contained runtime restore failed'}
@@ -117,5 +118,6 @@ try {
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     & $IsccPath /Qp "/DPayloadDir=$payload" "/DOutputDir=$output" installer/setup.iss
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-    Get-FileHash -LiteralPath (Join-Path $output 'CAD-MCP-2025-2027-0.8.2-preview-Setup.exe') -Algorithm SHA256
+    $releaseVersion=([xml](Get-Content -LiteralPath 'Directory.Build.props' -Raw)).Project.PropertyGroup.Version
+    Get-FileHash -LiteralPath (Join-Path $output "CAD-MCP-2025-2027-$releaseVersion-Setup.exe") -Algorithm SHA256
 } finally { Pop-Location }

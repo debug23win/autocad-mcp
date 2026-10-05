@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using A = DocumentFormat.OpenXml.Drawing;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+using Color = DocumentFormat.OpenXml.Wordprocessing.Color;
 
 namespace CadMcp.Providers;
 

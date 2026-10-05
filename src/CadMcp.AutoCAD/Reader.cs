@@ -107,6 +107,7 @@ internal static class Reader
                     { attributes[a.Tag + ":" + a.Handle] = a.TextString; if (attributeDetails.Count < 100) attributeDetails.Add(new { tag = a.Tag, handle = a.Handle.ToString(), text = a.TextString, position = P(a.Position) }); }
                 item["attributes"] = attributes; item["text"] = string.Join(" ", attributes.Values);
                 item["attribute_details"] = attributeDetails; item["attribute_details_truncated"] = attributes.Count > 100;
+                if(StructuralAssemblies.Load(definition,tr) is not null)item["assembly"]=StructuralAssemblies.Inspect(e.Database,tr,block);
                 item["limitations"] = new[] { "use_cad_search_expand_blocks_for_nested_geometry" }; break;
             case Solid3d solid:
                 item["volume"] = solid.MassProperties.Volume; item["access"] = "partial"; item["limitations"] = new[] { "solid_topology_not_expanded" }; break;
