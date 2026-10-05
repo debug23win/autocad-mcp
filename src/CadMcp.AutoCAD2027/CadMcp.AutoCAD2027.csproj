@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../CadMcp.AutoCAD/ReadingMetadata.cs;../CadMcp.AutoCAD/PreviewRendering.cs" />
     <Compile Include="../CadMcp.AutoCAD/WorkSafety.cs;../CadMcp.AutoCAD/TableLinks.cs;../CadMcp.AutoCAD/DrawingQuality.cs;../CadMcp.AutoCAD/SolidModeling.cs;../CadMcp.AutoCAD/StructuralAssemblies.cs;../CadMcp.AutoCAD/StructuralSolids.cs;../CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../CadMcp.AutoCAD/NativeTables.cs;../CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../CadMcp.AutoCAD/DrawingReview.cs" />
@@ -9,6 +10,8 @@
     <Compile Include="../CadMcp.AutoCAD/Documents.cs;../CadMcp.AutoCAD/Reader.cs;../CadMcp.AutoCAD/Edits.cs;../CadMcp.AutoCAD/Sheets.cs;../CadMcp.AutoCAD/RasterImages.cs;../CadMcp.AutoCAD/Exports.cs;../CadMcp.AutoCAD/PdfRepair.cs;../CadMcp.AutoCAD/Catalog.cs;../CadMcp.AutoCAD/Verticals.cs;../CadMcp.AutoCAD/Dispatcher.cs;../CadMcp.AutoCAD/DrawingSearch.cs;../CadMcp.AutoCAD/UndoGroup.cs;../CadMcp.AutoCAD/GlobalUsings.cs" />
   </ItemGroup>
   <Target Name="RemoveAutodeskRuntimeReferences" AfterTargets="ResolveReferences">
-    <ItemGroup><ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('Ac'))" /></ItemGroup>
+    <ItemGroup>
+    <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('Ac'))" /></ItemGroup>
   </Target>
 </Project>
+

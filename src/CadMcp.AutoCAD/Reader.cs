@@ -20,6 +20,7 @@ internal static class Reader
         };
         try { var b = e.GeometricExtents; item["bounds"] = new { min = P(b.MinPoint), max = P(b.MaxPoint) }; }
         catch (Autodesk.AutoCAD.Runtime.Exception) { item["bounds_unavailable"] = true; }
+        if(!e.OwnerId.IsNull)foreach(var p in Wire.Element(ReadingMetadata.Space(e.OwnerId,tr)).EnumerateObject())item[p.Name]=p.Value.Clone();
         switch (e)
         {
             case Line line:
@@ -79,10 +80,11 @@ internal static class Reader
                 item["measurement"] = dim.Measurement; item["text_override"] = dim.DimensionText; item["text"] = dim.DimensionText;
                 item["dimension_style"] = ((DimStyleTableRecord)tr.GetObject(dim.DimensionStyle, OpenMode.ForRead)).Name;
                 item["text_position"] = P(dim.TextPosition);
+                ReadingMetadata.Dimension(dim,tr,item);
                 var points = new Dictionary<string, object>();
                 foreach (var name in new[] { "XLine1Point", "XLine2Point", "DimLinePoint", "Center", "CenterPoint", "ChordPoint", "FarChordPoint", "ArcPoint", "XLine1Start", "XLine1End", "XLine2Start", "XLine2End" })
                     if (dim.GetType().GetProperty(name)?.GetValue(dim) is Point3d point) points[name] = P(point);
-                item["geometry"] = points; item["limitations"] = new[] { "formatted_dimension_text_requires_style_evaluation" }; break;
+                item["geometry"] = points; break;
             case Table table:
                 item["table"] = NativeTables.Read(table, tr, rowCount: 10);
                 item["row_count"] = table.Rows.Count; item["column_count"] = table.Columns.Count;
@@ -115,6 +117,7 @@ internal static class Reader
                 item["pattern"] = hatch.PatternName; item["pattern_scale"] = hatch.PatternScale; item["pattern_angle"] = hatch.PatternAngle;
                 item["loops"] = hatch.NumberOfLoops; item["access"] = "partial"; item["limitations"] = new[] { "hatch_boundary_geometry_not_expanded" }; break;
             case Viewport viewport:
+                foreach(var p in Wire.Element(ReadingMetadata.Viewport(viewport,tr)).EnumerateObject())item[p.Name]=p.Value.Clone();
                 item["paper_center"] = P(viewport.CenterPoint); item["paper_width"] = viewport.Width; item["paper_height"] = viewport.Height;
                 item["model_target"] = P(viewport.ViewTarget); item["model_view_height"] = viewport.ViewHeight;
                 item["custom_scale"] = viewport.CustomScale; item["twist"] = viewport.TwistAngle;

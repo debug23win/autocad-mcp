@@ -109,7 +109,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (!queue.TryDequeue(out var job)) return;
         Response response;
         var originalDocument=App.DocumentManager.MdiActiveDocument;
-        bool activate=MutationRecovery.IsMutation(job.Request.Operation)||job.Request.Operation is "cad_render" or "cad_vertical_catalog" or "cad_vertical_get" or "cad_vertical_capabilities";
+        bool activate=MutationRecovery.IsMutation(job.Request.Operation)||job.Request.Operation is "cad_vertical_catalog" or "cad_vertical_get" or "cad_vertical_capabilities";
         try
         {
             if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
@@ -142,15 +142,18 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         switch (r.Operation)
         {
             case "cad_context":
-                using (var view = doc.Editor.GetCurrentView())
-                    data = new { name = doc.Name, acad_version = Convert.ToString(App.GetSystemVariable("ACADVER")), dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0, runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                bool isActive=ReferenceEquals(doc,App.DocumentManager.MdiActiveDocument);
+                using (var view = isActive?doc.Editor.GetCurrentView():null)
+                    data = new { name = doc.Name,active=isActive,insunits_code=(int)doc.Database.Insunits,current_layout=ReadingMetadata.LayoutOf(doc.Database.CurrentSpaceId,tr)?.LayoutName,
+                        current_space_handle=doc.Database.CurrentSpaceId.Handle.ToString(),acad_version = Convert.ToString(App.GetSystemVariable("ACADVER")), dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0, runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                         units = doc.Database.Insunits.ToString(), space = doc.Database.CurrentSpaceId == ((BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForRead))[BlockTableRecord.ModelSpace] ? "model" : "paper",
-                        selection = Selection(doc),
+                        selection = isActive?Selection(doc):new{available=false,reason="inactive_document_editor"},
                         vertical_managed_assemblies_loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name)
                             .Where(n => n is not null && (n.StartsWith("Aecc", StringComparison.OrdinalIgnoreCase) || n.StartsWith("AcM", StringComparison.OrdinalIgnoreCase)))
                             .Distinct().Take(50).ToArray(),
-                        ucs_to_wcs = doc.Editor.CurrentUserCoordinateSystem.ToArray(),
-                        view = new { width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
+                        ucs_to_wcs = isActive?doc.Editor.CurrentUserCoordinateSystem.ToArray():null,
+                        editor_context_available=isActive,
+                        view = view is null?(object)new{available=false,reason="inactive_document_editor"}:new {available=true,width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),
                         capabilities = new[] { "cad_cancel", "cad_runtime_status", "cad_diagnostics", "cad_review", "cad_solid_get", "cad_assembly_get", "cad_table_dependencies", "cad_release_check", "cad_verify", "cad_operation_list", "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_table_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
@@ -212,9 +215,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 int width = r.Data.Number("width", 1024), height = r.Data.Number("height", 768);
                 if (width < 128 || width > 1600 || height < 128 || height > 1600)
                     throw new CadFault("INVALID_IMAGE_SIZE", "Image dimensions must be 128..1600");
-                using (var framing = new DrawingReview.PreviewView(doc, tr, r.Data, width, height))
-                using (var view = doc.Editor.GetCurrentView())
-                using (var bitmap = doc.CapturePreviewImage((uint)width, (uint)height))
+                using (var bitmap = PreviewRendering.Capture(doc,tr,r.Data,width,height,ct,out var previewMetadata))
                 using (var png = new MemoryStream())
                 {
                     bitmap.Save(png, System.Drawing.Imaging.ImageFormat.Png);
@@ -226,11 +227,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     while (renderFrames.Count > 8 && renderOrder.TryDequeue(out var old)) renderFrames.TryRemove(old, out _);
                     data = new { mime_type = "image/png", image_base64 = Convert.ToBase64String(png.ToArray()), width = bitmap.Width, height = bitmap.Height,
                         image_id = imageId, pixel_origin = "top_left", coordinate_mapping = "requires_cad_image_register_control_points",
-                        source = "AutoCAD.Document.CapturePreviewImage", captured_at = DateTimeOffset.UtcNow,
+                        source = "AutoCAD.GraphicsSystem.offscreen", captured_at = DateTimeOffset.UtcNow,
                         requested_view = r.Data.Text("view_name") ?? "current", framed_handles = r.Data.Text("handles_json"),
-                        view = new { width = view.Width, height = view.Height, center = new[] { view.CenterPoint.X, view.CenterPoint.Y },
-                            target = new[] { view.Target.X, view.Target.Y, view.Target.Z }, direction = new[] { view.ViewDirection.X, view.ViewDirection.Y, view.ViewDirection.Z },
-                            twist = view.ViewTwist, perspective = view.PerspectiveEnabled },
+                        view = previewMetadata,
                         limitations = new[] { "preview_fidelity_requires_live_validation", "control_points_required_for_exact_pixel_to_world_mapping" } };
                 }
                 status = "partial";
@@ -332,8 +331,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     throw new CadFault("INVALID_HANDLE", "Expected hexadecimal handle");
                 if (!doc.Database.TryGetObjectId(new Handle(value), out var objectId) || objectId.IsErased)
                     throw new CadFault("ENTITY_NOT_FOUND", "Handle does not resolve in this document");
-                if (tr.GetObject(objectId, OpenMode.ForRead) is not Entity found || found.OwnerId != doc.Database.CurrentSpaceId)
-                    throw new CadFault("UNSUPPORTED_SCOPE", "Only current-space top-level entities are supported");
+                if (tr.GetObject(objectId, OpenMode.ForRead) is not Entity found || ReadingMetadata.LayoutOf(found.OwnerId,tr) is null || r.Operation=="cad_focus"&&found.OwnerId!=doc.Database.CurrentSpaceId)
+                    throw new CadFault("UNSUPPORTED_SCOPE", "Entity reads support top-level model/layout objects; focus requires current space. Read nested instances through cad_search expand_blocks.");
                 if (r.Operation == "cad_focus") { doc.Editor.SetImpliedSelection([objectId]); data = new { handle = found.Handle.ToString(), selected = true }; }
                 else { var entityData = Reader.Read(found, tr); data = entityData; if (entityData.Text("access") != "structured") status = "partial"; }
                 break;

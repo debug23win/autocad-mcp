@@ -42,10 +42,11 @@ public static class PipeClient
     public static async Task<Response> CallAsync(string pipeName, Request request, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        double waitSeconds=request.Operation=="cad_render"?90:30;
+        timeout.CancelAfter(TimeSpan.FromSeconds(waitSeconds));
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await pipe.ConnectAsync(30000, timeout.Token);
-        request = request with { Deadline = request.Deadline ?? DateTimeOffset.UtcNow.AddSeconds(25), Data = request.Data.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : request.Data };
+        request = request with { Deadline = request.Deadline ?? DateTimeOffset.UtcNow.AddSeconds(waitSeconds-5), Data = request.Data.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : request.Data };
         await Frames.WriteAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request, Wire.Json), timeout.Token);
         var data = await Frames.ReadAsync(pipe, timeout.Token) ?? throw new EndOfStreamException();
         var result = JsonSerializer.Deserialize<Response>(data, Wire.Json) ?? throw new InvalidDataException("Empty response");
