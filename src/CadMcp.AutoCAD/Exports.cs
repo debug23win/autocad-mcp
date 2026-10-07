@@ -49,9 +49,12 @@ internal static class Exports
                 var paper = PlotPdf(document, paths[i], names[i], null, ct);
                 if (!File.Exists(paths[i]) || new FileInfo(paths[i]).Length == 0)
                     throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty PDF");
-                // The PDF is written; a reader failure leaves its check unverified instead of stopping the set.
+                // The PDF is written; a wrong page count read from it fails its check, a reader failure leaves the check
+                // unverified, and neither stops the set.
                 object pdf;
                 try { pdf = PdfVerification.Check(paths[i], 1, paper); }
+                catch (CadFault fault) when (fault.Code is "PDF_PAGE_COUNT" or "PDF_INVALID_MEDIA")
+                { pdf = new { state = "failed", warnings = new[] { new { code = fault.Code, detail = fault.Message } } }; }
                 catch (System.Exception readError) when (readError is not OperationCanceledException)
                 { pdf = new { state = "unverified", warnings = new[] { new { code = "PDF_UNVERIFIED", detail = readError.GetType().Name + ": " + readError.Message } }, error = readError.GetType().Name + ": " + readError.Message }; }
                 using var file = File.OpenRead(paths[i]);
@@ -80,12 +83,14 @@ internal static class Exports
                 .Append(row.GetProperty("sha256").GetString()).Append("\r\n");
         }
         File.WriteAllText(csvPath, csv.ToString(), Encoding.UTF8);
-        // Page size and empty-page findings do not fail the set, but the release needs review.
-        var reviews = produced.Select(item => Wire.Element(item).GetProperty("pdf")).Where(pdf => pdf.Text("state") != "passed")
+        // Page size and empty-page findings do not fail the set, but the release needs review; a wrong page count fails it.
+        var checks = produced.Select(item => Wire.Element(item).GetProperty("pdf")).ToArray();
+        var reviews = checks.Where(pdf => pdf.Text("state") != "passed")
             .Select(pdf => pdf.TryGetProperty("warnings", out var warnings) ? warnings.Clone() : pdf.Clone()).ToArray();
+        string pdfReview = reviews.Length == 0 ? "passed" : checks.Any(pdf => pdf.Text("state") == "failed") ? "failed" : "review_required";
         return new { manifest.status, manifest_path = manifestPath, csv_path = csvPath,
             files = produced, preflight, manifest.completeness, manifest.failed_layout, manifest.error,
-            pdf_review = reviews.Length == 0 ? "passed" : "review_required", pdf_warnings = reviews.Length == 0 ? null : reviews,
+            pdf_review = pdfReview, pdf_warnings = reviews.Length == 0 ? null : reviews,
             verification = "strict_PDF_parse_page_count_paper_size_nonempty_pages_and_manifest_completeness" };
     }
 
@@ -116,6 +121,9 @@ internal static class Exports
         // The file exists; an independent re-read decides whether it holds what was exported.
         object check;
         try { check = format == "dxf" ? VerifyDxf(document.Database, path) : PdfVerification.Check(path, 1, paper); }
+        // A wrong page count or page size read from the file fails the check.
+        catch (CadFault fault) when (fault.Code is "PDF_PAGE_COUNT" or "PDF_INVALID_MEDIA")
+        { check = new { state = "failed", warnings = new[] { new { code = fault.Code, detail = fault.Message } } }; }
         // The file is written; a reader failure (unsupported fonts, compression, encryption) leaves it unverified, not failed.
         catch (System.Exception error) when (error is not OperationCanceledException)
         { check = new { state = "unverified", error = error.GetType().Name + ": " + error.Message }; }
