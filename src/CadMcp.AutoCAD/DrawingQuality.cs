@@ -35,11 +35,14 @@ internal static class DrawingQuality
         foreach(var dimension in entities.OfType<Dimension>())
         {
             ct.ThrowIfCancellationRequested();
-            try{foreach(var (code,severity,message) in DimensionChecks.Check(dimension,tr))Add(code,severity,message,dimension);}
-            catch(Autodesk.AutoCAD.Runtime.Exception e){Add("DIMENSION_CHECK_UNVERIFIED","unverified","Dimension text not checked: "+e.Message,dimension);}
+            try{foreach(var (code,severity,message) in DimensionChecks.Check(dimension,tr).ToArray())Add(code,severity,message,dimension);}
+            catch(System.Exception e) when (e is not OperationCanceledException){Add("DIMENSION_CHECK_UNVERIFIED","unverified","Dimension text not checked: "+e.Message,dimension);}
         }
-        GlyphCoverage(db,tr,entities,issues);
-        TopologyLite(entities,issues,ct);
+        // These checks describe the result; a failure inside one is reported, never allowed to undo the edit under review.
+        try{GlyphCoverage(db,tr,entities,issues);}
+        catch(System.Exception e) when (e is not OperationCanceledException){issues.Add(new("TEXT_GLYPHS_UNVERIFIED","unverified",[],"Fonts not checked: "+e.Message));}
+        try{TopologyLite(entities,issues,ct);}
+        catch(System.Exception e) when (e is not OperationCanceledException){issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",[],"Curve geometry not checked: "+e.Message));}
         foreach(var entity in entities)
         {
             ct.ThrowIfCancellationRequested();
@@ -95,7 +98,7 @@ internal static class DrawingQuality
             if(FontCoverage.TextOf(entity) is {} text)Collect(text.Style,text.Text,entity);
             else if(entity is BlockReference reference)
                 foreach(ObjectId id in reference.AttributeCollection)
-                    if(tr.GetObject(id,OpenMode.ForRead) is AttributeReference{Invisible:false} attribute)
+                    if(!id.IsErased&&tr.GetObject(id,OpenMode.ForRead) is AttributeReference{Invisible:false} attribute)
                         Collect(attribute.TextStyleId,CadText.Normalize(attribute.TextString,attribute.IsMTextAttribute),entity);
         }
         if(byStyle.Count==0)return;
@@ -114,19 +117,38 @@ internal static class DrawingQuality
         }
     }
     // Duplicates, zero-length curves, self-intersections and overlaps among the reviewed curves (no network rules).
+    // Only curves lying in a plane parallel to XY are checked, each elevation on its own: a vertical line or a
+    // circle standing in the XZ plane is valid 3D geometry, not a zero-length or self-overlapping curve.
     private static void TopologyLite(IReadOnlyList<Entity> entities,List<Issue> issues,CancellationToken ct)
     {
         var curves=entities.Where(CurveSampler.IsCurve).ToArray();
         if(curves.Length==0)return;
         double diagonal=Diagonal(curves),tolerance=Math.Max(1e-9,diagonal*1e-9);
-        var sampled=new List<TopologyCurve>();
-        foreach(var curve in curves){ct.ThrowIfCancellationRequested();if(CurveSampler.Sample(curve,Math.Max(tolerance,diagonal*1e-4)) is {} sample)sampled.Add(sample);}
-        TopologyReport report;
-        try{report=Topology.Analyze(sampled,new(tolerance,0,Endpoints:false,Crossings:false,MaxFindings:100));}
-        catch(CadFault e){issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",[],"Curve geometry not checked: "+e.Message));return;}
-        foreach(var finding in report.Findings)
-            issues.Add(finding.Code=="TOPOLOGY_LIMIT"?new("TOPOLOGY_SKIPPED","info",[],"Curves too dense for the duplicate and self-intersection check; use cad_review with options_json {\"checks\":[\"topology\"]}")
-                :new(finding.Code,finding.Severity,finding.Handles,finding.Message));
+        var levels=new Dictionary<long,List<TopologyCurve>>();
+        var unreadable=new List<string>();int spatial=0;
+        foreach(var curve in curves)
+        {
+            ct.ThrowIfCancellationRequested();
+            Extents3d box;
+            try{box=curve.GeometricExtents;}catch(Autodesk.AutoCAD.Runtime.Exception){unreadable.Add(curve.Handle.ToString());continue;}
+            double height=box.MaxPoint.Z-box.MinPoint.Z;
+            if(height>Math.Max(tolerance,1e-9*Math.Max(1,Math.Abs(box.MaxPoint.Z)))){spatial++;continue;}
+            if(CurveSampler.Sample(curve,Math.Max(tolerance,diagonal*1e-4)) is not {} sample){unreadable.Add(curve.Handle.ToString());continue;}
+            long level=(long)Math.Round(box.MinPoint.Z/Math.Max(tolerance*16,1e-6));
+            if(!levels.TryGetValue(level,out var list))levels[level]=list=new();
+            list.Add(sample);
+        }
+        if(unreadable.Count>0)issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",unreadable.Take(20).ToArray(),"Geometry of "+unreadable.Count+" curve(s) could not be read; duplicates and self-intersections not checked for them"));
+        if(spatial>0)issues.Add(new("TOPOLOGY_3D_SKIPPED","info",[],spatial+" curve(s) not parallel to the XY plane were not checked for duplicates and self-intersections"));
+        foreach(var level in levels.Values)
+        {
+            TopologyReport report;
+            try{report=Topology.Analyze(level,new(tolerance,0,Endpoints:false,Crossings:false,MaxFindings:100),ct);}
+            catch(CadFault e){issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",[],"Curve geometry not checked: "+e.Message));continue;}
+            foreach(var finding in report.Findings)
+                issues.Add(finding.Code=="TOPOLOGY_LIMIT"?new("TOPOLOGY_UNVERIFIED","unverified",[],"Curves too dense for the duplicate and self-intersection check; run cad_review with options_json {\"checks\":[\"topology\"]} on parts of them")
+                    :new(finding.Code,finding.Severity,finding.Handles,finding.Message));
+        }
     }
     internal static double Diagonal(IEnumerable<Entity> entities)
     {

@@ -3,9 +3,10 @@ namespace CadMcp.Core;
 /// <summary>
 /// A curve projected to the WCS XY plane as a polyline; arcs and splines are sampled by the caller.
 /// Deviation is the largest distance between the sampled chords and the true curve, so a point on an
-/// arc between two samples still counts as touching it.
+/// arc between two samples still counts as touching it. SegmentDeviations, when given, holds it per
+/// segment (Points[i] to Points[i + 1], then the closing segment), so straight segments stay exact.
 /// </summary>
-public sealed record TopologyCurve(string Handle, string Layer, IReadOnlyList<double[]> Points, bool Closed, double Deviation = 0);
+public sealed record TopologyCurve(string Handle, string Layer, IReadOnlyList<double[]> Points, bool Closed, double Deviation = 0, IReadOnlyList<double>? SegmentDeviations = null);
 
 /// <summary>
 /// Tolerance: points closer than this coincide. GapTolerance: an endpoint closer than this to other
@@ -28,13 +29,18 @@ public static class Topology
 {
     public const string Warning = "warning", Info = "info", Unverified = "unverified";
     private const int MaxSegments = 200_000, MaxRegistrations = 4_000_000;
+    // Work allowed in one check; beyond it the geometry is reported as too dense instead of freezing CAD:
+    // exact relation tests of segments sharing a cell, and cheap bounding-box tests of long segments.
+    private const long MaxPairTests = 40_000_000, MaxBoxTests = 300_000_000;
+    // A segment spanning more cells than this is tested against all others directly instead of filling cells.
+    private const int LongSegmentSteps = 64;
 
-    private readonly record struct Segment(int Curve, int Index, double Ax, double Ay, double Bx, double By)
+    private readonly record struct Segment(int Curve, int Index, double Ax, double Ay, double Bx, double By, double Deviation)
     {
         public double Length => Math.Sqrt((Bx - Ax) * (Bx - Ax) + (By - Ay) * (By - Ay));
     }
 
-    public static TopologyReport Analyze(IReadOnlyList<TopologyCurve> curves, TopologyOptions options)
+    public static TopologyReport Analyze(IReadOnlyList<TopologyCurve> curves, TopologyOptions options, CancellationToken ct = default)
     {
         if (!double.IsFinite(options.Tolerance) || options.Tolerance <= 0) throw new CadFault("INVALID_TOLERANCE", "tolerance must be a positive drawing-unit distance");
         if (!double.IsFinite(options.GapTolerance) || options.GapTolerance < 0) throw new CadFault("INVALID_TOLERANCE", "gap_tolerance must be zero or a positive drawing-unit distance");
@@ -49,22 +55,42 @@ public static class Topology
             findings.Add(new(code, severity, handles, [x, y], distance, occurrences, message));
         }
 
-        // Clean the polylines: drop repeated vertices, detect implicit closure, measure length.
+        // Clean the polylines: drop repeated vertices, detect implicit closure, measure length. A dropped vertex
+        // merges two segments, whose chord deviation is the larger of theirs.
         var points = new List<(double X, double Y)[]>(curves.Count);
+        var deviations = new List<double[]>(curves.Count);
         var closed = new bool[curves.Count];
         var live = new bool[curves.Count];
         for (int c = 0; c < curves.Count; c++)
         {
-            var cleaned = new List<(double X, double Y)>();
-            foreach (var p in curves[c].Points)
+            ct.ThrowIfCancellationRequested();
+            var source = curves[c];
+            double SourceDeviation(int k)
             {
-                if (p.Length < 2 || !double.IsFinite(p[0]) || !double.IsFinite(p[1])) throw new CadFault("INVALID_TOPOLOGY_POINT", curves[c].Handle);
-                if (cleaned.Count == 0 || Distance(cleaned[^1], (p[0], p[1])) > tol) cleaned.Add((p[0], p[1]));
+                double value = source.SegmentDeviations is { } list && k < list.Count ? list[k] : source.Deviation;
+                return double.IsFinite(value) ? Math.Max(0, value) : 0;
             }
-            bool isClosed = curves[c].Closed;
+            var cleaned = new List<(double X, double Y)>();
+            var cleanedDeviation = new List<double>();
+            double pending = 0;
+            for (int k = 0; k < source.Points.Count; k++)
+            {
+                var p = source.Points[k];
+                if (p.Length < 2 || !double.IsFinite(p[0]) || !double.IsFinite(p[1])) throw new CadFault("INVALID_TOPOLOGY_POINT", source.Handle);
+                if (k > 0) pending = Math.Max(pending, SourceDeviation(k - 1));
+                if (cleaned.Count == 0) { cleaned.Add((p[0], p[1])); pending = 0; }
+                else if (Distance(cleaned[^1], (p[0], p[1])) > tol) { cleaned.Add((p[0], p[1])); cleanedDeviation.Add(pending); pending = 0; }
+            }
+            bool isClosed = source.Closed;
             if (!isClosed && cleaned.Count > 2 && Distance(cleaned[0], cleaned[^1]) <= tol) { isClosed = true; cleaned.RemoveAt(cleaned.Count - 1); }
             if (isClosed && cleaned.Count > 1 && Distance(cleaned[0], cleaned[^1]) <= tol) cleaned.RemoveAt(cleaned.Count - 1);
-            points.Add(cleaned.ToArray()); closed[c] = isClosed;
+            // One deviation per segment: the open run, then the closing segment of a closed curve.
+            int segmentCount = isClosed ? cleaned.Count : Math.Max(0, cleaned.Count - 1);
+            if (cleanedDeviation.Count < segmentCount) cleanedDeviation.Add(Math.Max(pending, SourceDeviation(source.Points.Count - 1)));
+            while (cleanedDeviation.Count > segmentCount && cleanedDeviation.Count > 1)
+            { cleanedDeviation[^2] = Math.Max(cleanedDeviation[^2], cleanedDeviation[^1]); cleanedDeviation.RemoveAt(cleanedDeviation.Count - 1); }
+            while (cleanedDeviation.Count < segmentCount) cleanedDeviation.Add(source.Deviation);
+            points.Add(cleaned.ToArray()); deviations.Add(cleanedDeviation.ToArray()); closed[c] = isClosed;
             double length = 0;
             for (int i = 1; i < cleaned.Count; i++) length += Distance(cleaned[i - 1], cleaned[i]);
             if (isClosed && cleaned.Count > 1) length += Distance(cleaned[^1], cleaned[0]);
@@ -77,9 +103,10 @@ public static class Topology
         for (int c = 0; c < curves.Count; c++)
         {
             if (!live[c]) continue;
-            var p = points[c];
-            for (int i = 1; i < p.Length; i++) segments.Add(new(c, i - 1, p[i - 1].X, p[i - 1].Y, p[i].X, p[i].Y));
-            if (closed[c] && p.Length > 2) segments.Add(new(c, p.Length - 1, p[^1].X, p[^1].Y, p[0].X, p[0].Y));
+            var p = points[c]; var d = deviations[c];
+            double At(int i) => i < d.Length ? d[i] : curves[c].Deviation;
+            for (int i = 1; i < p.Length; i++) segments.Add(new(c, i - 1, p[i - 1].X, p[i - 1].Y, p[i].X, p[i].Y, At(i - 1)));
+            if (closed[c] && p.Length > 2) segments.Add(new(c, p.Length - 1, p[^1].X, p[^1].Y, p[0].X, p[0].Y, At(p.Length - 1)));
         }
         var limitations = new[] { "XY projection: Z is ignored", "arcs, ellipses and splines are sampled by the caller within tolerance", "top-level entities only; blocks are not exploded" };
         if (segments.Count > MaxSegments)
@@ -88,42 +115,58 @@ public static class Topology
             return Report();
         }
 
-        // Grid sized to the typical segment, never smaller than the gap, so a 3x3 neighbourhood covers every candidate.
-        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue, total = 0;
-        foreach (var s in segments)
-        {
-            minX = Math.Min(minX, Math.Min(s.Ax, s.Bx)); minY = Math.Min(minY, Math.Min(s.Ay, s.By));
-            maxX = Math.Max(maxX, Math.Max(s.Ax, s.Bx)); maxY = Math.Max(maxY, Math.Max(s.Ay, s.By)); total += s.Length;
-        }
-        double cell = segments.Count == 0 ? 1 : Math.Max(Math.Max(total / segments.Count, 2 * Math.Max(gap, tol)), Math.Max(maxX - minX, maxY - minY) / 4096);
-        var grid = new Dictionary<long, List<int>>();
+        // Grid cells follow the median segment, never smaller than the gap, so a 3x3 neighbourhood covers every
+        // candidate; one long or distant segment cannot make every cell crowded. Segments much longer than a
+        // cell are tested against the others directly.
+        double minX = double.MaxValue, minY = double.MaxValue;
+        foreach (var s in segments) { minX = Math.Min(minX, Math.Min(s.Ax, s.Bx)); minY = Math.Min(minY, Math.Min(s.Ay, s.By)); }
+        var lengths = segments.Select(s => s.Length).ToArray();
+        Array.Sort(lengths);
+        double cell = Math.Max(lengths.Length == 0 ? 1 : lengths[lengths.Length / 2], 2 * Math.Max(gap, tol));
+        if (!double.IsFinite(cell) || cell <= 0) cell = 1;
+        var grid = new Dictionary<(long, long), List<int>>();
+        var longSegments = new List<int>();
         long registrations = 0;
-        long Key(long ix, long iy) => (ix << 32) ^ (iy & 0xffffffffL);
         long Cell(double v, double origin) => (long)Math.Floor((v - origin) / cell);
+        var registered = new HashSet<(long, long)>();
         for (int i = 0; i < segments.Count && registrations <= MaxRegistrations; i++)
         {
-            var s = segments[i]; var registered = new HashSet<long>();
+            if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
+            var s = segments[i];
             int steps = Math.Max(1, (int)Math.Ceiling(s.Length / (cell / 2)));
+            if (steps > LongSegmentSteps) { longSegments.Add(i); continue; }
+            registered.Clear();
             for (int k = 0; k <= steps; k++)
             {
                 double t = (double)k / steps, x = s.Ax + (s.Bx - s.Ax) * t, y = s.Ay + (s.By - s.Ay) * t;
                 long cx = Cell(x, minX), cy = Cell(y, minY);
                 for (long dx = -1; dx <= 1; dx++) for (long dy = -1; dy <= 1; dy++)
                 {
-                    long key = Key(cx + dx, cy + dy);
+                    var key = (cx + dx, cy + dy);
                     if (!registered.Add(key)) continue;
                     if (!grid.TryGetValue(key, out var list)) grid[key] = list = new();
                     list.Add(i); registrations++;
                 }
             }
         }
-        if (registrations > MaxRegistrations)
+        long pairTests = 0, boxTests = (long)longSegments.Count * (segments.Count + (options.Endpoints ? 2L * curves.Count : 0));
+        foreach (var list in grid.Values) pairTests += (long)list.Count * (list.Count - 1) / 2;
+        if (registrations > MaxRegistrations || pairTests > MaxPairTests || boxTests > MaxBoxTests)
         {
             Add("TOPOLOGY_LIMIT", Unverified, [], 0, 0, null, segments.Count, "Geometry too dense or too large for one check; narrow the scope by layer or bounds");
             return Report();
         }
-        IEnumerable<int> Near(double x, double y) => grid.TryGetValue(Key(Cell(x, minX), Cell(y, minY)), out var list) ? list : [];
-        double Deviation(int curve) => double.IsFinite(curves[curve].Deviation) ? Math.Clamp(curves[curve].Deviation, 0, cell / 4) : 0;
+        IEnumerable<int> Near(double x, double y)
+        {
+            if (grid.TryGetValue((Cell(x, minX), Cell(y, minY)), out var list)) foreach (int index in list) yield return index;
+            // Long segments are outside the grid; only those whose box comes within a cell of the point matter.
+            foreach (int index in longSegments)
+            {
+                var s = segments[index];
+                if (x >= Math.Min(s.Ax, s.Bx) - cell && x <= Math.Max(s.Ax, s.Bx) + cell && y >= Math.Min(s.Ay, s.By) - cell && y <= Math.Max(s.Ay, s.By) + cell) yield return index;
+            }
+        }
+        double Deviation(Segment segment) => double.IsFinite(segment.Deviation) ? Math.Clamp(segment.Deviation, 0, cell / 4) : 0;
         bool Adjacent(Segment a, Segment b)
         {
             if (a.Curve != b.Curve) return false;
@@ -153,28 +196,47 @@ public static class Topology
             }
         }
 
-        // Pairwise segment relations from shared grid cells.
+        // Pairwise segment relations from shared grid cells, then each long segment against all others.
         var pairs = new Dictionary<(string Code, int A, int B), (double X, double Y, int Count)>();
-        var seen = new HashSet<long>();
+        var seen = new HashSet<(int, int)>();
+        void Visit(int a, int b)
+        {
+            var s = segments[a]; var t = segments[b];
+            if (s.Curve == t.Curve && (!options.SelfIntersections || Adjacent(s, t))) return;
+            if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) return;
+            var relation = Relate(s, t, tol);
+            if (relation is null) return;
+            var (kind, x, y) = relation.Value;
+            string? code = s.Curve == t.Curve
+                ? kind == "overlap" ? "SELF_OVERLAP" : kind == "cross" ? "SELF_INTERSECTION" : null
+                : kind == "overlap" ? "OVERLAPPING_SEGMENTS" : kind == "cross" && options.Crossings ? "UNNODED_CROSSING" : null;
+            if (code is null) return;
+            var pairKey = (code, Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve));
+            pairs[pairKey] = pairs.TryGetValue(pairKey, out var prior) ? (prior.X, prior.Y, prior.Count + 1) : (x, y, 1);
+        }
+        long visited = 0;
         foreach (var list in grid.Values)
             for (int i = 0; i < list.Count; i++)
                 for (int j = i + 1; j < list.Count; j++)
                 {
+                    if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
                     int a = Math.Min(list[i], list[j]), b = Math.Max(list[i], list[j]);
-                    if (!seen.Add(((long)a << 32) | (uint)b)) continue;
-                    var s = segments[a]; var t = segments[b];
-                    if (s.Curve == t.Curve && (!options.SelfIntersections || Adjacent(s, t))) continue;
-                    if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) continue;
-                    var relation = Relate(s, t, tol);
-                    if (relation is null) continue;
-                    var (kind, x, y) = relation.Value;
-                    string? code = s.Curve == t.Curve
-                        ? kind == "overlap" ? "SELF_OVERLAP" : kind == "cross" ? "SELF_INTERSECTION" : null
-                        : kind == "overlap" ? "OVERLAPPING_SEGMENTS" : kind == "cross" && options.Crossings ? "UNNODED_CROSSING" : null;
-                    if (code is null) continue;
-                    var pairKey = (code, Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve));
-                    pairs[pairKey] = pairs.TryGetValue(pairKey, out var prior) ? (prior.X, prior.Y, prior.Count + 1) : (x, y, 1);
+                    if (seen.Add((a, b))) Visit(a, b);
                 }
+        var isLong = new HashSet<int>(longSegments);
+        foreach (int l in longSegments)
+        {
+            var s = segments[l];
+            double x0 = Math.Min(s.Ax, s.Bx) - tol, x1 = Math.Max(s.Ax, s.Bx) + tol, y0 = Math.Min(s.Ay, s.By) - tol, y1 = Math.Max(s.Ay, s.By) + tol;
+            for (int o = 0; o < segments.Count; o++)
+            {
+                if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
+                if (o == l || isLong.Contains(o) && o < l) continue;
+                var t = segments[o];
+                if (Math.Max(t.Ax, t.Bx) < x0 || Math.Min(t.Ax, t.Bx) > x1 || Math.Max(t.Ay, t.By) < y0 || Math.Min(t.Ay, t.By) > y1) continue;
+                Visit(Math.Min(l, o), Math.Max(l, o));
+            }
+        }
         foreach (var ((code, a, b), (x, y, count)) in pairs.OrderBy(p => p.Key.A).ThenBy(p => p.Key.B).ThenBy(p => p.Key.Code, StringComparer.Ordinal))
         {
             string[] handles = a == b ? [curves[a].Handle] : [curves[a].Handle, curves[b].Handle];
@@ -197,21 +259,22 @@ public static class Topology
                 if (!live[c] || closed[c]) continue;
                 endpoints.Add((c, points[c][0].X, points[c][0].Y)); endpoints.Add((c, points[c][^1].X, points[c][^1].Y));
             }
-            var endpointGrid = new Dictionary<long, List<int>>();
+            var endpointGrid = new Dictionary<(long, long), List<int>>();
             for (int e = 0; e < endpoints.Count; e++)
             {
-                long key = Key(Cell(endpoints[e].X, minX), Cell(endpoints[e].Y, minY));
+                var key = (Cell(endpoints[e].X, minX), Cell(endpoints[e].Y, minY));
                 if (!endpointGrid.TryGetValue(key, out var list)) endpointGrid[key] = list = new();
                 list.Add(e);
             }
             var reportedGaps = new HashSet<(int, int)>();
             for (int e = 0; e < endpoints.Count; e++)
             {
+                if ((e & 255) == 0) ct.ThrowIfCancellationRequested();
                 var (c, x, y) = endpoints[e];
                 double nearestEnd = double.MaxValue; int nearestEndCurve = -1, nearestEndIndex = -1;
                 long cx = Cell(x, minX), cy = Cell(y, minY);
                 for (long dx = -1; dx <= 1; dx++) for (long dy = -1; dy <= 1; dy++)
-                    if (endpointGrid.TryGetValue(Key(cx + dx, cy + dy), out var list))
+                    if (endpointGrid.TryGetValue((cx + dx, cy + dy), out var list))
                         foreach (int other in list)
                         {
                             if (other == e || endpoints[other].Curve == c) continue;
@@ -225,7 +288,7 @@ public static class Topology
                     var s = segments[index];
                     // A curve's own incident segments always touch its endpoint.
                     if (s.Curve == c && (s.Index == 0 || s.Index == points[c].Length - 2)) continue;
-                    double d = Math.Max(0, PointToSegment(x, y, s) - Deviation(s.Curve));
+                    double d = Math.Max(0, PointToSegment(x, y, s) - Deviation(s));
                     if (d < nearestSegment) { nearestSegment = d; nearestSegmentCurve = s.Curve; }
                 }
                 if (nearestSegment <= tol)

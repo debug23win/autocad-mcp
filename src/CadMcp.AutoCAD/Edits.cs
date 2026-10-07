@@ -291,8 +291,14 @@ internal static class Edits
             throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
         // The review covers up to 250 entities; a larger batch is reported as not reviewed rather than failing the edit.
         var live = touched.Where(id => !id.IsErased).ToArray();
-        var quality = live.Length <= 250 ? DrawingQuality.Review(doc.Database, tr, live, ct)
-            : new DrawingQuality.Report("unverified", live.Length, 0, [new("REVIEW_SKIPPED", "unverified", [], live.Length + " entities changed; run cad_review on parts of the result")], ["Batch larger than the 250-entity review"]);
+        DrawingQuality.Report quality;
+        if (live.Length > 250)
+            quality = new("unverified", live.Length, 0, [new("REVIEW_SKIPPED", "unverified", [], live.Length + " entities changed; run cad_review on parts of the result")], ["Batch larger than the 250-entity review"]);
+        else
+            // The review describes the result; a failure inside it must never cost the user the edit.
+            try { quality = DrawingQuality.Review(doc.Database, tr, live, ct); }
+            catch (System.Exception error) when (error is not OperationCanceledException)
+            { quality = new("unverified", live.Length, 0, [new("REVIEW_FAILED", "unverified", [], "Quality review did not run: " + error.Message)], ["Quality review failed"]); }
         object Data(IReadOnlyList<JsonElement> entities, bool truncated) => new { quality, transaction = preview ? "rolled_back_preview" : "committed", preview = preview ? true : (bool?)null,
             coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities, entity_count = readback.Length, entities_truncated = truncated ? true : (bool?)null, acceptance, table_dependencies,
             schedule_warnings = schedule_warnings.Count == 0 ? null : schedule_warnings,

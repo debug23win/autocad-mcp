@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -30,7 +31,7 @@ public static class CadText
                 if (code == 'p') { result.Append(PlusMinus); i += 2; continue; }
                 if (code is 'u' or 'o') { i += 2; continue; }
                 if (code == '%') { result.Append('%'); i += 2; continue; }
-                if (char.IsDigit(code) && i + 4 < value.Length && char.IsDigit(value[i + 3]) && char.IsDigit(value[i + 4]))
+                if (char.IsAsciiDigit(code) && i + 4 < value.Length && char.IsAsciiDigit(value[i + 3]) && char.IsAsciiDigit(value[i + 4]))
                 { result.Append((char)int.Parse(value.AsSpan(i + 2, 3), CultureInfo.InvariantCulture)); i += 4; continue; }
             }
             if (c == '\\' && i + 6 < value.Length && (value[i + 1] is 'U' or 'u') && value[i + 2] == '+' &&
@@ -53,11 +54,14 @@ public static class CadText
             char code = contents[++i];
             switch (code)
             {
-                case 'P' or 'N': result.Append('\n'); break;
+                // \X separates the text above a dimension line from the text below it.
+                case 'P' or 'N' or 'X': result.Append('\n'); break;
                 case '~': result.Append(' '); break;
                 case '\\' or '{' or '}': result.Append(code); break;
                 case 'L' or 'l' or 'O' or 'o' or 'K' or 'k': break;
                 case 'U' or 'u': result.Append('\\').Append(code); break;
+                // \M+nXXXX: a double-byte character of an Asian code page.
+                case 'M' or 'm' when i + 6 < contents.Length && contents[i + 1] == '+': result.Append('\uFFFD'); i += 6; break;
                 case 'S':
                     int end = contents.IndexOf(';', i + 1);
                     if (end < 0) { i = contents.Length; break; }
@@ -72,12 +76,13 @@ public static class CadText
         return result.ToString();
     }
 
-    /// <summary>Case-insensitive search in displayed text.</summary>
+    /// <summary>Case-insensitive search in displayed text. A needle that displays as nothing (only "%%u") matches nothing.</summary>
     public static bool Contains(string? haystack, string needle, bool mtext = false) =>
-        Normalize(haystack, mtext).Contains(Normalize(needle), StringComparison.OrdinalIgnoreCase);
+        Normalize(needle) is { Length: > 0 } displayed && Normalize(haystack, mtext).Contains(displayed, StringComparison.OrdinalIgnoreCase);
 
-    private static readonly Regex NumberPattern = new(@"(?<![\d.,])[-+]?\d+(?:[.,]\d+)?", RegexOptions.CultureInvariant);
-    private static readonly Regex GroupedPattern = new(@"(?<![\d.,])[-+]?\d{1,3}(?:[ \u00A0\u202F]\d{3})+(?:[.,]\d+)?(?!\d)", RegexOptions.CultureInvariant);
+    // ASCII digits only: \d also matches full-width and other Unicode digits, which double.Parse rejects.
+    private static readonly Regex NumberPattern = new(@"(?<![0-9.,])[-+]?[0-9]+(?:[.,][0-9]+)?", RegexOptions.CultureInvariant);
+    private static readonly Regex GroupedPattern = new(@"(?<![0-9.,])[-+]?[0-9]{1,3}(?:[ \u00A0\u202F][0-9]{3})+(?:[.,][0-9]+)?(?![0-9])", RegexOptions.CultureInvariant);
     /// <summary>Numbers of a displayed text; "1 200" yields 1, 200 and 1200, since digit grouping is ambiguous.</summary>
     public static IReadOnlyList<double> Numbers(string text) =>
         NumberPattern.Matches(text).Concat(GroupedPattern.Matches(text))
@@ -106,19 +111,75 @@ public static class CadText
     /// <summary>Two diameter symbols in a row, typically a style prefix plus a typed "%%c".</summary>
     public static bool RepeatedDiameter(string? displayed, bool mtext = false) => RepeatedDiameterPattern.IsMatch(Normalize(displayed, mtext));
 
+    private static readonly ConcurrentDictionary<string, (Regex Regex, bool Negate)> LikePatterns = new(StringComparer.Ordinal);
+
     /// <summary>
-    /// AutoCAD-style name pattern, case-insensitive: * any text, ? one character, # one digit, a comma separates
-    /// alternatives and a leading ~ negates the whole pattern ("Сети*,ВК?", "~0").
+    /// AutoCAD wildcard pattern (WCMATCH), case-insensitive: * any text, ? one character, # a digit, @ a letter,
+    /// . a character that is neither letter nor digit, [abc] and [a-z] one of the characters, [~abc] none of them,
+    /// ` takes the next character literally, a comma separates alternatives and a leading ~ negates the whole
+    /// pattern ("Сети*,ВК?", "~0", "[AB]*").
     /// </summary>
     public static bool Like(string? value, string pattern)
     {
         if (value is null) return false;
+        if (LikePatterns.Count > 1024) LikePatterns.Clear();
+        var (regex, negate) = LikePatterns.GetOrAdd(pattern, CompileLike);
+        try { return regex.IsMatch(value) != negate; }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
+
+    /// <summary>The ']' closing the class opened at <paramref name="open"/>, or -1. The first member may itself be ']'.</summary>
+    private static int ClassEnd(string text, int open)
+    {
+        int first = open + 1 < text.Length && text[open + 1] == '~' ? open + 2 : open + 1;
+        return first + 1 > text.Length ? -1 : text.IndexOf(']', first + 1);
+    }
+
+    private static (Regex, bool) CompileLike(string pattern)
+    {
         bool negate = pattern.StartsWith('~');
         var body = negate ? pattern[1..] : pattern;
-        bool matched = body.Split(',').Any(part =>
-            Regex.IsMatch(value, "^" + string.Concat(part.Trim().Select(c => c switch { '*' => ".*", '?' => ".", '#' => "[0-9]", _ => Regex.Escape(c.ToString()) })) + "$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline, TimeSpan.FromSeconds(1)));
-        return matched != negate;
+        var alternatives = new List<string>();
+        var current = new StringBuilder();
+        for (int i = 0; i < body.Length; i++)
+        {
+            char c = body[i];
+            if (c == ',') { alternatives.Add(current.ToString().Trim()); current.Clear(); continue; }
+            current.Append(c);
+            if (c == '`' && i + 1 < body.Length) current.Append(body[++i]);
+            else if (c == '[' && ClassEnd(body, i) is var close and > 0) { current.Append(body, i + 1, close - i); i = close; }
+        }
+        alternatives.Add(current.ToString().Trim());
+        var regex = new StringBuilder("^(?:");
+        for (int a = 0; a < alternatives.Count; a++)
+        {
+            if (a > 0) regex.Append('|');
+            var part = alternatives[a];
+            for (int i = 0; i < part.Length; i++)
+            {
+                char c = part[i];
+                switch (c)
+                {
+                    case '*': regex.Append(".*"); break;
+                    case '?': regex.Append('.'); break;
+                    case '#': regex.Append("[0-9]"); break;
+                    case '@': regex.Append(@"\p{L}"); break;
+                    case '.': regex.Append(@"[^\p{L}\p{N}]"); break;
+                    case '`' when i + 1 < part.Length: regex.Append(Regex.Escape(part[++i].ToString())); break;
+                    case '[' when ClassEnd(part, i) is var close and > 0:
+                        var set = part[(i + 1)..close];
+                        bool not = set.Length > 1 && set[0] == '~';
+                        if (not) set = set[1..];
+                        regex.Append(not ? "[^" : "[");
+                        foreach (char member in set) regex.Append(member == '-' ? "-" : member is ']' or '\\' or '^' or '[' ? "\\" + member : member.ToString());
+                        regex.Append(']');
+                        i = close; break;
+                    default: regex.Append(Regex.Escape(c.ToString())); break;
+                }
+            }
+        }
+        regex.Append(")$");
+        return (new Regex(regex.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline, TimeSpan.FromSeconds(1)), negate);
     }
 
     /// <summary>
@@ -131,15 +192,47 @@ public static class CadText
     {
         if (string.IsNullOrEmpty(raw) || string.IsNullOrEmpty(find)) return (raw ?? "", 0);
         string encodedFind = Encode(find), encodedReplace = Encode(replace);
+        // In MText a backslash or brace of the new text would start a formatting code.
+        if (mtext) { replace = EscapeMText(replace); encodedReplace = EscapeMText(encodedReplace); }
         var pattern = "(" + Regex.Escape(find) + ")" + (encodedFind != find ? "|(" + Regex.Escape(encodedFind) + ")" : "");
         if (wholeWord) pattern = @"(?<![\p{L}\p{N}_])(?:" + pattern + @")(?![\p{L}\p{N}_])";
         var regex = new Regex(pattern, (matchCase ? RegexOptions.None : RegexOptions.IgnoreCase) | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
         int count = 0;
-        string Run(string text) => regex.Replace(text, m => { count++; return m.Groups[1].Success ? replace : encodedReplace; });
+        // A match must not begin or end inside a control code (%%c, %%nnn, \U+XXXX): "C" in "%%c108" is not text.
+        string Run(string text)
+        {
+            var boundaries = CodeBoundaries(text);
+            return regex.Replace(text, m =>
+            {
+                if (!boundaries[m.Index] || !boundaries[m.Index + m.Length]) return m.Value;
+                count++;
+                return m.Groups[1].Success ? replace : encodedReplace;
+            });
+        }
         if (!mtext) return (Run(raw), count);
         var result = new StringBuilder(raw.Length);
         foreach (var (segment, isText) in MTextSegments(raw)) result.Append(isText ? Run(segment) : segment);
         return (result.ToString(), count);
+    }
+
+    private static string EscapeMText(string text) => text.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
+
+    /// <summary>For each position 0..length, whether it lies between characters rather than inside a control code.</summary>
+    private static bool[] CodeBoundaries(string text)
+    {
+        var boundary = new bool[text.Length + 1];
+        Array.Fill(boundary, true);
+        for (int i = 0; i < text.Length; i++)
+        {
+            int length = 0;
+            if (text[i] == '%' && i + 2 < text.Length && text[i + 1] == '%')
+                length = char.IsAsciiDigit(text[i + 2]) && i + 4 < text.Length && char.IsAsciiDigit(text[i + 3]) && char.IsAsciiDigit(text[i + 4]) ? 5 : 3;
+            else if (text[i] == '\\' && i + 6 < text.Length && text[i + 1] is 'U' or 'u' && text[i + 2] == '+' && text.AsSpan(i + 3, 4).ToString().All(char.IsAsciiHexDigit))
+                length = 7;
+            for (int k = 1; k < length; k++) boundary[i + k] = false;
+            if (length > 0) i += length - 1;
+        }
+        return boundary;
     }
 
     private static string Encode(string text) => text.Replace("Ø", "%%c").Replace("ø", "%%c").Replace("⌀", "%%c").Replace("∅", "%%c")

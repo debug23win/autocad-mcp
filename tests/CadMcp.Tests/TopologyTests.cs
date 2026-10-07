@@ -83,6 +83,47 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void Long_polylines_and_distant_strays_stay_fast()
+    {
+        // 50000 vertices in one zigzag: pairs of neighbouring segments once hashed badly and took minutes.
+        var zigzag = new TopologyCurve("Z", "0", Enumerable.Range(0, 50_000).Select(i => new[] { i * 1.0, i % 2 * 0.5 }).ToArray(), false);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var report = Topology.Analyze([zigzag], new TopologyOptions(0.001));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "Zigzag check is too slow: " + watch.Elapsed);
+        Assert.DoesNotContain(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+        // A cluster of short lines plus one line a million units away must not crowd every cell.
+        var random = new Random(3);
+        var cluster = Enumerable.Range(0, 5000).Select(i =>
+        {
+            double x = random.NextDouble() * 100, y = random.NextDouble() * 100;
+            return Line("C" + i, x, y, x + 1, y + 0.5);
+        }).Append(Line("FAR", 1_000_000, 0, 1_000_010, 0)).Append(Line("LONG", -50, 50, 150, 50)).ToArray();
+        watch.Restart();
+        report = Topology.Analyze(cluster, new TopologyOptions(0.001, 0.01));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "Clustered check is too slow: " + watch.Elapsed);
+        Assert.DoesNotContain(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+        // The long line crossing the cluster is still compared with the short lines it crosses.
+        Assert.Contains(report.Findings, f => f.Code == "UNNODED_CROSSING" && f.Handles.Contains("LONG"));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.ThrowsAny<OperationCanceledException>(() => Topology.Analyze(cluster, new TopologyOptions(0.001), cancelled.Token));
+    }
+
+    [Fact]
+    public void Chord_deviation_applies_only_to_curved_segments()
+    {
+        // A polyline whose first segment is straight and second is a coarsely sampled arc; a line stops 0.008
+        // short of the straight part: that is a near miss, whatever the arc's chords deviate.
+        var polyline = new TopologyCurve("P", "0", [[0, 0], [100, 0], [100, 50]], false, 0.5, [0, 0.5]);
+        var line = Line("L", 50, 10, 50, 0.008);
+        var report = Topology.Analyze([polyline, line], new TopologyOptions(0.001, 0.05));
+        Assert.Contains(report.Findings, f => f.Code == "NEAR_MISS" && f.Handles.Contains("L"));
+        // Without per-segment values the whole curve counts as curved, as before.
+        var uniform = Topology.Analyze([polyline with { SegmentDeviations = null }, line], new TopologyOptions(0.001, 0.05));
+        Assert.DoesNotContain(uniform.Findings, f => f.Code == "NEAR_MISS");
+    }
+
+    [Fact]
     public void An_endpoint_on_a_sampled_arc_touches_it_within_the_chord_deviation()
     {
         // A coarse quarter circle of radius 100: a line ending on the true arc midway between two samples

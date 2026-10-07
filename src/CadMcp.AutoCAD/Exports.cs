@@ -112,8 +112,9 @@ internal static class Exports
         // The file exists; an independent re-read decides whether it holds what was exported.
         object check;
         try { check = format == "dxf" ? VerifyDxf(document.Database, path) : PdfVerification.Check(path, 1, paper); }
-        catch (System.Exception error) when (error is CadFault or Autodesk.AutoCAD.Runtime.Exception or IOException or InvalidOperationException or UglyToad.PdfPig.Core.PdfDocumentFormatException)
-        { check = new { state = "unverified", error = error.Message }; }
+        // The file is written; a reader failure (unsupported fonts, compression, encryption) leaves it unverified, not failed.
+        catch (System.Exception error) when (error is not OperationCanceledException)
+        { check = new { state = "unverified", error = error.GetType().Name + ": " + error.Message }; }
         using var file = File.OpenRead(path);
         return new { format, path, bytes = file.Length, sha256 = Convert.ToHexString(SHA256.HashData(file)),
             layout = format == "pdf" ? layoutName ?? LayoutManager.Current.CurrentLayout : null,

@@ -39,6 +39,8 @@ internal static class CurveSampler
                 case Polyline polyline when Planar(polyline.Normal):
                 {
                     var points = new List<double[]>();
+                    // Straight segments are exact; only the chords of arc segments deviate from the curve.
+                    var segmentDeviations = new List<double>();
                     double deviation = 0;
                     int count = polyline.NumberOfVertices;
                     for (int i = 0; i < count; i++)
@@ -50,12 +52,14 @@ internal static class CurveSampler
                         double bulge = polyline.GetBulgeAt(i);
                         var segment = ArcSampling.Bulge(start.X, start.Y, end.X, end.Y, bulge, tolerance);
                         points.AddRange(segment);
-                        double chord = start.GetDistanceTo(end), theta = 4 * Math.Atan(Math.Abs(bulge));
-                        if (theta > 1e-12 && chord > 0) deviation = Math.Max(deviation, ArcSampling.Sagitta(chord / (2 * Math.Sin(theta / 2)), theta, segment.Length));
+                        double chord = start.GetDistanceTo(end), theta = 4 * Math.Atan(Math.Abs(bulge)), sagitta = 0;
+                        if (theta > 1e-12 && chord > 0) sagitta = ArcSampling.Sagitta(chord / (2 * Math.Sin(theta / 2)), theta, segment.Length);
+                        deviation = Math.Max(deviation, sagitta);
+                        segmentDeviations.AddRange(Enumerable.Repeat(sagitta, segment.Length));
                     }
                     // The closing segment returns to the first vertex; the curve is marked closed instead.
                     if (polyline.Closed && points.Count > 1) points.RemoveAt(points.Count - 1);
-                    return new(handle, layer, points, polyline.Closed, deviation);
+                    return new(handle, layer, points, polyline.Closed, deviation, segmentDeviations);
                 }
                 case Arc or Circle or Polyline or Polyline2d or Polyline3d or Ellipse or Spline:
                     return Adaptive((Curve)entity, tolerance);
@@ -77,6 +81,7 @@ internal static class CurveSampler
         int intervals = curve is Polyline or Polyline2d or Polyline3d ? (int)Math.Clamp(Math.Round(end - start), 1, MaxPoints / 4)
             : curve is Spline spline ? Math.Clamp(spline.NumControlPoints * 2, 16, 256) : 32;
         var points = new List<double[]>();
+        var segmentDeviations = new List<double>();
         double deviation = 0;
         Point3d At(double t) => curve.GetPointAtParameter(Math.Clamp(t, start, end));
         static double Off(Point3d a, Point3d b, Point3d p)
@@ -97,6 +102,7 @@ internal static class CurveSampler
                 return;
             }
             deviation = Math.Max(deviation, off);
+            segmentDeviations.Add(off);
             points.Add([pb.X, pb.Y]);
         }
         var previous = curve.StartPoint;
@@ -109,7 +115,7 @@ internal static class CurveSampler
             previous = pb;
         }
         if (closed && points.Count > 1) points.RemoveAt(points.Count - 1);
-        return new(curve.Handle.ToString(), curve.Layer, points, closed, deviation);
+        return new(curve.Handle.ToString(), curve.Layer, points, closed, deviation, segmentDeviations);
     }
 }
 
@@ -180,7 +186,7 @@ internal static class FontCoverage
         try
         {
             var value = Convert.ToString(Autodesk.AutoCAD.ApplicationServices.Core.Application.GetSystemVariable("SYSCODEPAGE")) ?? "";
-            var digits = new string(value.Where(char.IsDigit).ToArray());
+            var digits = new string(value.Where(char.IsAsciiDigit).ToArray());
             return int.TryParse(digits, out int page) ? page : 0;
         }
         catch (System.Exception) { return 0; }
@@ -210,8 +216,11 @@ internal static class DimensionChecks
         if (angular || string.IsNullOrWhiteSpace(dimension.DimensionText)) yield break;
         int precision; double rounding, factor; int units;
         using (var style = dimension.GetDimstyleData()) { precision = style.Dimdec; rounding = style.Dimrnd; units = style.Dimlunit; factor = style.Dimlfac; }
-        // DIMLFAC scales the displayed value (negative values apply in paper space only).
-        double shown = dimension.Measurement * (Math.Abs(factor) > 1e-12 ? Math.Abs(factor) : 1);
+        // DIMLFAC scales the displayed value; a negative value applies only to dimensions in paper space.
+        bool paper = tr.GetObject(dimension.OwnerId, OpenMode.ForRead) is BlockTableRecord { IsLayout: true } owner &&
+            !string.Equals(owner.Name, BlockTableRecord.ModelSpace, StringComparison.OrdinalIgnoreCase);
+        double scale = factor > 1e-12 ? factor : factor < -1e-12 && paper ? -factor : 1;
+        double shown = dimension.Measurement * scale;
         // Only decimal units are compared numerically; architectural and fractional texts are reported as fixed.
         string? code = units is 2 or 6 ? CadText.DimensionOverride(dimension.DimensionText, shown, precision, rounding)
             : dimension.DimensionText.Contains("<>", StringComparison.Ordinal) ? null : "DIMENSION_TEXT_FIXED";
@@ -318,12 +327,18 @@ internal static class ReviewOptions
         double sampling = Math.Max(tolerance, diagonal * 1e-5);
         var sampled = new List<TopologyCurve>(curves.Length);
         var unreadable = new List<string>();
+        long sampledPoints = 0;
         foreach (var curve in curves)
         {
             ct.ThrowIfCancellationRequested();
-            if (CurveSampler.Sample(curve, sampling) is { } sample) sampled.Add(sample); else unreadable.Add(curve.Handle.ToString());
+            // The check takes up to 200000 segments; sampling stops once that is exceeded.
+            if (sampledPoints > 250_000) { unreadable.Add(curve.Handle.ToString()); continue; }
+            if (CurveSampler.Sample(curve, sampling) is { } sample) { sampled.Add(sample); sampledPoints += sample.Points.Count; } else unreadable.Add(curve.Handle.ToString());
         }
-        var report = Topology.Analyze(sampled, new(tolerance, gap, Bool(options, "endpoints", true), Bool(options, "crossings", true), MaxFindings: maxFindings));
+        var report = sampledPoints > 250_000
+            ? new TopologyReport("unverified", sampled.Count, (int)Math.Min(int.MaxValue, sampledPoints), new Dictionary<string, int> { ["TOPOLOGY_LIMIT"] = 1 },
+                [new("TOPOLOGY_LIMIT", Topology.Unverified, [], [0, 0], null, 1, "Curves too dense for one check (" + sampledPoints + " sampled points); narrow the scope by layers")], false, [])
+            : Topology.Analyze(sampled, new(tolerance, gap, Bool(options, "endpoints", true), Bool(options, "crossings", true), MaxFindings: maxFindings), ct);
         string state = unreadable.Count > 0 && report.State == "passed" ? "unverified" : report.State;
         return (state, new
         {

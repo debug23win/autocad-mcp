@@ -84,7 +84,47 @@ public sealed class QualityTests
     [InlineData("a.b", "a?b", true)]
     [InlineData("a+b", "a+b", true)]
     [InlineData("ab", "a+b", false)]
+    [InlineData("A1-Сети", "[AB]*", true)]
+    [InlineData("C1", "[AB]*", false)]
+    [InlineData("C1", "[~AB]*", true)]
+    [InlineData("K7", "[A-M]#", true)]
+    [InlineData("Ж5", "@#", true)]
+    [InlineData("55", "@#", false)]
+    [InlineData("Wall-1", "Wall.#", true)]
+    [InlineData("WallA1", "Wall.#", false)]
+    [InlineData("A*B", "A`*B", true)]
+    [InlineData("AxB", "A`*B", false)]
+    [InlineData("B2", "A* , B*", true)]
+    [InlineData("x", "A[", false)]
     public void Layer_patterns_follow_AutoCAD_wildcards(string layer, string pattern, bool matches) => Assert.Equal(matches, CadText.Like(layer, pattern));
+
+    [Fact]
+    public void Non_ascii_digits_never_break_the_checks()
+    {
+        // Full-width digits typed with an Asian input method are text, not numbers to parse.
+        Assert.Equal("DIMENSION_TEXT_REPLACED", CadText.DimensionOverride("３００", 300, 0));
+        Assert.Empty(CadText.Numbers("３００"));
+        Assert.Equal("%%１２３", CadText.Normalize("%%１２３"));
+        // Text below the dimension line (\X) is still part of the displayed text.
+        Assert.Equal("DIMENSION_TEXT_FIXED", CadText.DimensionOverride("2 HOLES\\X%%c20", 20, 0));
+        Assert.Equal("a\ufffdb", CadText.Normalize("a\\M+18140b", mtext: true));
+        // A needle that displays as nothing matches nothing.
+        Assert.False(CadText.Contains("any text", "%%u"));
+    }
+
+    [Theory]
+    [InlineData("Труба %%c108", "C", "С", false, "Труба %%c108", 0)]
+    [InlineData("Угол 90%%d", "d", "x", false, "Угол 90%%d", 0)]
+    [InlineData("Труба %%c108", "Ø108", "Ø114", false, "Труба %%c114", 1)]
+    [InlineData("50%%%", "%", "x", false, "50%%%", 0)]
+    [InlineData("\\U+00D8108", "U", "u", false, "\\U+00D8108", 0)]
+    [InlineData("{\\fArial|b0;Path}", "Path", "C:\\Data\\{New}", true, "{\\fArial|b0;C:\\\\Data\\\\\\{New\\}}", 1)]
+    public void Replacement_never_cuts_through_control_codes(string raw, string find, string replace, bool mtext, string expected, int count)
+    {
+        var (text, replaced) = CadText.Replace(raw, find, replace, mtext: mtext);
+        Assert.Equal(expected, text);
+        Assert.Equal(count, replaced);
+    }
 
     [Fact]
     public void Unresolved_fields_are_found()
