@@ -518,7 +518,9 @@ internal static class Edits
                 case "text" when entity is DBText text: text.TextString = p.Value.GetString()!; break;
                 case "text" when entity is MText mtext: mtext.Contents = p.Value.GetString()!; break;
                 case "text" when entity is Dimension dimension: dimension.DimensionText = p.Value.GetString()!; dimension.RecomputeDimensionBlock(true); break;
-                case "position" when entity is DBText text: text.Position = Point(op, "position"); text.AdjustAlignment(db); break;
+                // Justified text is positioned by its alignment point; setting Position would be undone by
+                // AdjustAlignment. Translate the whole text so its reported baseline position lands on the target.
+                case "position" when entity is DBText text: text.TransformBy(Matrix3d.Displacement(Point(op, "position") - text.Position)); break;
                 case "position" when entity is MText text: text.Location = Point(op, "position"); break;
                 case "position" when entity is BlockReference block: block.Position = Point(op, "position"); TransformAttributes(tr, block); break;
                 case "height" when entity is DBText text: text.Height = p.Value.GetDouble(); break;

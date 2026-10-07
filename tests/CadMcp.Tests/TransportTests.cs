@@ -104,7 +104,7 @@ public sealed class OperationTests
         Assert.Empty(CadOperations.ReadOnly.Intersect(CadOperations.HostTools));
         Assert.Contains("cad_focus", CadOperations.WorkerOperations);
         Assert.DoesNotContain("cad_sessions", CadOperations.WorkerOperations);
-        Assert.True(CadOperations.ActivatesDocument("cad_edit") && CadOperations.ActivatesDocument("cad_vertical_get") && !CadOperations.ActivatesDocument("cad_search"));
+        Assert.True(CadOperations.ActivatesDocument("cad_edit") && !CadOperations.ActivatesDocument("cad_vertical_get") && !CadOperations.ActivatesDocument("cad_search"));
     }
 
     [Fact]

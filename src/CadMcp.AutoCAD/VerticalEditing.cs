@@ -7,28 +7,28 @@ using CadMcp.Core;
 namespace CadMcp.AutoCAD;
 internal static class VerticalEditing
 {
-    private static object Get(object instance,string property)=>instance.GetType().GetProperty(property)?.GetValue(instance)??throw new CadFault("VERTICAL_API_UNAVAILABLE",property);
-    internal static object? Invoke(object instance,string method,params object?[] args)
-    {
-        Type type=instance as Type??instance.GetType();var matches=type.GetMethods(BindingFlags.Public|(instance is Type?BindingFlags.Static:BindingFlags.Instance)).Where(m=>m.Name==method&&m.GetParameters().Length==args.Length).Where(m=>m.GetParameters().Select((p,n)=>{var t=p.ParameterType.IsByRef?p.ParameterType.GetElementType()!:p.ParameterType;return args[n] is null?!t.IsValueType:t.IsInstanceOfType(args[n]);}).All(ok=>ok)).ToArray();
-        if(matches.Length!=1)throw new CadFault("VERTICAL_API_UNAVAILABLE",type.FullName+"."+method+" has no unambiguous supported signature");
-        try{return matches[0].Invoke(instance is Type?null:instance,args);}catch(TargetInvocationException e){throw new CadFault("VERTICAL_API_ERROR",e.InnerException?.Message??e.Message);}
-    }
-    private static object Index(object instance,object index)=>instance.GetType().GetProperties().FirstOrDefault(p=>p.GetIndexParameters().Length==1&&p.GetIndexParameters()[0].ParameterType.IsInstanceOfType(index))?.GetValue(instance,[index])??throw new CadFault("VERTICAL_INDEX_UNAVAILABLE",instance.GetType().Name);
-    private static void Set(object instance,string name,object? value)
-    {var p=instance.GetType().GetProperty(name);if(p?.SetMethod is null||(value is not null&&!p.PropertyType.IsInstanceOfType(value)))throw new CadFault("VERTICAL_PROPERTY_UNAVAILABLE",name);p.SetValue(instance,value);}
+    // Vendor members are late-bound: hidden properties, uint/ref parameters and overloads are resolved in VendorReflection.
+    private static object Get(object instance,string property)=>VendorReflection.TryGet(instance,property)??throw new CadFault("VERTICAL_API_UNAVAILABLE",property);
+    internal static object? Invoke(object instance,string method,params object?[] args)=>VendorReflection.Invoke(instance,method,args);
+    private static object Index(object instance,object index)=>VendorReflection.Index(instance,index);
+    private static void Set(object instance,string name,object? value)=>VendorReflection.Set(instance,name,value);
     private static ObjectId Id(Database db,JsonElement op,string key)=>NativeTables.Resolve(db,EditPlan.RequiredText(op,key));
     private static Point3d P(JsonElement value){var p=EditPlan.Point(value);return new(p[0],p[1],p[2]);}
     private static Point2d XY(JsonElement value){var p=EditPlan.Point(value);return new(p[0],p[1]);}
     internal static object Civil(Database db,Transaction tr,JsonElement op)
     {
         var assembly=AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a=>a.GetName().Name=="AeccDbMgd")??throw new CadFault("CIVIL3D_REQUIRED","Run this operation inside Civil 3D");
-        var civil=Verticals.CivilDocument()??throw new CadFault("CIVIL3D_REQUIRED","No Civil document");string kind=op.Text("op")!;ObjectId id;
+        var civil=Verticals.CivilDocument(db)??throw new CadFault("CIVIL3D_REQUIRED","No Civil document");string kind=op.Text("op")!;ObjectId id;
         Type Type(string name)=>assembly.GetType("Autodesk.Civil.DatabaseServices."+name)??throw new CadFault("VERTICAL_API_UNAVAILABLE",name);
         void Points(DBObject obj,string method)
         {
-            var points=op.GetProperty("points").EnumerateArray().Select(XY).ToArray();if(points.Length is <2 or >500)throw new CadFault("INVALID_POINTS","2..500 station/elevation or XY points required");
-            for(int n=1;n<points.Length;n++){if(method=="AddFixedTangent"&&points[n].X<=points[n-1].X)throw new CadFault("INVALID_STATIONS","Profile stations must increase");Invoke(Get(obj,"Entities"),method,points[n-1],points[n]);}
+            var points=op.GetProperty("points").EnumerateArray().ToArray();if(points.Length is <2 or >500)throw new CadFault("INVALID_POINTS","2..500 station/elevation or XY points required");
+            for(int n=1;n<points.Length;n++)
+            {
+                // AlignmentEntityCollection.AddFixedLine takes Point3d only; profile tangents are station/elevation Point2d.
+                if(method=="AddFixedTangent"){var a=XY(points[n-1]);var b=XY(points[n]);if(b.X<=a.X)throw new CadFault("INVALID_STATIONS","Profile stations must increase");Invoke(Get(obj,"Entities"),method,a,b);}
+                else Invoke(Get(obj,"Entities"),method,P(points[n-1]),P(points[n]));
+            }
         }
         if(kind=="civil_alignment_create")
         {id=(ObjectId)Invoke(Type("Alignment"),"Create",civil,op.Text("name"),op.Text("site"),op.Text("layer"),op.Text("style"),op.Text("label_set"))!;Points(tr.GetObject(id,OpenMode.ForWrite),"AddFixedLine");}
@@ -46,7 +46,8 @@ internal static class VerticalEditing
         {
             id=Id(db,op,"handle");var obj=tr.GetObject(id,OpenMode.ForWrite);
             if(obj.GetType().Assembly!=assembly||GetOptional(obj,"IsReferenceObject") is true)throw new CadFault("INVALID_CIVIL_TARGET","Editable native Civil object required; data shortcut references cannot be edited");
-            if(kind is "civil_alignment_add_line" or "civil_profile_add_tangent")Invoke(Get(obj,"Entities"),kind=="civil_alignment_add_line"?"AddFixedLine":"AddFixedTangent",XY(op.GetProperty("start")),XY(op.GetProperty("end")));
+            if(kind=="civil_alignment_add_line")Invoke(Get(obj,"Entities"),"AddFixedLine",P(op.GetProperty("start")),P(op.GetProperty("end")));
+            else if(kind=="civil_profile_add_tangent")Invoke(Get(obj,"Entities"),"AddFixedTangent",XY(op.GetProperty("start")),XY(op.GetProperty("end")));
             else if(kind=="civil_network_add_pipe")
             {
                 using var line=new LineSegment3d(P(op.GetProperty("start")),P(op.GetProperty("end")));object?[] args=[Id(db,op,"family_handle"),Id(db,op,"size_handle"),line,ObjectId.Null,op.TryGetProperty("apply_rules",out var rules)&&rules.GetBoolean()];Invoke(obj,"AddLinePipe",args);id=(ObjectId)args[3]!;
@@ -62,7 +63,7 @@ internal static class VerticalEditing
         }
         var result=tr.GetObject(id,OpenMode.ForRead);return new{handle=id.Handle.ToString(),class_name=result.GetType().FullName,name=GetOptional(result,"Name"),api_version=assembly.GetName().Version?.ToString(),verification="native_API_returned_object_id; inspect cad_vertical_get",live_product_validation="required"};
     }
-    private static object? GetOptional(object obj,string name)=>obj.GetType().GetProperty(name)?.GetValue(obj);
+    private static object? GetOptional(object obj,string name)=>VendorReflection.TryGet(obj,name);
     internal static object Capabilities(Database db)
     {
         var civil=AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a=>a.GetName().Name=="AeccDbMgd");var map=AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a=>a.GetName().Name=="ManagedMapApi");

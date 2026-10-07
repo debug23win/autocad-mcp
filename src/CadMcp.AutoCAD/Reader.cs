@@ -148,25 +148,10 @@ internal static class Reader
     {
         // Civil 3D, Map 3D and SPDS entities stay read-only here. Access only bounded, scalar
         // public properties; never invoke methods or enumerate vendor-owned collections.
-        string[] names = ["Name", "Description", "StyleName", "SurfaceName", "AlignmentName", "ProfileName",
+        // Vendor classes hide inherited members (StyleBase.Name is set-only), so a plain GetProperty
+        // could throw AmbiguousMatchException and fail the whole entity read.
+        return VendorReflection.Scalars(entity, ["Name", "Description", "StyleName", "SurfaceName", "AlignmentName", "ProfileName",
             "StartingStation", "EndingStation", "StartStation", "EndStation", "Length", "Area", "Elevation",
-            "MinimumElevation", "MaximumElevation", "NumberOfPoints", "NumberOfTriangles", "IsReferenceObject"];
-        var result = new Dictionary<string, object>(StringComparer.Ordinal);
-        var type = entity.GetType();
-        foreach (var name in names)
-        {
-            var property = type.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (property?.GetMethod is null || property.GetIndexParameters().Length != 0) continue;
-            try
-            {
-                object? value = property.GetValue(entity);
-                if (value is string text && text.Length <= 500) result[name] = text;
-                else if (value is bool or int or long or double or float or decimal or short &&
-                    (value is not double d || double.IsFinite(d)) && (value is not float f || float.IsFinite(f))) result[name] = value;
-                else if (value is Enum) result[name] = value.ToString()!;
-            }
-            catch (System.Exception) { /* Vendor property may require a separate context; report only reliable values. */ }
-        }
-        return result;
+            "MinimumElevation", "MaximumElevation", "NumberOfPoints", "NumberOfTriangles", "IsReferenceObject"]);
     }
 }

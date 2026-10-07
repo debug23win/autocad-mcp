@@ -24,9 +24,11 @@ public static class CadOperations
     /// <summary>Operations that can change a drawing or write files. They carry an operation_id receipt.</summary>
     public static bool IsMutation(string operation) => operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish";
 
-    /// <summary>Operations that run only in the active editor document, so the worker activates the target first.</summary>
-    public static bool ActivatesDocument(string operation) =>
-        IsMutation(operation) || operation is "cad_vertical_catalog" or "cad_vertical_get" or "cad_vertical_capabilities";
+    /// <summary>
+    /// Operations that run only in the active editor document, so the worker activates the target first.
+    /// Vertical reads resolve the Civil/Map document of the requested database and do not switch tabs.
+    /// </summary>
+    public static bool ActivatesDocument(string operation) => IsMutation(operation);
 
     /// <summary>Operations a CAD worker accepts, as advertised by cad_context.</summary>
     public static IReadOnlyList<string> WorkerOperations { get; } = ReadOnly.Where(o => o != "cad_sessions")

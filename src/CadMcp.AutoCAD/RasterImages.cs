@@ -50,6 +50,7 @@ internal static class RasterImages
     public static void Associate(RasterImage image, Transaction tr)
     {
         RasterImage.EnableReactors(true);
-        image.AssociateRasterDef((RasterImageDef)tr.GetObject(image.ImageDefId, OpenMode.ForRead));
+        // Association adds a reactor to the definition, which needs write access.
+        image.AssociateRasterDef((RasterImageDef)tr.GetObject(image.ImageDefId, OpenMode.ForWrite));
     }
 }

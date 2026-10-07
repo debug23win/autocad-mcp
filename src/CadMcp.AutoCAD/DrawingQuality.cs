@@ -26,9 +26,12 @@ internal static class DrawingQuality
             try{if(solids[i].CheckInterference(solids[j]))Add("SOLID_INTERFERENCE","warning","Native solid volumes intersect; review whether the joint is intentional",solids[i],solids[j]);}
             catch(System.Exception e){Add("INTERFERENCE_UNVERIFIED","unverified",e.Message,solids[i],solids[j]);}
         }
-        var texts=entities.Where(e=>e is DBText or MText).ToArray();
-        for(int i=0;i<texts.Length;i++)for(int j=i+1;j<texts.Length;j++)
-            try{if(texts[i].OwnerId==texts[j].OwnerId&&Overlap(texts[i].GeometricExtents,texts[j].GeometricExtents,false))Add("TEXT_OVERLAP","warning","Annotation bounding boxes overlap; inspect actual glyphs",texts[i],texts[j]);}catch(System.Exception){ }
+        // A check that cannot run must be reported as unverified, never silently counted as passed.
+        var texts=new List<(Entity Text,Extents3d Box)>();
+        foreach(var text in entities.Where(e=>e is DBText or MText))
+            try{texts.Add((text,text.GeometricExtents));}catch(System.Exception e){Add("TEXT_EXTENTS_UNVERIFIED","unverified","Text overlap not checked: "+e.Message,text);}
+        for(int i=0;i<texts.Count;i++)for(int j=i+1;j<texts.Count;j++)
+            if(texts[i].Text.OwnerId==texts[j].Text.OwnerId&&Overlap(texts[i].Box,texts[j].Box,false))Add("TEXT_OVERLAP","warning","Annotation bounding boxes overlap; inspect actual glyphs",texts[i].Text,texts[j].Text);
         foreach(var entity in entities)
         {
             ct.ThrowIfCancellationRequested();
@@ -56,7 +59,8 @@ internal static class DrawingQuality
                 {
                     var size=layout.PlotPaperSize;double w=size.X,h=size.Y;
                     if(layout.PlotRotation is PlotRotation.Degrees090 or PlotRotation.Degrees270)(w,h)=(h,w);
-                    if(w>0&&h>0)try{var ext=entity.GeometricExtents;if(ext.MinPoint.X<-.01||ext.MinPoint.Y<-.01||ext.MaxPoint.X>w+.01||ext.MaxPoint.Y>h+.01)Add("OUTSIDE_PAPER","warning","Entity exceeds configured paper boundary (paper millimetres)",entity);}catch(System.Exception){ }
+                    if(w>0&&h>0)try{var ext=entity.GeometricExtents;if(ext.MinPoint.X<-.01||ext.MinPoint.Y<-.01||ext.MaxPoint.X>w+.01||ext.MaxPoint.Y>h+.01)Add("OUTSIDE_PAPER","warning","Entity exceeds configured paper boundary (paper millimetres)",entity);}
+                    catch(System.Exception e){Add("PAPER_CHECK_UNVERIFIED","unverified","Paper boundary not checked: "+e.Message,entity);}
                     else Add("PAPER_UNCONFIGURED","unverified","No plot media configured",entity);
                 }
             }

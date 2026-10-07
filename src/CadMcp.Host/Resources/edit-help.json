@@ -47,7 +47,10 @@
     "cylinder": "center is center of bottom face, height positive along WCS Z",
     "box": "center is solid center",
     "color_index": "ACI 0..256 for entities (0 ByBlock, 256 ByLayer); layers 1..255",
-    "lineweight": "hundredths of mm; -1 ByLayer, -2 ByBlock, -3 default"
+    "lineweight": "hundredths of mm; -1 ByLayer, -2 ByBlock, -3 default",
+    "civil_alignment_create": "In Civil 3D only. layer, style and label_set are existing names (site may be empty for a siteless alignment); points are 2..500 WCS [x,y] or [x,y,z] PI points joined by fixed tangent lines; Z is ignored",
+    "civil_profile_create": "points are [station, elevation] pairs with strictly increasing stations; layer/style/label-set handles must refer to existing Civil objects",
+    "civil_network_add_pipe": "start/end are WCS points of the pipe centreline (Civil 3D Pipe.StartPoint/EndPoint), not inverts: invert elevation = centreline elevation minus half the inner pipe height. family_handle/size_handle come from the network parts list"
   },
   "example": [
     {
