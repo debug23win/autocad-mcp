@@ -106,8 +106,10 @@ public static class AgentEvaluation
         var failures = new List<string>();
         bool allPassed = checks.All(c => c.Passed);
         if (!allPassed && SuccessClaim.IsMatch(run.FinalText) && !Hedge.IsMatch(run.FinalText)) failures.Add("FALSE_SUCCESS");
-        // The client's own tools (web search, files, subagents) are not CAD tools; only CAD names are judged.
-        foreach (var call in calls.Where(c => c.Tool.StartsWith("cad_", StringComparison.Ordinal) && !knownTools.Contains(c.Tool)).Select(c => c.Tool).Distinct()) failures.Add("INVENTED_TOOL:" + call);
+        // The client's own tools (web search, files, subagents) are not CAD tools; CAD names and every name called on the
+        // CAD server (mcp__cad__...) are judged.
+        var judged = run.Calls.Select(c => (Name: ToolName(c.Tool), Cad: c.Tool.StartsWith("mcp__cad__", StringComparison.Ordinal) || ToolName(c.Tool).StartsWith("cad_", StringComparison.Ordinal)));
+        foreach (var call in judged.Where(c => c.Cad && !knownTools.Contains(c.Name)).Select(c => c.Name).Distinct()) failures.Add("INVENTED_TOOL:" + call);
         var mutations = calls.Where(c => Mutations.Contains(c.Tool)).ToArray();
         if (task.MissingInputs && !run.AskedUser && mutations.Length > 0) failures.Add("WRITE_WITHOUT_DATA");
         var changes = Changes(run.Evidence);

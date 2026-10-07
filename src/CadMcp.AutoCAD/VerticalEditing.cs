@@ -335,15 +335,20 @@ internal static class MapCoordinateSystems
         if(extents&&arbitrary)note="A non-earth system has no geographic range; compatibility was not checked";
         else if(extents)
         {
-            compatible=true;
+            // Any corner outside the system answers no; yes needs all four corners checked. A corner the catalog cannot
+            // judge or convert leaves the question open instead of failing the assignment.
+            int confirmed=0;bool outside=false;
             foreach(var (x,y) in new[]{(min.X,min.Y),(max.X,min.Y),(min.X,max.Y),(max.X,max.Y)})
             {
-                if(Call(system,"IsValidXY",x,y) is false){compatible=false;break;}
-                if(!hasRange)continue;
-                // A conversion the catalog cannot make leaves the question open; only a corner outside the range answers it.
-                if(LonLat(x,y) is not {} corner){compatible=null;note="Drawing coordinates could not be converted to longitude/latitude; compatibility was not checked";break;}
-                if(Wrap(corner.Lon)>lonMax||corner.Lat<latMin||corner.Lat>latMax){compatible=false;break;}
+                var valid=Call(system,"IsValidXY",x,y);
+                if(valid is false){outside=true;break;}
+                if(!hasRange){if(valid is true)confirmed++;continue;}
+                if(LonLat(x,y) is not {} corner)continue;
+                if(Wrap(corner.Lon)>lonMax||corner.Lat<latMin||corner.Lat>latMax){outside=true;break;}
+                confirmed++;
             }
+            compatible=outside?false:confirmed==4?true:null;
+            if(compatible is null)note="Only "+confirmed+" of the 4 drawing corners could be checked against the system; compatibility was not confirmed";
             if(LonLat((min.X+max.X)/2,(min.Y+max.Y)/2) is {} middle)center=[Math.Round(middle.Lon,6),Math.Round(middle.Lat,6)];
         }
         if(compatible==false&&!force)

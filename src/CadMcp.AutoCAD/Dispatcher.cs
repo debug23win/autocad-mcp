@@ -205,6 +205,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         Response response;
         var originalDocument=App.DocumentManager.MdiActiveDocument;
         bool activate=CadOperations.ActivatesDocument(job.Request.Operation);
+        // A script this request queued runs in the drawing it activated; any other request gives the tab back.
+        var lispBefore=lisp;
         try
         {
             if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
@@ -212,7 +214,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
         catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
-        finally { if(activate && lisp is null && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
+        finally { if(activate && ReferenceEquals(lisp,lispBefore) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
         if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
         {
             string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
@@ -265,7 +267,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
             case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
-            case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40)); break;
+            case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40), DraftingPlan.Integer(r.Data, "layer_limit", 1, 5000, 100)); break;
             case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
             case "cad_changes": data = DrawingInsight.Changes(state, tr, r.Data); break;
             case "cad_edit_preview":

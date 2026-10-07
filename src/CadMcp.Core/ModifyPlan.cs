@@ -36,8 +36,14 @@ public static class ModifyPlan
         { "offset", "join", "fillet", "chamfer", "extend", "dimension_angular", "mleader", "xref_attach", "field_text" };
 
     /// <summary>Operations whose effects reach outside the drawing transaction (files, loaded references); cad_edit_preview rejects them.</summary>
-    /// <summary>Application and dictionary name prefixes owned by AutoCAD, its verticals and Autodesk add-ins.</summary>
-    public static readonly IReadOnlyList<string> ReservedPrefixes = ["ACAD", "ACDB", "AEC", "ADSK", "AUTODESK", "ACMAP"];
+    /// <summary>
+    /// Application and dictionary name prefixes owned by AutoCAD, its verticals and Autodesk add-ins (ACAD, ACAD_LAYOUT,
+    /// AcDbAttr, AcadAnnotative, AEC_..., AeccDb..., ACMAP...). Names that merely begin alike, such as AECOM or ACADEMY,
+    /// stay usable.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ReservedPrefixes = ["ACAD_", "ACDB", "ACADANNO", "ACAEC", "AEC_", "AECC", "ADSK_", "AUTODESK", "ACMAP"];
+    public static bool Reserved(string name) => name.Equals("ACAD", StringComparison.OrdinalIgnoreCase) ||
+        ReservedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     public static readonly IReadOnlySet<string> OutsideTransaction = new HashSet<string>(StringComparer.Ordinal) { "xref_attach", "block_import" };
 
     /// <summary>Object properties a field may show; names follow the AutoCAD field dialog.</summary>
@@ -128,7 +134,7 @@ public static class ModifyPlan
                     if (name.IndexOfAny(['\r', '\n', '<', '>', '/', '\\', '"', ':', ';', '?', '*', '|', ',', '=', '`']) >= 0) throw new CadFault("INVALID_PARAMETER", p.Name + " contains a character not allowed in AutoCAD names");
                     // AutoCAD and the vertical products keep their own data under these names (dimension overrides
                     // in ACAD XData, layouts in ACAD_LAYOUT); writing there breaks their objects.
-                    if (p.Name is "app" or "dictionary" && ReservedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+                    if (p.Name is "app" or "dictionary" && Reserved(name))
                         throw new CadFault("RESERVED_NAME", p.Name + " " + name + " belongs to AutoCAD or a vertical product; use a name of your own such as CADMCP");
                     break;
                 default: Text(v, p.Name, 1, 255); break; // name, layer, style, text_style, layout

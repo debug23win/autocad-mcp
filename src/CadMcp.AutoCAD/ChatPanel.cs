@@ -174,8 +174,8 @@ internal sealed class ChatPanel : UserControl
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = "Не удалось сохранить настройку AutoLISP: " + error.Message; }
         }
         lispPolicy.SelectionChanged += (_, _) => StoreLispPolicy();
-        // Choosing the item that is already selected raises no SelectionChanged, yet must still restore that policy.
-        lispPolicy.DropDownClosed += (_, _) => StoreLispPolicy();
+        // The policy may have been changed elsewhere (CADMCPLISP, another panel): show the stored one before the user picks.
+        lispPolicy.DropDownOpened += (_, _) => LoadLispPolicy();
         refreshModels.Click += async (_, _) => await RefreshModels();
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };

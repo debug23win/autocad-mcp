@@ -54,7 +54,8 @@ internal static class Benchmark
         {
             ("changes", "cad_changes", new { since_revision = since, limit = 2000 }),
             ("takeoff", "cad_takeoff", new { scope = "all", include = "lengths,areas,blocks,attributes", max_rows = 5000 }),
-            ("outline", "cad_outline", new { text_sample = 200 })
+            // Every layer, so moving objects off any layer is visible.
+            ("outline", "cad_outline", new { text_sample = 200, layer_limit = 5000 })
         };
         if (at + 6 < args.Length)
         {

@@ -217,7 +217,7 @@ internal static class DrawingInsight
     /// A deterministic summary of a drawing: units, layouts with their sheets, layers, entity types, blocks,
     /// external references, styles and a sample of texts. Equal drawings give equal outlines.
     /// </summary>
-    public static object Outline(Database db, Transaction tr, string? name, CancellationToken ct, int textSample = 40)
+    public static object Outline(Database db, Transaction tr, string? name, CancellationToken ct, int textSample = 40, int layerLimit = 100)
     {
         var layerTable = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
         var layerCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -312,7 +312,7 @@ internal static class DrawingInsight
         {
             name, summary = summary.ToString(), units = db.Insunits.ToString(), measurement = db.Measurement.ToString(),
             model_extents = validExtents ? new { min = new[] { min.X, min.Y, min.Z }, max = new[] { max.X, max.Y, max.Z } } : null,
-            model_entities = modelEntities, model_types = modelTypes, sheets = layouts, layers = layerRows.Take(100).ToArray(), layer_count = layerRows.Length,
+            model_entities = modelEntities, model_types = modelTypes, sheets = layouts, layers = layerRows.Take(layerLimit).ToArray(), layer_count = layerRows.Length,
             blocks, unused_block_definitions = unused, external_references = xrefs, text_styles = styles, dimension_styles = dimStyles,
             text_sample = textSampleRows, partial = partial ? true : (bool?)null,
             limitations = new[] { "model extents come from the drawing header and may be stale until the next regeneration", "nested block contents are not counted" }
@@ -365,7 +365,8 @@ internal static class DrawingInsight
         var layerNames = new Dictionary<ObjectId, string?>();
         string? LayerName(ObjectId id)
         {
-            if (id.IsNull) return null;
+            // Only ids of this drawing are opened; an id of a drawing that has since been freed is never touched.
+            if (id.IsNull || id.Database is not { } owner || owner.UnmanagedObject != state.Database.UnmanagedObject) return null;
             if (layerNames.TryGetValue(id, out var known)) return known;
             try { known = tr.GetObject(id, OpenMode.ForRead, true) is LayerTableRecord layer ? layer.Name : null; }
             catch (Autodesk.AutoCAD.Runtime.Exception) { known = null; }
@@ -380,7 +381,7 @@ internal static class DrawingInsight
             if (Added(first.Kind) && last.Kind == "unappended") return null;
             string effect = Added(first.Kind) ? Removed(last.Kind) ? "added_then_erased" : "added"
                 : Removed(last.Kind) ? "erased" : last.Kind is "unerased" or "reappended" ? "restored" : "modified";
-            return new ChangeRow(g.Key.ToString("X"), effect, last.Type, LayerName(last.Layer), last.Revision, g.Select(c => c.Author ?? "user").Distinct().ToArray(), last.At);
+            return new ChangeRow(g.Key.ToString("X"), effect, last.Type, last.LayerName ?? LayerName(last.Layer), last.Revision, g.Select(c => c.Author ?? "user").Distinct().ToArray(), last.At);
         }).OfType<ChangeRow>().OrderBy(c => c.Revision).ToArray();
         return new
         {

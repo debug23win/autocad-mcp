@@ -149,6 +149,7 @@ public sealed class OperationJournal
             handles = result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array ? changed.EnumerateArray().Select(h => h.GetString()).OfType<string>().ToArray()
                 : result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).ToArray() : null,
             document_state = outer.TryGetProperty("document_state", out var d) ? (JsonElement?)d.Clone() : null,
+            handles_truncated = result.TryGetProperty("changed_handles_omitted", out var omitted) && omitted.ValueKind == JsonValueKind.True ? true : (bool?)null,
             transaction = result.Text("transaction"), historical = !active };
     }
 }

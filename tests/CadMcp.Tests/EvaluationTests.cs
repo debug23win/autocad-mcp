@@ -94,6 +94,8 @@ public sealed class EvaluationTests
             Call("WebSearch"), Call("mcp__cad__cad_context"), Call("mcp__cad__cad_edit", new { operation_id = "r1", operations_json = "[]" })));
         Assert.True(verdict.Passed, string.Join(", ", verdict.HardFailures));
         Assert.Contains("INVENTED_TOOL:cad_magic", AgentEvaluation.Grade(task, Run(task.Id, "", GoodRectangle, false, Call("mcp__cad__cad_magic"))).HardFailures);
+        // Any name called on the CAD server is judged, with or without the cad_ prefix.
+        Assert.Contains("INVENTED_TOOL:draw_line", AgentEvaluation.Grade(task, Run(task.Id, "", GoodRectangle, false, Call("mcp__cad__draw_line"))).HardFailures);
         // Under the ask policy cad_lisp is queued; the refusal is only in the later status read.
         var status = new AgentEvaluation.ToolCall("cad_operation_status", Wire.Element(new { operation_id = "l1" }), "completed", null,
             Wire.Element(new { state = "failed", result = new { error = new { code = "LISP_DENIED" } } }));

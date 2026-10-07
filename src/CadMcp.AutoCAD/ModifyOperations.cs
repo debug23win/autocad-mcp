@@ -265,13 +265,6 @@ internal static class ModifyOperations
         return new(created[0], created, new { source_handle = H(source.ObjectId), handles = created.Select(H).ToArray(), distance });
     }
 
-    private static double Nearest(DBObjectCollection curves, Point3d point) =>
-        curves.Cast<DBObject>().OfType<Curve>().Select(c =>
-        {
-            try { return c.GetClosestPointTo(point, false).DistanceTo(point); }
-            catch (Autodesk.AutoCAD.Runtime.Exception) { return double.MaxValue; }
-        }).DefaultIfEmpty(double.MaxValue).Min();
-
     private static void Dispose(DBObjectCollection items) { foreach (DBObject item in items) item.Dispose(); items.Dispose(); }
 
     private static Outcome Explode(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases)
@@ -283,7 +276,8 @@ internal static class ModifyOperations
         var items = parts.Cast<DBObject>().ToList();
         var space = (BlockTableRecord)tr.GetObject(source.OwnerId, OpenMode.ForRead);
         var created = new List<ObjectId>();
-        var usedNested = new HashSet<ObjectId>();
+        NestedReferences? nestedReferences = null;
+        int nestedAttributes = 0, nestedSkipped = 0;
         int attributeTexts = 0;
         try
         {
@@ -309,7 +303,12 @@ internal static class ModifyOperations
                 Edits.RequireUnlocked(tr, entity);
                 Append(tr, space, entity);
                 // Explode copies nested block references without their attribute values; carry them over as EXPLODE does.
-                if (source is BlockReference outer && entity is BlockReference nested) NestedAttributes(tr, outer, nested, usedNested);
+                if (source is BlockReference outer && entity is BlockReference nested)
+                {
+                    nestedReferences ??= new NestedReferences(tr, outer);
+                    var (copied, skipped) = nestedReferences.CopyAttributes(tr, nested);
+                    nestedAttributes += copied; nestedSkipped += skipped;
+                }
                 if (entity is DBText text && (text.HorizontalMode != TextHorizontalMode.TextLeft || text.VerticalMode != TextVerticalMode.TextBase)) text.AdjustAlignment(db);
                 created.Add(entity.ObjectId);
             }
@@ -320,30 +319,56 @@ internal static class ModifyOperations
         return new(ObjectId.Null, created.Append(source.ObjectId).ToArray(), new
         {
             source_handle = H(source.ObjectId), source_erased = !keep, count = created.Count, handles = created.Take(500).Select(H).ToArray(),
-            handles_truncated = created.Count > 500, attributes_as_text = attributeTexts
+            handles_truncated = created.Count > 500, attributes_as_text = attributeTexts,
+            nested_attributes = nestedAttributes == 0 ? (int?)null : nestedAttributes, nested_attributes_not_copied = nestedSkipped == 0 ? (int?)null : nestedSkipped
         });
     }
 
-    /// <summary>Copies the attributes of the nested reference in the exploded block's definition that sits where <paramref name="copy"/> landed.</summary>
-    private static void NestedAttributes(Transaction tr, BlockReference outer, BlockReference copy, HashSet<ObjectId> used)
+    /// <summary>
+    /// The attributed block references inside an exploded block's definition, read once per explode, so their
+    /// values can follow the copies Explode makes without them (as the EXPLODE command keeps them).
+    /// </summary>
+    private sealed class NestedReferences
     {
-        if (copy.AttributeCollection.Count > 0) return;
-        var transform = outer.BlockTransform;
-        var definition = (BlockTableRecord)tr.GetObject(outer.BlockTableRecord, OpenMode.ForRead);
-        double tolerance = 1e-6 * Math.Max(1, copy.Position.GetAsVector().Length);
-        foreach (ObjectId id in definition)
+        private readonly Matrix3d transform;
+        private readonly Dictionary<ObjectId, List<(ObjectId Id, Point3d Position)>> byBlock = new();
+        private readonly HashSet<ObjectId> used = new();
+
+        public NestedReferences(Transaction tr, BlockReference outer)
         {
-            if (used.Contains(id) || id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not BlockReference original || original.BlockTableRecord != copy.BlockTableRecord) continue;
-            if (original.AttributeCollection.Count == 0 || original.Position.TransformBy(transform).DistanceTo(copy.Position) > tolerance) continue;
-            used.Add(id);
+            transform = outer.BlockTransform;
+            // Every nested reference takes part in matching, in definition order, so a copy without attributes never
+            // takes the values of a neighbour of the same block.
+            foreach (ObjectId id in (BlockTableRecord)tr.GetObject(outer.BlockTableRecord, OpenMode.ForRead))
+                if (!id.IsErased && id.ObjectClass.IsDerivedFrom(Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(BlockReference))) &&
+                    tr.GetObject(id, OpenMode.ForRead) is BlockReference nested and not Table)
+                {
+                    if (!byBlock.TryGetValue(nested.BlockTableRecord, out var list)) byBlock[nested.BlockTableRecord] = list = new();
+                    list.Add((id, nested.Position.TransformBy(transform)));
+                }
+        }
+
+        /// <summary>Copies the values onto <paramref name="copy"/>; returns the attributes copied and those that could not be (a non-uniform scale).</summary>
+        public (int Copied, int Skipped) CopyAttributes(Transaction tr, BlockReference copy)
+        {
+            if (copy.AttributeCollection.Count > 0 || !byBlock.TryGetValue(copy.BlockTableRecord, out var candidates)) return (0, 0);
+            double tolerance = 1e-9 * Math.Max(1, copy.Position.GetAsVector().Length);
+            var match = candidates.FirstOrDefault(c => !used.Contains(c.Id) && c.Position.DistanceTo(copy.Position) <= tolerance);
+            if (match.Id.IsNull) return (0, 0);
+            used.Add(match.Id);
+            int copied = 0, skipped = 0;
+            var original = (BlockReference)tr.GetObject(match.Id, OpenMode.ForRead);
             foreach (ObjectId attributeId in original.AttributeCollection)
             {
                 if (attributeId.IsErased || tr.GetObject(attributeId, OpenMode.ForRead) is not AttributeReference attribute) continue;
                 var clone = (AttributeReference)attribute.Clone();
-                try { clone.TransformBy(transform); copy.AttributeCollection.AppendAttribute(clone); tr.AddNewlyCreatedDBObject(clone, true); }
+                // A value that cannot follow the block's transform (non-uniform scale) is left out, never failing the explode.
+                try { clone.TransformBy(transform); }
+                catch (Autodesk.AutoCAD.Runtime.Exception) { clone.Dispose(); skipped++; continue; }
+                try { copy.AttributeCollection.AppendAttribute(clone); tr.AddNewlyCreatedDBObject(clone, true); copied++; }
                 catch { if (clone.ObjectId.IsNull) clone.Dispose(); throw; }
             }
-            return;
+            return (copied, skipped);
         }
     }
 
@@ -574,8 +599,9 @@ internal static class ModifyOperations
         catch (Autodesk.AutoCAD.Runtime.Exception) { throw new CadFault("TRIM_FAILED", "The pick point could not be located on the curve"); }
         double? below = parameters.Where(p => p < picked).Select(p => (double?)p).LastOrDefault(), above = parameters.Where(p => p > picked).Select(p => (double?)p).FirstOrDefault();
         if (curve.Closed) { below ??= parameters[^1]; above ??= parameters[0]; }
+        if (parameters.Any(p => Math.Abs(p - picked) <= tolerance)) throw new CadFault("TRIM_FAILED", "The pick point lies on a crossing; pick a point inside the part to remove");
         var cuts = new[] { below, above }.OfType<double>().Distinct().Order().ToArray();
-        if (curve.Closed && cuts.Length < 2) throw new CadFault("TRIM_FAILED", "The pick point lies on a crossing; pick a point inside the part to remove");
+        if (cuts.Length == 0 || curve.Closed && cuts.Length < 2) throw new CadFault("TRIM_FAILED", "No crossing bounds the part at the pick point");
         var pieces = curve.GetSplitCurves(new DoubleCollection(cuts));
         var list = pieces.Cast<DBObject>().OfType<Curve>().ToList();
         int removed = -1; double best = double.MaxValue;

@@ -36,7 +36,9 @@ public sealed class CivilTests
         static string Source(string file) => File.ReadAllText(Path.Combine(TestEnvironment.RepositoryRoot, "src", "CadMcp.AutoCAD", file));
         var editing = Source("VerticalEditing.cs");
         // The Civil part of VerticalEditing; its Map part and the CS-MAP check are outside the Civil contract.
-        var civil = editing[editing.IndexOf("internal static object Civil(", StringComparison.Ordinal)..editing.IndexOf("internal static object Capabilities(", StringComparison.Ordinal)];
+        int start = editing.IndexOf("internal static object Civil(", StringComparison.Ordinal), end = editing.IndexOf("internal static object Capabilities(", StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "VerticalEditing.cs no longer has Civil(...) followed by Capabilities(...); update this test's section markers");
+        var civil = editing[start..end];
         var literals = Regex.Matches(civil + Source("Verticals.cs"), "\"([A-Z][A-Za-z0-9]*)\"").Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
         var members = CivilApiContract.Members.Select(m => Regex.Match(m, @"\|[MP] (?:static )?\S+ (\w+)").Groups[1].Value).ToHashSet(StringComparer.Ordinal);
         var types = CivilApiContract.Members.Select(m => m.Split('|')[0].Split('.')[^1]).ToHashSet(StringComparer.Ordinal);

@@ -99,6 +99,8 @@ internal static class DrawingReview
             // A large edit lists every changed handle separately from its shortened readback.
             if (result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array)
             { foreach (var h in changed.EnumerateArray()) if (h.ValueKind == JsonValueKind.String && h.GetString() is { } handle) handles.Add(handle); }
+            else if (result.TryGetProperty("changed_handles_omitted", out var omitted) && omitted.ValueKind == JsonValueKind.True)
+                throw new CadFault("VERIFY_TOO_LARGE", "The operation changed too many entities to list; verify them in parts with handles_json (up to 500)");
             else if (result.TryGetProperty("entities", out var entities)) foreach (var e in entities.EnumerateArray()) if (e.Text("handle") is { } handle) handles.Add(handle);
             if (handles.Count > 500) throw new CadFault("VERIFY_TOO_LARGE", "The operation changed " + handles.Count + " entities; verify them in parts with handles_json (up to 500)");
             if (result.TryGetProperty("results", out var records)) foreach (var record in records.EnumerateArray())

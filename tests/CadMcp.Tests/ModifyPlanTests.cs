@@ -114,6 +114,18 @@ public sealed class ModifyPlanTests
     }
 
     [Theory]
+    [InlineData("ACAD", true)]
+    [InlineData("ACAD_GROUP", true)]
+    [InlineData("AcDbBlockRepETag", true)]
+    [InlineData("AcadAnnotative", true)]
+    [InlineData("AEC_DISP_PROPS", true)]
+    [InlineData("AeccDbSurface", true)]
+    [InlineData("AECOM_DATA", false)]
+    [InlineData("ACADEMY", false)]
+    [InlineData("CADMCP", false)]
+    public void Only_names_owned_by_Autodesk_products_are_reserved(string name, bool reserved) => Assert.Equal(reserved, ModifyPlan.Reserved(name));
+
+    [Theory]
     [InlineData("""[{"op":"xref_attach","path":"{dwg}","name":"A","position":[0,0]},{"op":"line","start":[0,0],"end":[1,1]}]""", "SINGLE_OPERATION_REQUIRED")]
     [InlineData("""[{"op":"line","start":[0,0],"end":[1,1]},{"op":"block_import","path":"{dwg}","names":["B"]}]""", "SINGLE_OPERATION_REQUIRED")]
     [InlineData("""[{"op":"xdata_set","handle":"2A","app":"ACAD","values":[]}]""", "RESERVED_NAME")]

@@ -183,6 +183,8 @@ public static class LispPolicy
         var tokens = Tokenize(code);
         var findings = new List<LispFinding>(); var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         void Add(string findingCode, string severity, string detail) { if (seen.Add(findingCode + "|" + detail)) findings.Add(new(findingCode, severity, detail)); }
+        // The wrapper completes UNDO Begin before the script, so the script's first (command) call starts a command.
+        bool firstCommand = true;
         for (int i = 0; i < tokens.Count; i++)
         {
             var token = tokens[i];
@@ -198,6 +200,10 @@ public static class LispPolicy
                 Add("LISP_EXTERNAL_PROCESS", Risky, name + ": operating-system extension function");
             if (name.StartsWith("vlr-", StringComparison.OrdinalIgnoreCase)) Add("LISP_REACTOR", Risky, name + ": installs a reactor that runs code later");
             if (DocumentFunctions.Contains(name)) Add("LISP_DOCUMENT_SWITCH", Blocked, name + ": opens, closes or activates a drawing");
+            // vla-open on the Documents collection opens a drawing in the editor; on an ObjectDBX document it is a side read.
+            if (call && name.Equals("vla-open", StringComparison.OrdinalIgnoreCase) && Argument(tokens, i, 1) is { Kind: TokenKind.Open } && i + 3 < tokens.Count
+                && tokens[i + 2].Kind == TokenKind.Symbol && tokens[i + 2].Text.Equals("vla-get-documents", StringComparison.OrdinalIgnoreCase))
+                Add("LISP_DOCUMENT_SWITCH", Blocked, "vla-open: opens a drawing in the editor");
             if (call && VlaxCalls.Contains(name) && Argument(tokens, i, 2) is { } method && method.Kind is TokenKind.Symbol or TokenKind.String
                 && RiskyMethods.TryGetValue(method.Text.TrimStart('\''), out var riskyMethod))
                 Add(riskyMethod.Code, Risky, name + " " + method.Text.TrimStart('\'') + ": " + riskyMethod.Detail);
@@ -205,6 +211,8 @@ public static class LispPolicy
                 && RiskyVariables.TryGetValue(variable.Text.Trim(), out var riskyVariable))
                 Add(riskyVariable.Code, Risky, "setvar " + variable.Text.Trim() + ": " + riskyVariable.Detail);
             if (!CommandFunctions.Contains(name) || !call) continue;
+            bool first = firstCommand;
+            firstCommand = false;
             var argument = i + 1 < tokens.Count ? tokens[i + 1] : default;
             if (argument.Kind != TokenKind.String) continue;
             string command = argument.Text.Trim();
@@ -212,11 +220,11 @@ public static class LispPolicy
             bool commandLine = prefix.Contains('-');
             command = command.TrimStart('_', '.', '+', '-').Split(' ', '\t')[0];
             if (command.Length == 0) continue;
-            // command-s takes a whole command, so its first string is a command name; so is any string with a dot
-            // (built-in command) or hyphen (command-line form) prefix.
+            // command-s takes a whole command, and the script's first (command) call starts one, so their first string
+            // is a command name; so is any string with a dot (built-in command) or hyphen (command-line form) prefix.
             if (DocumentCommands.Contains(command))
             {
-                bool commandName = name.Equals("command-s", StringComparison.OrdinalIgnoreCase) || prefix.Contains('.') || prefix.Contains('-') || !OptionLikeDocumentCommands.Contains(command);
+                bool commandName = first || name.Equals("command-s", StringComparison.OrdinalIgnoreCase) || prefix.Contains('.') || prefix.Contains('-') || !OptionLikeDocumentCommands.Contains(command);
                 Add("LISP_DOCUMENT_SWITCH", commandName ? Blocked : Risky, command + ": opens, closes or switches drawings" + (commandName ? "" : " when used as a command; harmless as an option keyword"));
             }
             if (RiskyCommands.TryGetValue(command, out var riskyCommand)) Add(riskyCommand.Code, Risky, command + ": " + riskyCommand.Detail);

@@ -27,7 +27,7 @@ public sealed class LispPolicyTests
     [InlineData("(vlax-invoke-method doc 'SendCommand \"_.LINE 0,0 1,1  \")", "LISP_SEND_COMMAND")]
     [InlineData("(vla-postcommand doc \"_.LINE \")", "LISP_SEND_COMMAND")]
     [InlineData("(vlax-invoke (vla-get-activedocument (vlax-get-acad-object)) 'Close)", "LISP_DOCUMENT_SWITCH")]
-    [InlineData("(vla-open (vla-get-documents acad) \"c:/x.dwg\")", "LISP_DOCUMENT_SWITCH")]
+    [InlineData("(vla-open dbx \"c:/x.dwg\")", "LISP_DOCUMENT_SWITCH")]
     [InlineData("(setvar \"SECURELOAD\" 0)", "LISP_REGISTRY")]
     [InlineData("(vla-runmacro acad \"x.dvb!Main\")", "LISP_CODE_LOADING")]
     public void Risky_constructs_are_found(string code, string expected)
@@ -57,6 +57,10 @@ public sealed class LispPolicyTests
     [InlineData("(command \"_.CLOSEALL\")")]
     [InlineData("(command \"QNEW\")")]
     [InlineData("(vla-put-activedocument acad doc)")]
+    // The script's first (command) starts a command, so its first string cannot be an option keyword.
+    [InlineData("(command \"_CLOSE\" \"_N\")")]
+    [InlineData("(vl-cmdf \"QUIT\" \"_Y\")")]
+    [InlineData("(vla-open (vla-get-documents (vlax-get-acad-object)) \"c:/x.dwg\")")]
     public void Switching_or_closing_drawings_is_rejected(string code)
     {
         var findings = LispPolicy.Scan(code);
@@ -161,7 +165,8 @@ public sealed class LispPolicyTests
         Assert.Contains(restore, script);
         Assert.True(script.IndexOf(restore, StringComparison.Ordinal) > script.IndexOf("(eval (read cadmcp:code))", StringComparison.Ordinal), "Settings must be restored after the script");
         // A value the script set itself is kept, and an error in the restore cannot skip cadmcpfinish.
-        Assert.Contains("(if (equal (getvar (car cadmcp:item)) (cdr (assoc (car cadmcp:item) cadmcp:set)))", script);
+        // After an error every variable is restored; a script that completed keeps the values it set itself.
+        Assert.Contains("(if (or (vl-catch-all-error-p cadmcp:value) (equal (getvar (car cadmcp:item)) (cdr (assoc (car cadmcp:item) cadmcp:set))))", script);
         Assert.Contains("(vl-catch-all-apply (function (lambda () " + restore, script);
         // Dynamically scoped locals visible to the script carry a prefix no ordinary script uses.
         foreach (var local in System.Text.RegularExpressions.Regex.Match(script, @"\(lambda \(/ ([^)]*)\)").Groups[1].Value.Split(' '))

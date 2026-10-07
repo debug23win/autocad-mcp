@@ -10,8 +10,8 @@ public static class LispScript
         if (id.Length is < 1 or > 96 || id.Any(c => !Portable.AsciiLetterOrDigit(c) && c is not ('-' or '_'))) throw new ArgumentException("Invalid operation id");
         // While the script runs, running object snaps are suspended (OSMODE bit 16384), so command points land
         // exactly on the supplied coordinates, and FILEDIA/CMDDIA are off, so commands prompt on the command
-        // line instead of waiting in a dialog. Afterwards each variable gets the user's value back unless the
-        // script set it itself. AutoLISP locals are dynamically scoped, so the script sees the wrapper's
+        // line instead of waiting in a dialog. Afterwards each variable gets the user's value back, unless the script
+        // completed and set that variable itself. AutoLISP locals are dynamically scoped, so the script sees the wrapper's
         // locals: their prefixed names keep a script's own (setq saved ...) from breaking the restore, and the
         // restore runs under vl-catch-all-apply, so cadmcpfinish is always reached.
         return "((lambda (/ cadmcp:code cadmcp:value cadmcp:undo-start cadmcp:undo-end cadmcp:saved cadmcp:set cadmcp:item) " +
@@ -26,7 +26,7 @@ public static class LispScript
             "(foreach cadmcp:item cadmcp:set (vl-catch-all-apply 'setvar (list (car cadmcp:item) (cdr cadmcp:item)))) " +
             "(setq cadmcp:value (vl-catch-all-apply (function (lambda () (eval (read cadmcp:code)))))) " +
             "(vl-catch-all-apply (function (lambda () (foreach cadmcp:item cadmcp:saved " +
-            "(if (equal (getvar (car cadmcp:item)) (cdr (assoc (car cadmcp:item) cadmcp:set))) " +
+            "(if (or (vl-catch-all-error-p cadmcp:value) (equal (getvar (car cadmcp:item)) (cdr (assoc (car cadmcp:item) cadmcp:set)))) " +
             "(vl-catch-all-apply 'setvar (list (car cadmcp:item) (cdr cadmcp:item)))))))) " +
             "(setq cadmcp:undo-end (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_End\"))) " +
             $"(cadmcpfinish \"{id}\" " +
