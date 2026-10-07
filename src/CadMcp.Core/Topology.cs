@@ -30,9 +30,10 @@ public static class Topology
     public const string Warning = "warning", Info = "info", Unverified = "unverified";
     private const int MaxSegments = 200_000, MaxRegistrations = 4_000_000;
     // Work allowed in one check, a few seconds at most; beyond it the geometry is reported as too dense instead of
-    // freezing CAD: box and distance comparisons of segments and endpoints sharing a cell, and relation tests of the
-    // segments whose boxes touch.
+    // freezing CAD: box and distance comparisons of segments and endpoints sharing a cell, relation tests of the
+    // segments whose boxes touch, and pairs of curves found to cross or overlap.
     private const long MaxScans = 500_000_000, MaxPairTests = 200_000_000;
+    private const int MaxRelations = 2_000_000;
     // Grid levels: each is Fanout times coarser, and a segment lives on the finest level where it spans at most
     // MaxSteps half-cells.
     private const int Fanout = 8, MaxSteps = 64, MaxLevels = 30;
@@ -259,30 +260,34 @@ public static class Topology
         }
 
         // Pairwise segment relations from shared cells of each level, then each segment against coarser levels. A pair
-        // sharing several cells is tested in each, which is cheaper than remembering every pair; a found relation is
-        // remembered so it counts once.
+        // sharing several cells of its level is tested in each but counts only in the cell holding the point of its
+        // relation: that point lies on both segments, so both are registered there. A pair with a coarser segment is
+        // found from the finer segment only, and its repeats there are dropped.
         var pairs = new Dictionary<(string Code, int A, int B), (double X, double Y, int Count)>();
-        var related = new HashSet<(int, int)>();
-        void Visit(int a, int b)
+        var partners = new HashSet<int>();
+        void Visit(int a, int b, (long, long)? cellKey, double size)
         {
             var s = segments[a]; var t = segments[b];
             if (s.Curve == t.Curve && (!options.SelfIntersections || Adjacent(s, t))) return;
             var relation = Relate(s, t, tol);
             if (relation is null) return;
-            if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) return;
             var (kind, x, y) = relation.Value;
+            if (cellKey is { } key && (Cell(x, minX, size), Cell(y, minY, size)) != key) return;
+            if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) return;
             string? code = s.Curve == t.Curve
                 ? kind == "overlap" ? "SELF_OVERLAP" : kind == "cross" ? "SELF_INTERSECTION" : null
                 : kind == "overlap" ? "OVERLAPPING_SEGMENTS" : kind == "cross" && options.Crossings ? "UNNODED_CROSSING" : null;
-            if (code is null || !related.Add((a, b))) return;
+            if (code is null) return;
             var pairKey = (code, Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve));
             pairs[pairKey] = pairs.TryGetValue(pairKey, out var prior) ? (prior.X, prior.Y, prior.Count + 1) : (x, y, 1);
         }
         // Segments sharing a cell are compared only when their boxes touch: dense parallel lines (an exploded hatch)
         // share cells without ever touching. Work is counted as it is done.
         long tests = 0;
-        foreach (var grid in grids)
-            foreach (var list in grid.Values)
+        for (int level = 0; level < grids.Count; level++)
+        {
+            double size = Size(level);
+            foreach (var (key, list) in grids[level])
                 for (int i = 0; i < list.Count; i++)
                     for (int j = i + 1; j < list.Count; j++)
                     {
@@ -290,21 +295,29 @@ public static class Topology
                         int a = Math.Min(list[i], list[j]), b = Math.Max(list[i], list[j]);
                         if (!Touch(a, b)) continue;
                         if (++tests > MaxPairTests) return Limit();
-                        Visit(a, b);
+                        Visit(a, b, key, size);
+                        if (pairs.Count > MaxRelations) return Limit();
                     }
-        // A pair with a coarser segment is only ever found from its finer segment.
+        }
         if (grids.Count > 1)
             for (int i = 0; i < segments.Count; i++)
             {
                 if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
+                partners.Clear();
                 foreach (int other in Coarser(i))
                 {
+                    if (!partners.Add(other)) continue;
                     if (++tests > MaxPairTests) return Limit();
-                    Visit(Math.Min(i, other), Math.Max(i, other));
+                    Visit(Math.Min(i, other), Math.Max(i, other), null, 0);
+                    if (pairs.Count > MaxRelations) return Limit();
                 }
                 if (scans > MaxScans) return Limit();
             }
-        foreach (var ((code, a, b), (x, y, count)) in pairs.OrderBy(p => p.Key.A).ThenBy(p => p.Key.B).ThenBy(p => p.Key.Code, StringComparer.Ordinal))
+        // Every relation is counted; only those that fit in the findings are put in order.
+        foreach (var key in pairs.Keys) counts[key.Code] = counts.GetValueOrDefault(key.Code) + 1;
+        int room = Math.Max(0, options.MaxFindings - findings.Count);
+        if (pairs.Count > room) truncated = true;
+        foreach (var ((code, a, b), (x, y, count)) in pairs.OrderBy(p => p.Key.A).ThenBy(p => p.Key.B).ThenBy(p => p.Key.Code, StringComparer.Ordinal).Take(room))
         {
             string[] handles = a == b ? [curves[a].Handle] : [curves[a].Handle, curves[b].Handle];
             var (severity, message) = code switch
@@ -314,7 +327,7 @@ public static class Topology
                 "OVERLAPPING_SEGMENTS" => (Warning, "Collinear segments of different curves overlap; merge or trim them"),
                 _ => (Info, "Curves cross without a common vertex; add a node if they must connect (networks, outlines)")
             };
-            Add(code, severity, handles, x, y, null, count, message);
+            findings.Add(new(code, severity, handles, [x, y], null, count, message));
         }
 
         // Endpoint relations of open curves.

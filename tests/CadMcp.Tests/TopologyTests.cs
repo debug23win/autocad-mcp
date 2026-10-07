@@ -178,6 +178,33 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void Relations_found_in_several_cells_count_once()
+    {
+        // 150 x 150 long lines cross 22500 times; each pair shares many cells but is one finding with one occurrence.
+        var curves = new List<TopologyCurve>();
+        for (int i = 0; i < 150; i++)
+        {
+            double o = (i + 0.5) * 100;
+            curves.Add(Line("H" + i, 0, o, 15000, o));
+            curves.Add(Line("V" + i, o, 0, o, 15000));
+        }
+        // Collinear pieces overlapping long lines over many cells (each also crosses 80 verticals), and short strokes
+        // that set a fine base grid.
+        for (int i = 0; i < 10; i++) curves.Add(Line("O" + i, 1000 + i, (i + 0.5) * 100, 9000 + i, (i + 0.5) * 100));
+        for (int i = 0; i < 2000; i++) curves.Add(Line("S" + i, i * 7.5, -50, i * 7.5 + 2, -50));
+        var report = Topology.Analyze(curves, new TopologyOptions(1e-3, 0, MaxFindings: 100000));
+        Assert.Equal("review_required", report.State);
+        Assert.Equal(150 * 150 + 10 * 80, report.Counts["UNNODED_CROSSING"]);
+        Assert.Equal(10, report.Counts["OVERLAPPING_SEGMENTS"]);
+        Assert.All(report.Findings.Where(f => f.Code is "UNNODED_CROSSING" or "OVERLAPPING_SEGMENTS"), f => Assert.Equal(1, f.Occurrences));
+        // With few findings allowed the counts stay complete.
+        var capped = Topology.Analyze(curves, new TopologyOptions(1e-3, 0, MaxFindings: 50));
+        Assert.True(capped.Truncated);
+        Assert.Equal(50, capped.Findings.Count);
+        Assert.Equal(report.Counts, capped.Counts);
+    }
+
+    [Fact]
     public void Chord_deviation_applies_only_to_curved_segments()
     {
         // A polyline whose first segment is straight and second is a coarsely sampled arc; a line stops 0.008
