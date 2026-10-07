@@ -29,11 +29,11 @@ public static class Topology
 {
     public const string Warning = "warning", Info = "info", Unverified = "unverified";
     private const int MaxSegments = 200_000, MaxRegistrations = 4_000_000;
-    // Work allowed in one check; beyond it the geometry is reported as too dense instead of freezing CAD:
-    // exact relation tests of segments sharing a cell, and cheap bounding-box tests of long segments.
-    private const long MaxPairTests = 40_000_000, MaxBoxTests = 300_000_000;
-    // A segment spanning more cells than this is tested against all others directly instead of filling cells.
-    private const int LongSegmentSteps = 64;
+    // Relation tests allowed in one check; beyond it the geometry is reported as too dense instead of freezing CAD.
+    private const long MaxPairTests = 40_000_000;
+    // Grid levels: each is Fanout times coarser, and a segment lives on the finest level where it spans at most
+    // MaxSteps half-cells.
+    private const int Fanout = 8, MaxSteps = 64, MaxLevels = 30;
 
     private readonly record struct Segment(int Curve, int Index, double Ax, double Ay, double Bx, double By, double Deviation)
     {
@@ -115,56 +115,89 @@ public static class Topology
             return Report();
         }
 
-        // Grid cells follow the median segment, never smaller than the gap, so a 3x3 neighbourhood covers every
-        // candidate; one long or distant segment cannot make every cell crowded. Segments much longer than a
-        // cell are tested against the others directly.
+        // A hierarchy of grids: level k has cells of cell·8^k and holds the segments that span at most 64 of its
+        // half-cells, so short segments get small cells while long or distant ones sit on a coarser level instead of
+        // filling thousands of cells. Cells are never smaller than the gap or four chord deviations, so a 3x3
+        // neighbourhood holds every candidate and an endpoint on a sampled arc still touches it.
         double minX = double.MaxValue, minY = double.MaxValue;
         foreach (var s in segments) { minX = Math.Min(minX, Math.Min(s.Ax, s.Bx)); minY = Math.Min(minY, Math.Min(s.Ay, s.By)); }
         var lengths = segments.Select(s => s.Length).ToArray();
         Array.Sort(lengths);
-        double cell = Math.Max(lengths.Length == 0 ? 1 : lengths[lengths.Length / 2], 2 * Math.Max(gap, tol));
+        var chordDeviations = segments.Select(s => s.Deviation).Where(d => double.IsFinite(d) && d > 0).ToArray();
+        Array.Sort(chordDeviations);
+        // A rare crudely sampled curve does not coarsen every cell: the 99.9th percentile sets the floor.
+        double typicalDeviation = chordDeviations.Length == 0 ? 0 : chordDeviations[Math.Min(chordDeviations.Length - 1, (int)(chordDeviations.Length * 0.999))];
+        double cell = Math.Max(Math.Max(lengths.Length == 0 ? 1 : lengths[lengths.Length / 2], 2 * Math.Max(gap, tol)), 4 * typicalDeviation);
         if (!double.IsFinite(cell) || cell <= 0) cell = 1;
-        var grid = new Dictionary<(long, long), List<int>>();
-        var longSegments = new List<int>();
+        double Size(int level) => cell * Math.Pow(Fanout, level);
+        var grids = new List<Dictionary<(long, long), List<int>>>();
+        var levels = new int[segments.Count];
         long registrations = 0;
-        long Cell(double v, double origin) => (long)Math.Floor((v - origin) / cell);
+        static long Cell(double v, double origin, double size) => (long)Math.Floor((v - origin) / size);
         var registered = new HashSet<(long, long)>();
         for (int i = 0; i < segments.Count && registrations <= MaxRegistrations; i++)
         {
             if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
             var s = segments[i];
-            int steps = Math.Max(1, (int)Math.Ceiling(s.Length / (cell / 2)));
-            if (steps > LongSegmentSteps) { longSegments.Add(i); continue; }
+            int level = 0;
+            while (level < MaxLevels && s.Length / (Size(level) / 2) > MaxSteps) level++;
+            while (grids.Count <= level) grids.Add(new());
+            levels[i] = level;
+            double size = Size(level);
+            int steps = Math.Max(1, (int)Math.Ceiling(s.Length / (size / 2)));
             registered.Clear();
             for (int k = 0; k <= steps; k++)
             {
                 double t = (double)k / steps, x = s.Ax + (s.Bx - s.Ax) * t, y = s.Ay + (s.By - s.Ay) * t;
-                long cx = Cell(x, minX), cy = Cell(y, minY);
+                long cx = Cell(x, minX, size), cy = Cell(y, minY, size);
                 for (long dx = -1; dx <= 1; dx++) for (long dy = -1; dy <= 1; dy++)
                 {
                     var key = (cx + dx, cy + dy);
                     if (!registered.Add(key)) continue;
-                    if (!grid.TryGetValue(key, out var list)) grid[key] = list = new();
+                    if (!grids[level].TryGetValue(key, out var list)) grids[level][key] = list = new();
                     list.Add(i); registrations++;
                 }
             }
         }
-        long pairTests = 0, boxTests = (long)longSegments.Count * (segments.Count + (options.Endpoints ? 2L * curves.Count : 0));
-        foreach (var list in grid.Values) pairTests += (long)list.Count * (list.Count - 1) / 2;
-        if (registrations > MaxRegistrations || pairTests > MaxPairTests || boxTests > MaxBoxTests)
+        // Candidates on a coarser level are found from the cells along the finer segment: those segments were registered
+        // with their neighbourhood, so any within a coarse cell of it is listed there.
+        IEnumerable<int> Coarser(int index)
+        {
+            var s = segments[index];
+            for (int level = levels[index] + 1; level < grids.Count; level++)
+            {
+                if (grids[level].Count == 0) continue;
+                double size = Size(level);
+                int steps = Math.Max(1, (int)Math.Ceiling(s.Length / (size / 2)));
+                (long, long)? previous = null;
+                for (int k = 0; k <= steps; k++)
+                {
+                    double t = (double)k / steps;
+                    var key = (Cell(s.Ax + (s.Bx - s.Ax) * t, minX, size), Cell(s.Ay + (s.By - s.Ay) * t, minY, size));
+                    if (key == previous) continue;
+                    previous = key;
+                    if (grids[level].TryGetValue(key, out var list)) foreach (int other in list) yield return other;
+                }
+            }
+        }
+        long pairTests = 0;
+        foreach (var grid in grids) foreach (var list in grid.Values) pairTests += (long)list.Count * (list.Count - 1) / 2;
+        if (pairTests <= MaxPairTests && grids.Count > 1)
+            for (int i = 0; i < segments.Count && pairTests <= MaxPairTests; i++)
+            {
+                if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
+                foreach (int _ in Coarser(i)) pairTests++;
+            }
+        if (registrations > MaxRegistrations || pairTests > MaxPairTests)
         {
             Add("TOPOLOGY_LIMIT", Unverified, [], 0, 0, null, segments.Count, "Geometry too dense or too large for one check; narrow the scope by layer or bounds");
             return Report();
         }
         IEnumerable<int> Near(double x, double y)
         {
-            if (grid.TryGetValue((Cell(x, minX), Cell(y, minY)), out var list)) foreach (int index in list) yield return index;
-            // Long segments are outside the grid; only those whose box comes within a cell of the point matter.
-            foreach (int index in longSegments)
-            {
-                var s = segments[index];
-                if (x >= Math.Min(s.Ax, s.Bx) - cell && x <= Math.Max(s.Ax, s.Bx) + cell && y >= Math.Min(s.Ay, s.By) - cell && y <= Math.Max(s.Ay, s.By) + cell) yield return index;
-            }
+            for (int level = 0; level < grids.Count; level++)
+                if (grids[level].TryGetValue((Cell(x, minX, Size(level)), Cell(y, minY, Size(level))), out var list))
+                    foreach (int index in list) yield return index;
         }
         double Deviation(Segment segment) => double.IsFinite(segment.Deviation) ? Math.Clamp(segment.Deviation, 0, cell / 4) : 0;
         bool Adjacent(Segment a, Segment b)
@@ -196,7 +229,7 @@ public static class Topology
             }
         }
 
-        // Pairwise segment relations from shared grid cells, then each long segment against all others.
+        // Pairwise segment relations from shared cells of each level, then each segment against coarser levels.
         var pairs = new Dictionary<(string Code, int A, int B), (double X, double Y, int Count)>();
         var seen = new HashSet<(int, int)>();
         void Visit(int a, int b)
@@ -215,28 +248,23 @@ public static class Topology
             pairs[pairKey] = pairs.TryGetValue(pairKey, out var prior) ? (prior.X, prior.Y, prior.Count + 1) : (x, y, 1);
         }
         long visited = 0;
-        foreach (var list in grid.Values)
-            for (int i = 0; i < list.Count; i++)
-                for (int j = i + 1; j < list.Count; j++)
+        foreach (var grid in grids)
+            foreach (var list in grid.Values)
+                for (int i = 0; i < list.Count; i++)
+                    for (int j = i + 1; j < list.Count; j++)
+                    {
+                        if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
+                        int a = Math.Min(list[i], list[j]), b = Math.Max(list[i], list[j]);
+                        if (seen.Add((a, b))) Visit(a, b);
+                    }
+        if (grids.Count > 1)
+            for (int i = 0; i < segments.Count; i++)
+                foreach (int other in Coarser(i))
                 {
                     if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
-                    int a = Math.Min(list[i], list[j]), b = Math.Max(list[i], list[j]);
+                    int a = Math.Min(i, other), b = Math.Max(i, other);
                     if (seen.Add((a, b))) Visit(a, b);
                 }
-        var isLong = new HashSet<int>(longSegments);
-        foreach (int l in longSegments)
-        {
-            var s = segments[l];
-            double x0 = Math.Min(s.Ax, s.Bx) - tol, x1 = Math.Max(s.Ax, s.Bx) + tol, y0 = Math.Min(s.Ay, s.By) - tol, y1 = Math.Max(s.Ay, s.By) + tol;
-            for (int o = 0; o < segments.Count; o++)
-            {
-                if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
-                if (o == l || isLong.Contains(o) && o < l) continue;
-                var t = segments[o];
-                if (Math.Max(t.Ax, t.Bx) < x0 || Math.Min(t.Ax, t.Bx) > x1 || Math.Max(t.Ay, t.By) < y0 || Math.Min(t.Ay, t.By) > y1) continue;
-                Visit(Math.Min(l, o), Math.Max(l, o));
-            }
-        }
         foreach (var ((code, a, b), (x, y, count)) in pairs.OrderBy(p => p.Key.A).ThenBy(p => p.Key.B).ThenBy(p => p.Key.Code, StringComparer.Ordinal))
         {
             string[] handles = a == b ? [curves[a].Handle] : [curves[a].Handle, curves[b].Handle];
@@ -262,7 +290,7 @@ public static class Topology
             var endpointGrid = new Dictionary<(long, long), List<int>>();
             for (int e = 0; e < endpoints.Count; e++)
             {
-                var key = (Cell(endpoints[e].X, minX), Cell(endpoints[e].Y, minY));
+                var key = (Cell(endpoints[e].X, minX, cell), Cell(endpoints[e].Y, minY, cell));
                 if (!endpointGrid.TryGetValue(key, out var list)) endpointGrid[key] = list = new();
                 list.Add(e);
             }
@@ -272,7 +300,7 @@ public static class Topology
                 if ((e & 255) == 0) ct.ThrowIfCancellationRequested();
                 var (c, x, y) = endpoints[e];
                 double nearestEnd = double.MaxValue; int nearestEndCurve = -1, nearestEndIndex = -1;
-                long cx = Cell(x, minX), cy = Cell(y, minY);
+                long cx = Cell(x, minX, cell), cy = Cell(y, minY, cell);
                 for (long dx = -1; dx <= 1; dx++) for (long dy = -1; dy <= 1; dy++)
                     if (endpointGrid.TryGetValue((cx + dx, cy + dy), out var list))
                         foreach (int other in list)

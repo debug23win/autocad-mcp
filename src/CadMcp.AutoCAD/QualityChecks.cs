@@ -328,23 +328,24 @@ internal static class ReviewOptions
         var sampled = new List<TopologyCurve>(curves.Length);
         var unreadable = new List<string>();
         long sampledPoints = 0;
+        int skipped = 0;
         foreach (var curve in curves)
         {
             ct.ThrowIfCancellationRequested();
             // The check takes up to 200000 segments; sampling stops once that is exceeded.
-            if (sampledPoints > 250_000) { unreadable.Add(curve.Handle.ToString()); continue; }
+            if (sampledPoints > 250_000) { skipped++; continue; }
             if (CurveSampler.Sample(curve, sampling) is { } sample) { sampled.Add(sample); sampledPoints += sample.Points.Count; } else unreadable.Add(curve.Handle.ToString());
         }
-        var report = sampledPoints > 250_000
-            ? new TopologyReport("unverified", sampled.Count, (int)Math.Min(int.MaxValue, sampledPoints), new Dictionary<string, int> { ["TOPOLOGY_LIMIT"] = 1 },
-                [new("TOPOLOGY_LIMIT", Topology.Unverified, [], [0, 0], null, 1, "Curves too dense for one check (" + sampledPoints + " sampled points); narrow the scope by layers")], false, [])
+        var report = skipped > 0
+            ? new TopologyReport("unverified", sampled.Count, 0, new Dictionary<string, int> { ["TOPOLOGY_LIMIT"] = 1 },
+                [new("TOPOLOGY_LIMIT", Topology.Unverified, [], [0, 0], null, 1, "Curves too dense for one check (over 250000 sampled points; " + skipped + " curves not sampled); narrow the scope by layers")], false, [])
             : Topology.Analyze(sampled, new(tolerance, gap, Bool(options, "endpoints", true), Bool(options, "crossings", true), MaxFindings: maxFindings), ct);
         string state = unreadable.Count > 0 && report.State == "passed" ? "unverified" : report.State;
         return (state, new
         {
             state, curves = report.Curves, segments = report.Segments, counts = report.Counts, findings = report.Findings, truncated = report.Truncated,
             tolerance, gap_tolerance = gap, sampling_tolerance = sampling, other_entities = entities.Count - curves.Length,
-            unreadable = unreadable.Count == 0 ? null : unreadable.Take(100).ToArray(),
+            unreadable = unreadable.Count == 0 ? null : unreadable.Take(100).ToArray(), skipped_by_limit = skipped == 0 ? (int?)null : skipped,
             limitations = report.Limitations.Concat(["Network checks treat every curve of the scope alike; filter by layers to check one network",
                 "DANGLING_END, T_JUNCTION and UNNODED_CROSSING are notes: open ends and crossings are often intended"]).ToArray()
         });

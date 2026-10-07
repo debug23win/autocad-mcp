@@ -49,7 +49,10 @@ internal static class Exports
                 var paper = PlotPdf(document, paths[i], names[i], null, ct);
                 if (!File.Exists(paths[i]) || new FileInfo(paths[i]).Length == 0)
                     throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty PDF");
-                var pdf=PdfVerification.Check(paths[i],1,paper);
+                // The PDF is written; a reader failure leaves its check unverified instead of stopping the set.
+                object pdf;
+                try { pdf = PdfVerification.Check(paths[i], 1, paper); }
+                catch (System.Exception readError) when (readError is not OperationCanceledException) { pdf = new { state = "unverified", error = readError.GetType().Name + ": " + readError.Message }; }
                 using var file = File.OpenRead(paths[i]);
                 produced.Add(new { pdf, number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
                     sha256 = Convert.ToHexString(SHA256.HashData(file)) });

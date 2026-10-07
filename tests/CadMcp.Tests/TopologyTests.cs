@@ -110,6 +110,39 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void Tiny_segments_next_to_long_lines_and_arcs_keep_full_checks()
+    {
+        // A 100 x 60 m plan in millimetres: 20000 strokes of 1-3 mm (exploded text) beside 3000 walls of 1-10 m and a
+        // road arc of R = 20 m. Long lines used to be compared with everything and reached the work limit; tiny
+        // cells clipped the arc's chord deviation, so a line ending on the arc became a near miss.
+        var random = new Random(11);
+        var curves = new List<TopologyCurve>();
+        for (int i = 0; i < 20000; i++)
+        {
+            double x = random.NextDouble() * 100000, y = random.NextDouble() * 60000, a = random.NextDouble() * Math.PI, length = 1 + random.NextDouble() * 2;
+            curves.Add(Line("S" + i, x, y, x + Math.Cos(a) * length, y + Math.Sin(a) * length));
+        }
+        for (int i = 0; i < 3000; i++)
+        {
+            double x = random.NextDouble() * 100000, y = random.NextDouble() * 60000, length = 1000 + random.NextDouble() * 9000;
+            curves.Add(random.Next(2) == 0 ? Line("W" + i, x, y, x + length, y) : Line("W" + i, x, y, x, y + length));
+        }
+        double sampling = Math.Sqrt(100000.0 * 100000 + 60000.0 * 60000) * 1e-5;
+        var arc = ArcSampling.Arc(50000, 30000, 20000, 0, Math.PI / 2, sampling);
+        curves.Add(new("ARC", "0", arc, false, ArcSampling.Sagitta(20000, Math.PI / 2, arc.Length - 1)));
+        double angle = Math.PI / 2 * (10.5 / (arc.Length - 1));
+        double ex = 50000 + 20000 * Math.Cos(angle), ey = 30000 + 20000 * Math.Sin(angle);
+        curves.Add(Line("ON_ARC", ex + 3000 * Math.Cos(angle), ey + 3000 * Math.Sin(angle), ex, ey));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var report = Topology.Analyze(curves, new TopologyOptions(1e-4, 1, MaxFindings: 100000));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), "Mixed check is too slow: " + watch.Elapsed);
+        Assert.DoesNotContain(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+        Assert.Contains(report.Findings, f => f.Code == "T_JUNCTION" && f.Handles[0] == "ON_ARC");
+        Assert.DoesNotContain(report.Findings, f => f.Code == "NEAR_MISS" && f.Handles[0] == "ON_ARC");
+        Assert.Contains(report.Findings, f => f.Code == "UNNODED_CROSSING" && f.Handles.Any(h => h.StartsWith('W')));
+    }
+
+    [Fact]
     public void Chord_deviation_applies_only_to_curved_segments()
     {
         // A polyline whose first segment is straight and second is a coarsely sampled arc; a line stops 0.008

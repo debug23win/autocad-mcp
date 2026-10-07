@@ -129,12 +129,11 @@ internal static class DrawingQuality
         foreach(var curve in curves)
         {
             ct.ThrowIfCancellationRequested();
-            Extents3d box;
-            try{box=curve.GeometricExtents;}catch(Autodesk.AutoCAD.Runtime.Exception){unreadable.Add(curve.Handle.ToString());continue;}
-            double height=box.MaxPoint.Z-box.MinPoint.Z;
-            if(height>Math.Max(tolerance,1e-9*Math.Max(1,Math.Abs(box.MaxPoint.Z)))){spatial++;continue;}
+            double? elevation;
+            try{elevation=Elevation(curve,tolerance);}catch(Autodesk.AutoCAD.Runtime.Exception){unreadable.Add(curve.Handle.ToString());continue;}
+            if(elevation is not {} z){spatial++;continue;}
             if(CurveSampler.Sample(curve,Math.Max(tolerance,diagonal*1e-4)) is not {} sample){unreadable.Add(curve.Handle.ToString());continue;}
-            long level=(long)Math.Round(box.MinPoint.Z/Math.Max(tolerance*16,1e-6));
+            long level=(long)Math.Round(z/Math.Max(tolerance*16,1e-6));
             if(!levels.TryGetValue(level,out var list))levels[level]=list=new();
             list.Add(sample);
         }
@@ -148,6 +147,28 @@ internal static class DrawingQuality
             foreach(var finding in report.Findings)
                 issues.Add(finding.Code=="TOPOLOGY_LIMIT"?new("TOPOLOGY_UNVERIFIED","unverified",[],"Curves too dense for the duplicate and self-intersection check; run cad_review with options_json {\"checks\":[\"topology\"]} on parts of them")
                     :new(finding.Code,finding.Severity,finding.Handles,finding.Message));
+        }
+    }
+    /// <summary>
+    /// The elevation of a curve lying in a plane parallel to XY, or null. Judged from the geometry, not the extents,
+    /// which a thickness stretches along Z although the curve itself is flat.
+    /// </summary>
+    private static double? Elevation(Entity curve,double tolerance)
+    {
+        static bool Up(Vector3d normal)=>normal.IsParallelTo(Vector3d.ZAxis);
+        double flat=Math.Max(tolerance,1e-9);
+        switch(curve)
+        {
+            case Line line: return Math.Abs(line.StartPoint.Z-line.EndPoint.Z)<=flat*Math.Max(1,Math.Abs(line.StartPoint.Z))?line.StartPoint.Z:null;
+            case Arc arc: return Up(arc.Normal)?arc.Center.Z:null;
+            case Circle circle: return Up(circle.Normal)?circle.Center.Z:null;
+            case Ellipse ellipse: return Up(ellipse.Normal)?ellipse.Center.Z:null;
+            case Polyline polyline: return Up(polyline.Normal)?polyline.StartPoint.Z:null;
+            case Polyline2d polyline: return Up(polyline.Normal)?polyline.StartPoint.Z:null;
+            default:
+                // 3D polylines and splines have no thickness: their extents show whether they leave the plane.
+                var box=curve.GeometricExtents;
+                return box.MaxPoint.Z-box.MinPoint.Z<=flat*Math.Max(1,Math.Abs(box.MaxPoint.Z))?box.MinPoint.Z:null;
         }
     }
     internal static double Diagonal(IEnumerable<Entity> entities)

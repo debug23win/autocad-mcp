@@ -114,10 +114,10 @@ public static class CadText
     private static readonly ConcurrentDictionary<string, (Regex Regex, bool Negate)> LikePatterns = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// AutoCAD wildcard pattern (WCMATCH), case-insensitive: * any text, ? one character, # a digit, @ a letter,
-    /// . a character that is neither letter nor digit, [abc] and [a-z] one of the characters, [~abc] none of them,
-    /// ` takes the next character literally, a comma separates alternatives and a leading ~ negates the whole
-    /// pattern ("Сети*,ВК?", "~0", "[AB]*").
+    /// AutoCAD-style name pattern, case-insensitive: * any text, ? one character, # one digit, a comma separates
+    /// alternatives, a leading ~ negates the whole pattern ("Сети*,ВК?", "~0"), and ` takes the next character
+    /// literally. Other characters, including . @ and [ ], match themselves, so an exact layer name such as
+    /// "КЖ.Арматура" matches only that layer.
     /// </summary>
     public static bool Like(string? value, string pattern)
     {
@@ -126,13 +126,6 @@ public static class CadText
         var (regex, negate) = LikePatterns.GetOrAdd(pattern, CompileLike);
         try { return regex.IsMatch(value) != negate; }
         catch (RegexMatchTimeoutException) { return false; }
-    }
-
-    /// <summary>The ']' closing the class opened at <paramref name="open"/>, or -1. The first member may itself be ']'.</summary>
-    private static int ClassEnd(string text, int open)
-    {
-        int first = open + 1 < text.Length && text[open + 1] == '~' ? open + 2 : open + 1;
-        return first + 1 > text.Length ? -1 : text.IndexOf(']', first + 1);
     }
 
     private static (Regex, bool) CompileLike(string pattern)
@@ -147,7 +140,6 @@ public static class CadText
             if (c == ',') { alternatives.Add(current.ToString().Trim()); current.Clear(); continue; }
             current.Append(c);
             if (c == '`' && i + 1 < body.Length) current.Append(body[++i]);
-            else if (c == '[' && ClassEnd(body, i) is var close and > 0) { current.Append(body, i + 1, close - i); i = close; }
         }
         alternatives.Add(current.ToString().Trim());
         var regex = new StringBuilder("^(?:");
@@ -156,27 +148,14 @@ public static class CadText
             if (a > 0) regex.Append('|');
             var part = alternatives[a];
             for (int i = 0; i < part.Length; i++)
-            {
-                char c = part[i];
-                switch (c)
+                regex.Append(part[i] switch
                 {
-                    case '*': regex.Append(".*"); break;
-                    case '?': regex.Append('.'); break;
-                    case '#': regex.Append("[0-9]"); break;
-                    case '@': regex.Append(@"\p{L}"); break;
-                    case '.': regex.Append(@"[^\p{L}\p{N}]"); break;
-                    case '`' when i + 1 < part.Length: regex.Append(Regex.Escape(part[++i].ToString())); break;
-                    case '[' when ClassEnd(part, i) is var close and > 0:
-                        var set = part[(i + 1)..close];
-                        bool not = set.Length > 1 && set[0] == '~';
-                        if (not) set = set[1..];
-                        regex.Append(not ? "[^" : "[");
-                        foreach (char member in set) regex.Append(member == '-' ? "-" : member is ']' or '\\' or '^' or '[' ? "\\" + member : member.ToString());
-                        regex.Append(']');
-                        i = close; break;
-                    default: regex.Append(Regex.Escape(c.ToString())); break;
-                }
-            }
+                    '*' => ".*",
+                    '?' => ".",
+                    '#' => "[0-9]",
+                    '`' when i + 1 < part.Length => Regex.Escape(part[++i].ToString()),
+                    var c => Regex.Escape(c.ToString())
+                });
         }
         regex.Append(")$");
         return (new Regex(regex.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline, TimeSpan.FromSeconds(1)), negate);
@@ -194,20 +173,31 @@ public static class CadText
         string encodedFind = Encode(find), encodedReplace = Encode(replace);
         // In MText a backslash or brace of the new text would start a formatting code.
         if (mtext) { replace = EscapeMText(replace); encodedReplace = EscapeMText(encodedReplace); }
-        var pattern = "(" + Regex.Escape(find) + ")" + (encodedFind != find ? "|(" + Regex.Escape(encodedFind) + ")" : "");
+        // The stored (encoded) form is tried first: "50%" must match the whole "50%%%", not stop inside its code.
+        var pattern = (encodedFind != find ? "(?<code>" + Regex.Escape(encodedFind) + ")|" : "") + "(?<plain>" + Regex.Escape(find) + ")";
         if (wholeWord) pattern = @"(?<![\p{L}\p{N}_])(?:" + pattern + @")(?![\p{L}\p{N}_])";
         var regex = new Regex(pattern, (matchCase ? RegexOptions.None : RegexOptions.IgnoreCase) | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
         int count = 0;
-        // A match must not begin or end inside a control code (%%c, %%nnn, \U+XXXX): "C" in "%%c108" is not text.
+        // A match must not begin or end inside a control code (%%c, %%nnn, \U+XXXX): "C" in "%%c108" is not text. A
+        // rejected match is retried one character later, so "cc" is still found in "%%ccc".
         string Run(string text)
         {
             var boundaries = CodeBoundaries(text);
-            return regex.Replace(text, m =>
+            var output = new StringBuilder(text.Length);
+            int copied = 0;
+            for (var m = regex.Match(text); m.Success; )
             {
-                if (!boundaries[m.Index] || !boundaries[m.Index + m.Length]) return m.Value;
+                if (m.Length == 0 || !boundaries[m.Index] || !boundaries[m.Index + m.Length])
+                {
+                    m = m.Index + 1 <= text.Length ? regex.Match(text, m.Index + 1) : Match.Empty;
+                    continue;
+                }
+                output.Append(text, copied, m.Index - copied).Append(m.Groups["code"].Success ? encodedReplace : replace);
+                copied = m.Index + m.Length;
                 count++;
-                return m.Groups[1].Success ? replace : encodedReplace;
-            });
+                m = regex.Match(text, copied);
+            }
+            return output.Append(text, copied, text.Length - copied).ToString();
         }
         if (!mtext) return (Run(raw), count);
         var result = new StringBuilder(raw.Length);
@@ -225,8 +215,10 @@ public static class CadText
         for (int i = 0; i < text.Length; i++)
         {
             int length = 0;
+            // Only the codes Normalize displays as something else; "100%% wide" is plain text.
             if (text[i] == '%' && i + 2 < text.Length && text[i + 1] == '%')
-                length = char.IsAsciiDigit(text[i + 2]) && i + 4 < text.Length && char.IsAsciiDigit(text[i + 3]) && char.IsAsciiDigit(text[i + 4]) ? 5 : 3;
+                length = char.IsAsciiDigit(text[i + 2]) && i + 4 < text.Length && char.IsAsciiDigit(text[i + 3]) && char.IsAsciiDigit(text[i + 4]) ? 5
+                    : char.ToLowerInvariant(text[i + 2]) is 'c' or 'd' or 'p' or 'u' or 'o' or '%' ? 3 : 0;
             else if (text[i] == '\\' && i + 6 < text.Length && text[i + 1] is 'U' or 'u' && text[i + 2] == '+' && text.AsSpan(i + 3, 4).ToString().All(char.IsAsciiHexDigit))
                 length = 7;
             for (int k = 1; k < length; k++) boundary[i + k] = false;
@@ -235,7 +227,9 @@ public static class CadText
         return boundary;
     }
 
-    private static string Encode(string text) => text.Replace("Ø", "%%c").Replace("ø", "%%c").Replace("⌀", "%%c").Replace("∅", "%%c")
+    // A single % of the displayed text is stored as %%% as well; text that already holds codes is left as typed.
+    private static string Encode(string text) => (text.Contains("%%", StringComparison.Ordinal) ? text : text.Replace("%", "%%%"))
+        .Replace("Ø", "%%c").Replace("ø", "%%c").Replace("⌀", "%%c").Replace("∅", "%%c")
         .Replace(Degree.ToString(), "%%d").Replace(PlusMinus.ToString(), "%%p");
 
     /// <summary>MText contents split into plain text runs and formatting tokens, in order.</summary>
