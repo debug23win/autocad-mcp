@@ -23,4 +23,34 @@ public static class LispScript
             "((vl-catch-all-error-p undo-end) (vl-catch-all-error-message undo-end)) " +
             "(T (vl-prin1-to-string value)))))))) (princ)))\n";
     }
+
+    /// <summary>
+    /// The body is evaluated as <c>(eval (read "(progn body)"))</c>, and <c>read</c> takes only the first
+    /// expression. Reject bodies whose parentheses do not balance, so that code after a stray ")" is not
+    /// silently dropped while the operation reports success.
+    /// </summary>
+    public static void ValidateBody(string code)
+    {
+        int depth = 0;
+        for (int i = 0; i < code.Length; i++)
+        {
+            char c = code[i];
+            if (c == '"')
+            {
+                for (i++; i < code.Length && code[i] != '"'; i++) if (code[i] == '\\') i++;
+                if (i >= code.Length) throw new CadFault("LISP_UNBALANCED", "AutoLISP string is not terminated");
+            }
+            else if (c == ';' && i + 1 < code.Length && code[i + 1] == '|')
+            {
+                int end = code.IndexOf("|;", i + 2, StringComparison.Ordinal);
+                if (end < 0) throw new CadFault("LISP_UNBALANCED", "AutoLISP block comment ;| ... |; is not terminated");
+                i = end + 1;
+            }
+            else if (c == ';') { while (i < code.Length && code[i] != '\n') i++; }
+            else if (c == '(') depth++;
+            else if (c == ')' && --depth < 0)
+                throw new CadFault("LISP_UNBALANCED", "AutoLISP has an extra ')' at character " + (i + 1) + "; code after it would not run");
+        }
+        if (depth != 0) throw new CadFault("LISP_UNBALANCED", "AutoLISP is missing " + depth + " closing parenthesis(es)");
+    }
 }

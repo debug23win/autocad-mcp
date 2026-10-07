@@ -3,7 +3,7 @@ namespace CadMcp.Core;
 /// <summary>Recover the receipt, never resend a mutation after losing its transport response.</summary>
 public static class MutationRecovery
 {
-    public static bool IsMutation(string operation) => operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish";
+    public static bool IsMutation(string operation) => CadOperations.IsMutation(operation);
     public static async Task<Response> CallAsync(Request request, Func<Request, CancellationToken, Task<Response>> send, CancellationToken ct)
     {
         try
@@ -12,7 +12,7 @@ public static class MutationRecovery
             if (IsMutation(request.Operation) && response.Error?.Code == "TIMEOUT") throw new IOException(response.Error.Message);
             return response;
         }
-        catch (Exception error) when (IsMutation(request.Operation) && !ct.IsCancellationRequested && error is IOException or OperationCanceledException)
+        catch (Exception error) when (IsMutation(request.Operation) && !ct.IsCancellationRequested && Wire.IsTransportFailure(error))
         {
             string id = EditPlan.RequiredText(request.Data, "operation_id");
             using var probe = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -34,7 +34,7 @@ public static class MutationRecovery
                     retry = "Retain the original operation_id and request. Wait/reconcile; never create a replacement mutation." }, request.SessionId, request.DocumentId,
                     Error: pending ? null : new("OPERATION_UNCERTAIN", "Lost CAD response: no conclusive operation receipt is available."));
             }
-            catch (Exception e) when (e is IOException or OperationCanceledException)
+            catch (Exception e) when (Wire.IsTransportFailure(e))
             {
                 return new(request.RequestId, "unknown", new { operation_id = id, response_lost = true, mutation_resent = false,
                     requires_poll = "cad_operation_status", retry = "Do not repeat: acceptance and execution are unknown." },

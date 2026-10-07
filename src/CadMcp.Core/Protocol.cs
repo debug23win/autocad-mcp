@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Principal;
@@ -29,12 +30,51 @@ public static class Wire
         PropertyNameCaseInsensitive = true
     };
     public static JsonElement Element(object value) => JsonSerializer.SerializeToElement(value, Json);
-    public static string WorkerRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "workers");
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+
+    /// <summary>Product version from Directory.Build.props, without the source revision the SDK appends.</summary>
+    public static string Version { get; } = ReadVersion();
+    private static string ReadVersion()
+    {
+        string? value = typeof(Wire).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (string.IsNullOrWhiteSpace(value)) return "unknown";
+        int metadata = value.IndexOf('+');
+        return metadata < 0 ? value : value[..metadata];
+    }
+
+    /// <summary>Per-user data folder shared by the plugin, the broker and the chat.</summary>
+    public static string DataRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp");
+    public static string DataDirectory(params string[] parts) => Path.Combine([DataRoot, .. parts]);
+    public static string WorkerRoot => DataDirectory("workers");
     public static string BrokerPipe
     {
-        get { using var identity = WindowsIdentity.GetCurrent(); return "cadmcp-broker-" + identity.User!.Value.Replace('-', '_'); }
+        get
+        {
+            // The product runs on Windows; other platforms only host the automated tests.
+            if (!OperatingSystem.IsWindows()) return "cadmcp-broker-" + Environment.UserName;
+            using var identity = WindowsIdentity.GetCurrent();
+            return "cadmcp-broker-" + identity.User!.Value.Replace('-', '_');
+        }
     }
+
+    /// <summary>Publish a worker descriptor atomically so the broker never reads a partial file.</summary>
+    public static string PublishWorker(WorkerDescriptor worker)
+    {
+        Directory.CreateDirectory(WorkerRoot);
+        string path = Path.Combine(WorkerRoot, worker.SessionId + ".json"), temp = path + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(worker, Json));
+        File.Move(temp, path, true);
+        return path;
+    }
+
+    /// <summary>Failures that mean a pipe call did not deliver a trustworthy response.</summary>
+    public static bool IsTransportFailure(Exception error) =>
+        error is IOException or OperationCanceledException or TimeoutException or InvalidDataException or JsonException;
+
     public static string? Text(this JsonElement e, string key) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var p) ? p.GetString() : null;
-    public static int Number(this JsonElement e, string key, int fallback) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var p) ? p.GetInt32() : fallback;
+    public static int Number(this JsonElement e, string key, int fallback)
+    {
+        if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(key, out var p) || p.ValueKind == JsonValueKind.Null) return fallback;
+        return p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out int value)
+            ? value : throw new CadFault("INVALID_NUMBER", key + " must be an integer");
+    }
 }

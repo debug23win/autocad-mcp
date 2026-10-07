@@ -1,1 +1,6 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="PdfPig" Version="0.1.16" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <InternalsVisibleTo Include="CadMcp.Tests" />
+  </ItemGroup>
+</Project>

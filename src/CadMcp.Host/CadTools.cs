@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CadMcp.Core;
 using ModelContextProtocol.Server;
 using ModelContextProtocol.Protocol;
@@ -15,7 +16,8 @@ public sealed class CadTools
     private static readonly string Owner = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")) ? Guid.NewGuid().ToString("N") : Environment.GetEnvironmentVariable("CAD_MCP_OWNER_ID")!;
     private static async Task<Response> ScopedResponse(string operation, string? session, string? document, object data, long? revision, CancellationToken ct)
     {
-        if(CadAccess.ReadOnly&&(MutationRecovery.IsMutation(operation)||operation is "cad_focus" or "cad_cancel"))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
+        // Allowlist: an operation is available to read-only helpers only after it is declared read-only.
+        if(CadAccess.ReadOnly&&!CadOperations.ReadOnly.Contains(operation))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
         string? pinnedSession=Environment.GetEnvironmentVariable("CAD_MCP_SESSION_ID"), pinnedDocument=Environment.GetEnvironmentVariable("CAD_MCP_DOCUMENT_ID");
         if(string.IsNullOrWhiteSpace(pinnedSession))pinnedSession=null;if(string.IsNullOrWhiteSpace(pinnedDocument))pinnedDocument=null;
         if(pinnedSession is not null && session is not null && pinnedSession!=session)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat is pinned to another AutoCAD session");
@@ -39,9 +41,10 @@ public sealed class CadTools
     }
     private static async Task<CallToolResult> Call(string operation,string? session,string? document,object data,long? revision,CancellationToken ct)
     {
-        var response=await ScopedResponse(operation,session,document,data,revision,ct);
-        return new() { IsError=response.Error is not null,Content=[new TextContentBlock {Text=JsonSerializer.Serialize(response,Wire.Json)}] };
+        return Result(await ScopedResponse(operation,session,document,data,revision,ct));
     }
+    private static CallToolResult Result(Response response) =>
+        new() { IsError=response.Error is not null,Content=[new TextContentBlock {Text=JsonSerializer.Serialize(response,Wire.Json)}] };
     [McpServerTool(Name = "cad_vertical_capabilities",ReadOnly=true),Description("Read actually loaded Civil/Map API versions and exact supported method signatures before editing vertical objects. Missing API is explicitly unavailable.")]
     public static Task<CallToolResult> VerticalCapabilities(string session_id,string document_id,CancellationToken ct)=>Call("cad_vertical_capabilities",session_id,document_id,new{},null,ct);
     [McpServerTool(Name = "cad_documents", ReadOnly = true), Description("List open DWGs with document ids, project keys and active status. Pin every task to a specific document_id; concurrent chats are isolated.")]
@@ -79,48 +82,20 @@ public sealed class CadTools
         int first_row = 0, int first_column = 0, int row_count = 20, int column_count = 20) =>
         Call("cad_table_get", session_id, document_id, new { handle, first_row, first_column, row_count, column_count }, expected_revision, ct);
     [McpServerTool(Name = "cad_spds_help", ReadOnly = true), Description("Read native Table/formula and SPDS drafting contract, verified form dimensions and KJ/KM working templates. All output uses standard editable AutoCAD objects through C#, without SPDS GraphiCS dependencies. Read before drafting structural sheets.")]
-    public static CallToolResult SpdsHelp() => new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new {
-        operations = DraftingPlan.Fields, templates = SpdsTemplates.Tables,
-        tables = "table_create: position, rows/columns, cells:[{cell:'A1',value:12}]. Formula starts with =. Local references use =A1*B1 or =SUM(A1:A3). Linked references use ={{qty}}*2 with references:[{name:'qty',table_handle:'HEX',cell:'B2'}] (or earlier table_target alias). These become native DWG AcExpr fields, not copied numbers. Linked tables created by CAD MCP recalculate automatically after source changes; verify values with cad_table_get. Avoid cycles. Merges use zero-based [first_row,first_column,last_row,last_column]. table_rows/columns insert/delete with index/count; linked-cell identities survive CAD MCP row/column insertion; delete referenced cells only after removing dependents.",
-        drafting = "spds_table: template, position, data array, optional title/scale. Sheet and table coordinates on layouts are paper millimetres. In model space supply scale converting paper millimetres into drawing units. spds_dimstyle creates a new style with drawing_scale and millimetre measurement_factor inferred from INSUNITS or explicitly supplied; use it in native dimensions. Linear dimensions use ticks, radial/diametric dimensions arrow overrides. spds_axis and spds_level create editable blocks of native primitives; elevation is explicitly metres with 3 decimals. spds_sheet builds an editable attributed form-3 title block and frame on an existing A0..A4 layout. Configure plot media and locked viewports separately before cad_publish.",
-        structural_workflow = "KJ: obtain actual dimensions, materials, reinforcement scheme and design data; create concrete geometry, sections, reinforcement, axes/elevations, dimensions, specification and reinforcement/steel schedules. KM: obtain profiles, steel grades, lengths and joint data; create member geometry, assembly/section drawings, marks, dimensions, specification and member/steel schedules. Link quantities/masses between native tables. Use existing C# line/polyline/block/hatch/solid tools. Never invent reinforcement, connections or structural design loads. VerifiedForm=false marks a project template, not a mandatory standard form. Complete structural/normative compliance needs project inputs and review, not just placing a table.",
-        standards = new[] { "ГОСТ Р 21.101-2026", "ГОСТ 21.501-2018 (КЖ)", "ГОСТ 21.502-2016 (КМ)" }
-    }, Wire.Json) }] };
+    public static CallToolResult SpdsHelp() => new() { Content = [new TextContentBlock { Text = HelpContract("spds-help.json", new()
+        { ["operations"] = JsonSerializer.SerializeToNode(DraftingPlan.Fields, Wire.Json), ["templates"] = JsonSerializer.SerializeToNode(SpdsTemplates.Tables, Wire.Json) }) }] };
     [McpServerTool(Name = "cad_edit_help", ReadOnly = true), Description("Read the native edit operation contract and examples before using cad_edit. Coordinates are WCS drawing units; angles are degrees.")]
-    public static CallToolResult EditHelp() => new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new {
-        operations = EditPlan.Fields, coordinates = "WCS drawing units, [x,y] or [x,y,z]", angles = "degrees around WCS Z",
-        contract = "operations_json is a JSON array of 1..100 objects. Every object has op. Optional id names an entity for later target references. Existing entities use handle; handle and target are mutually exclusive. Create a missing layer first. Read cad_catalog for block/style names. Native C# supports meshes, spatial curves, 3D solids, extrude, sweep, revolve and solid Boolean operations; use these before cad_lisp. Repeat only the EXACT request with the SAME operation_id; do not change expected_revision when replaying. Read cad_operation_status after an ambiguous response. After success use returned revision for further calls. Locked layers, xref and most specialized objects are not edited through the native path. The whole native batch rolls back on any pre-commit error. Do not repeat unknown mutations automatically.",
-        acceptance = new { parameter = "expectations_json", enforcement = "Default enforce=true: failed or unavailable measurements roll back the native transaction before commit. Set enforce=false only for an explicitly diagnostic check. entity_count counts live entities affected by this batch, not the whole drawing.",
-            example = new { units = "Millimeters", entity_count = 1, checks = new[] { new { target = "beam", property = "length", expected = 5000, tolerance = 0.01 } } },
-            task_contract = "Optional task:string, bounds_size:[x,y,z], bounds_tolerance:number, type_counts:{nativeType:count}, review_views:[current/front/back/left/right/top/isometric], visual_requirements:[strings]. Numeric checks accept either expected or minimum/maximum (inclusive), plus tolerance. Assembly properties: assembly.solid_mass_kg, assembly.solid_volume_m3, assembly.centerline_length, assembly.profile_code. Bounds/counts refer to the supplied verification handles or affected batch; final task verification must include every final object. Visual requirements remain pending until actual renders are reviewed.",
-            verification = "Use cad_verify after commit for fresh checks. Geometry acceptance does not prove visual similarity or disk save." },
-        notes = new { assembly_profiles = "Read cad_steel_catalog. beam/column parameters:{length,profile:exact_catalog_code}; length uses drawing units, catalog millimetres convert using DWG units. Or supply explicit width,height,web_thickness,flange_thickness, optional root_radius. Do not combine profile with explicit dimensions. Rebar points are the sharp centerline vertices, bend_radius is the centerline radius (default 2*diameter), adjacent legs must accommodate tangency. Screw-pile blade is a native volumetric 48-segment ruled solid; mass includes blade. Existing version-1 assemblies retain their geometry until assembly_update, with legacy mass limitations reported.",
-            polyline = "points share WCS Z; bulges: one number per vertex; closed:boolean; width:nonnegative constant segment width",
-            polyline3d = "points is 2..2000 full [x,y,z] WCS points; optional closed:boolean",
-            spline = "fit_points is 3..2000 full [x,y,z] WCS points; optional degree 1..11 below point count, closed:boolean; zero fit tolerance",
-            mesh = "vertices is 3..5000 full [x,y,z] WCS points; faces is 1..2000 arrays of 3 or 4 distinct zero-based vertex indices. Produces an unsmoothed native SubDMesh, not an inferred mesh from a photograph",
-            extrude = "handle/target identifies an existing closed planar polyline or circle; direction:[dx,dy,dz] is a nonzero WCS extrusion vector; source profile remains",
-            sweep = "handle/target identifies an existing closed profile; path_handle/path_target identifies an existing path curve; profile should start on and be oriented for the path; source entities remain",
-            revolve = "handle/target identifies an existing closed planar profile; axis_start/axis_end define the WCS axis; angle_deg has magnitude at most 360; source remains",
-            solid_boolean = "handle/target is the primary Solid3d, tool_handle/tool_target is the other Solid3d; operation union/subtract/intersect; keep_tool defaults false; entire result is one transaction",
-            rotate3d = "handle/target identifies an entity; axis_start/axis_end define the WCS rotation axis; angle_deg is signed",
-            sphere_cone_wedge_torus = "sphere center is geometric center; cone center is bottom center; wedge/torus center is bounding-box center; torus minor_radius < major_radius",
-            block = "name:existing local block; scale:positive scalar or [sx,sy,sz]; attributes:{TAG:string}",
-            block_define = "name:new local definition; base_point:WCS insertion base; handles:1..100 current-space top-level source entities. Source entities remain; native C# clones them into the definition",
-            layout_create = "Create an empty paper-space layout with the supplied name. Add title block and viewports separately before export",
-            layout_copy = "Copy a complete existing paper-space layout including sheet contents and plot settings",
-            layout_configure = "Set print device, media, plot style, paper units and rotation for a named paper-space layout",
-            viewport = "Place a locked paper-space model viewport on a named layout. center/width/height are paper coordinates; model_center/model_height define WCS view and scale",
-            image_attach = "Attach PNG/JPEG/TIFF/BMP by absolute path. control_points has 3..20 {pixel:[x,y],world:[x,y,z]} anchors; pixel origin top-left, all WCS Z equal. Affine residual and orientation are returned. Source file remains externally referenced",
-            civil_tin_create = "In Civil 3D only, create a native TIN surface from 3..5000 non-collinear WCS [x,y,z] vertices using the current template's default surface style",
-            civil_tin_add_points = "In Civil 3D only, add 3..5000 WCS [x,y,z] vertices to an existing TIN surface by handle",
-            ellipse = "major_axis is a nonzero WCS XY vector from the center; radius_ratio is >0 and <=1; optional start/end angles default to 0/360 degrees",
-            hatch = "boundaries:[handle or earlier id], closed polylines/circles; first is outer, others are islands; pattern defaults SOLID",
-            set = "Only properties supported by the entity type are accepted; text is DBText/MText/Dimension; attributed blocks move/rotate through transform tools; use attributes to change tag values",
-            cylinder = "center is center of bottom face, height positive along WCS Z", box = "center is solid center",
-            color_index = "ACI 0..256 for entities (0 ByBlock, 256 ByLayer); layers 1..255", lineweight = "hundredths of mm; -1 ByLayer, -2 ByBlock, -3 default" },
-        example = new object[] { new { op = "layer", name = "Сеть", color_index = 3 }, new { op = "line", id = "pipe", start = new[] { 0, 0, 0 }, end = new[] { 100, 0, 0 }, layer = "Сеть" }, new { op = "move", target = "pipe", displacement = new[] { 0, 50, 0 } } }
-    }, Wire.Json) }] };
+    public static CallToolResult EditHelp() => new() { Content = [new TextContentBlock { Text = HelpContract("edit-help.json", new()
+        { ["operations"] = JsonSerializer.SerializeToNode(EditPlan.Fields, Wire.Json) }) }] };
+    /// <summary>Static contract text lives in Resources/*.json; operation lists come from the validating code.</summary>
+    private static string HelpContract(string resource, JsonObject generated)
+    {
+        using var stream = typeof(CadTools).Assembly.GetManifestResourceStream("CadMcp.Host.Resources." + resource)
+            ?? throw new InvalidOperationException("Missing help resource " + resource);
+        var contract = JsonNode.Parse(stream)!.AsObject();
+        foreach (var (key, value) in contract.ToArray()) { contract.Remove(key); generated[key] = value; }
+        return generated.ToJsonString(Wire.Json);
+    }
     [McpServerTool(Name = "cad_edit", ReadOnly = false, Destructive = true, Idempotent = false), Description("Create/edit DWG entities in one native C# transaction, immediately as requested. Read cad_edit_help first. Includes polygon meshes, 3D polylines and splines, solid primitives/extrude/sweep/revolve/Boolean operations, blocks, layouts, dimensions and transforms. Supply a unique operation_id for status/replay. Returns handles and database readback. Never automatically retry an unknown mutation.")]
     public static Task<CallToolResult> Edit(string session_id, string document_id, long expected_revision, string operation_id, string operations_json, CancellationToken ct, string? expectations_json = null) =>
         Call("cad_edit", session_id, document_id, new { operation_id, operations_json, expectations_json }, expected_revision, ct);
@@ -168,24 +143,22 @@ public sealed class CadTools
         string? handles_json = null, string view_name = "current", string? view_direction_json = null, string? layout_name = null, string? bounds_json = null)
     {
         var response = await ScopedResponse("cad_render",session_id,document_id,new {width,height,handles_json,view_name,view_direction_json,layout_name,bounds_json},expected_revision,ct);
-        if (response.Error is not null) return new() { IsError = true, Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response, Wire.Json) }] };
-        var data = (JsonElement)response.Data!;
-        var metadata = data.EnumerateObject().Where(p => p.Name != "image_base64").ToDictionary(p => p.Name, p => p.Value);
-        var imageId = data.Text("image_id");
-        if (Guid.TryParseExact(imageId, "N", out _))
+        if (response.Error is not null) return Result(response);
+        Response Failed(string code, string message) => response with { Status = "failed", Data = null, Error = new(code, message) };
+        if (response.Data is not JsonElement { ValueKind: JsonValueKind.Object } data) return Result(Failed("INVALID_RENDER_RESPONSE", "AutoCAD returned no preview data"));
+        byte[] image;
+        try { image = Convert.FromBase64String(data.Text("image_base64") ?? throw new FormatException("image_base64 is missing")); }
+        catch (Exception error) when (error is FormatException or InvalidOperationException)
+        { return Result(Failed("INVALID_RENDER_IMAGE", "AutoCAD returned an unreadable preview: " + error.Message)); }
+        var metadata = data.EnumerateObject().Where(p => p.Name != "image_base64").ToDictionary(p => p.Name, p => p.Value.Clone());
+        if (data.Text("image_id") is { } imageId && Guid.TryParseExact(imageId, "N", out _))
         {
-            try
-            {
-            var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "previews");
-            Directory.CreateDirectory(folder); string path = Path.Combine(folder, imageId + ".png");
-            File.WriteAllBytes(path, Convert.FromBase64String(data.Text("image_base64")!));
-            metadata["local_image_path"] = Wire.Element(path);
-            }
+            try { metadata["local_image_path"] = Wire.Element(PreviewFiles.Save(imageId, image)); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             { metadata["preview_file_warning"] = Wire.Element(error.Message); }
         }
         return new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response with { Data = metadata }, Wire.Json) },
-            ImageContentBlock.FromBytes(Convert.FromBase64String(data.GetProperty("image_base64").GetString()!), "image/png")] };
+            ImageContentBlock.FromBytes(image, "image/png")] };
     }
     private sealed record CalibratedReference(ReferenceImage Image, PhotoReference Fit);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CalibratedReference> References = new();

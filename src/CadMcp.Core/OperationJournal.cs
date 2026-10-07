@@ -12,6 +12,9 @@ public sealed class OperationJournal
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly string? directory;
     private readonly HashSet<string> recorded = new(StringComparer.Ordinal);
+    // Listing metadata, so cad_operation_list does not re-read every receipt on each call.
+    private readonly record struct Listing(string DocumentId, string? OwnerId, DateTimeOffset? CreatedAt);
+    private readonly Dictionary<string, Listing> listings = new(StringComparer.Ordinal);
     public int Count { get { lock (sync) return recorded.Count; } }
     public string Persistence => directory is null ? "memory" : "disk_worker_session";
     public OperationJournal(string? directory = null)
@@ -35,15 +38,13 @@ public sealed class OperationJournal
         Validate(id);
         if (entries.TryGetValue(id, out var cached)) return cached;
         if (directory is null || !recorded.Contains(id)) return null;
-        try
-        {
-            var entry = JsonSerializer.Deserialize<Entry>(File.ReadAllText(Path.Combine(directory, id + ".json")), Wire.Json)
-                ?? throw new JsonException("Empty operation receipt");
-            Cache(id, entry); return entry;
-        }
+        try { var entry = ReadEntry(id); Cache(id, entry); return entry; }
         catch (Exception e) when (e is JsonException or IOException)
         { throw new CadFault("JOURNAL_UNREADABLE", "Cannot verify recorded operation; inspect drawing before retrying: " + e.Message); }
     }
+    private Entry ReadEntry(string id) =>
+        JsonSerializer.Deserialize<Entry>(File.ReadAllText(Path.Combine(directory!, id + ".json")), Wire.Json)
+            ?? throw new JsonException("Empty operation receipt");
     private void Cache(string id, Entry entry)
     {
         if (directory is not null && entries.Count >= 128)
@@ -52,6 +53,7 @@ public sealed class OperationJournal
             if (terminal.Key is not null) entries.Remove(terminal.Key);
         }
         entries[id] = entry;
+        listings[id] = new(entry.DocumentId, entry.Request?.OwnerId, entry.CreatedAt);
     }
     private void Save(string id, Entry entry)
     {
@@ -102,13 +104,37 @@ public sealed class OperationJournal
         }
         return result;
     }
-    public IReadOnlyList<(string Id, Entry Entry)> Recent(string document, DateTimeOffset since, int limit = 50,string? owner=null)
+    /// <summary>
+    /// Newest receipts of one drawing. An unreadable receipt is skipped and its id is added to
+    /// <paramref name="unreadable"/>; it never hides the readable ones.
+    /// </summary>
+    public IReadOnlyList<(string Id, Entry Entry)> Recent(string document, DateTimeOffset since, int limit = 50, string? owner = null, ICollection<string>? unreadable = null)
     {
         if (limit is < 1 or > 100) throw new CadFault("INVALID_LIMIT", "Operation list limit must be 1..100");
         lock (sync)
-            return recorded.Select(id => (Id: id, Entry: FindCore(id)!))
-                .Where(p => p.Entry.DocumentId == document && (owner is null||p.Entry.Request?.OwnerId==owner) && (p.Entry.CreatedAt ?? DateTimeOffset.MinValue) >= since)
-                .OrderByDescending(p => p.Entry.CreatedAt).Take(limit).ToArray();
+        {
+            var result = new List<(string Id, Entry Entry)>();
+            foreach (var id in recorded.Where(id => Listed(id, unreadable) is { } l && l.DocumentId == document
+                    && (owner is null || l.OwnerId == owner) && (l.CreatedAt ?? DateTimeOffset.MinValue) >= since)
+                .OrderByDescending(id => listings[id].CreatedAt).ThenBy(id => id, StringComparer.Ordinal))
+            {
+                if (result.Count == limit) break;
+                // Read without caching: listing must not evict the hot receipts of operations in progress.
+                try { result.Add((id, entries.TryGetValue(id, out var cached) ? cached : ReadEntry(id))); }
+                catch (Exception e) when (e is JsonException or IOException) { unreadable?.Add(id); }
+            }
+            return result;
+        }
+    }
+    private Listing? Listed(string id, ICollection<string>? unreadable)
+    {
+        if (listings.TryGetValue(id, out var known)) return known;
+        try
+        {
+            var entry = ReadEntry(id);
+            return listings[id] = new(entry.DocumentId, entry.Request?.OwnerId, entry.CreatedAt);
+        }
+        catch (Exception e) when (e is JsonException or IOException) { unreadable?.Add(id); return null; }
     }
     public static object Summary(string id, Entry entry, bool active = true)
     {
