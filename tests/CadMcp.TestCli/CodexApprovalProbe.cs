@@ -4,7 +4,7 @@ using System.Text.Json;
 using CadMcp.Core;
 using CadMcp.Providers;
 
-namespace CadMcp.Tests;
+namespace CadMcp.TestCli;
 
 internal static class CodexApprovalProbe
 {

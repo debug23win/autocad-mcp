@@ -98,7 +98,7 @@ try {
         }
         Copy-Item -LiteralPath 'installer/codex-assets.json' -Destination (Join-Path $codexPayload 'pinned-assets.json')
     }
-    foreach ($name in @('README.md','LICENSE','NOTICE','licenses','docs')) {
+    foreach ($name in @('README.md','CHANGELOG.md','LICENSE','NOTICE','licenses','docs')) {
         Copy-Item -LiteralPath $name -Destination $payload -Recurse
     }
     $runtimeNotices = Join-Path $payload 'licenses/dotnet-runtime-8.0.31'

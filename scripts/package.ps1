@@ -3,7 +3,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $packageRoot = Join-Path $repoRoot "artifacts/stage3a-$stamp"
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
-foreach ($name in @('README.md','LICENSE','NOTICE','Directory.Build.props','CadMcp.sln','.gitignore','.gitattributes')) {
+foreach ($name in @('README.md','CHANGELOG.md','LICENSE','NOTICE','Directory.Build.props','CadMcp.sln','.gitignore','.gitattributes','.editorconfig')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $name) -Destination $packageRoot
 }
 foreach ($name in @('docs','licenses','scripts')) {

@@ -5,10 +5,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/CadMcp.AutoCAD/NativeTables.cs;../../src/CadMcp.AutoCAD/SpdsDrafting.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/ReadingMetadata.cs;../../src/CadMcp.AutoCAD/PreviewRendering.cs;../../src/CadMcp.AutoCAD/WorkSafety.cs;../../src/CadMcp.AutoCAD/TableLinks.cs;../../src/CadMcp.AutoCAD/DrawingQuality.cs;../../src/CadMcp.AutoCAD/SolidModeling.cs;../../src/CadMcp.AutoCAD/StructuralAssemblies.cs;../../src/CadMcp.AutoCAD/StructuralSolids.cs;../../src/CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
     <Using Include="System.IO" />
     <!-- Compile production executors into an isolated test assembly so an installed preview can coexist. -->
     <Compile Include="../../src/CadMcp.Core/*.cs" Link="Core/%(Filename)%(Extension)" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
     <Compile Include="../../src/CadMcp.AutoCAD/Documents.cs" Link="Documents.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Dispatcher.cs" Link="Dispatcher.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/Edits.cs" Link="Edits.cs" />
@@ -24,5 +26,6 @@
     <Reference Include="AcMgd"><HintPath>$(AutoCADDir)\AcMgd.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="AcCoreMgd"><HintPath>$(AutoCADDir)\AcCoreMgd.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="AcDbMgd"><HintPath>$(AutoCADDir)\acdbmgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcDbMgdBrep"><HintPath>$(AutoCADDir)/AcDbMgdBrep.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 </Project>

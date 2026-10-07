@@ -1,7 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework></PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+    <Using Include="Xunit" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />
     <ProjectReference Include="../../src/CadMcp.Providers/CadMcp.Providers.csproj" />
+    <ProjectReference Include="../../src/CadMcp.Host/CadMcp.Host.csproj" />
+    <!-- Built for the tests, which start it as the fake Codex / Claude Code process. -->
+    <ProjectReference Include="../CadMcp.TestCli/CadMcp.TestCli.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using CadMcp.Core;
 using CadMcp.Providers;
-namespace CadMcp.Tests;
+namespace CadMcp.TestCli;
 
 internal static class SubagentProbe
 {
