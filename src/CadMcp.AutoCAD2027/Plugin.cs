@@ -23,7 +23,7 @@ public sealed class Plugin : IExtensionApplication
     {
         try
         {
-        documents = new(); dispatcher = new(documents); dispatcher.Start();
+        documents = new(); dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show }; dispatcher.Start();
         int pid = Environment.ProcessId; string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
         server = new(pipe, dispatcher.Enqueue); server.Start();
         descriptor = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, pid, Wire.Version));
@@ -60,6 +60,8 @@ public sealed class Plugin : IExtensionApplication
         }
         catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP chat: " + error.Message); }
     }
+    [CommandMethod("CADMCPLISP", CommandFlags.Session)]
+    public static void LispPolicyCommand() => LispPolicyPrompt.Run();
     [LispFunction("CADMCPBEGIN")]
     public static string? Begin(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]

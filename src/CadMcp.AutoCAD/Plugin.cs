@@ -1,7 +1,6 @@
 using System.Windows.Input;
 using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.DatabaseServices;
-using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Windows;
 using Autodesk.Windows;
 using CadMcp.Core;
@@ -64,25 +63,7 @@ public sealed class Plugin : IExtensionApplication
     }
     /// <summary>The user's AutoLISP policy for agents. Agents cannot change it; CAD_MCP_LISP_POLICY overrides it for unattended runs.</summary>
     [CommandMethod("CADMCPLISP", CommandFlags.Session)]
-    public static void LispPolicyCommand()
-    {
-        var editor = App.DocumentManager.MdiActiveDocument?.Editor;
-        if (editor is null) return;
-        var current = CadSettings.StoredLispPolicy();
-        var options = new PromptKeywordOptions("\nAutoLISP, запрошенный агентами CAD MCP") { AppendKeywordsToMessage = true };
-        options.Keywords.Add("Ask", "Спрашивать", "Спрашивать");
-        options.Keywords.Add("AutoSafe", "Безопасный", "Безопасный");
-        options.Keywords.Add("Allow", "Разрешать", "Разрешать");
-        options.Keywords.Add("Deny", "Запретить", "Запретить");
-        options.Keywords.Default = current switch { LispPolicyMode.AutoSafe => "AutoSafe", LispPolicyMode.Allow => "Allow", LispPolicyMode.Deny => "Deny", _ => "Ask" };
-        var result = editor.GetKeywords(options);
-        if (result.Status != PromptStatus.OK) return;
-        var mode = result.StringResult switch { "AutoSafe" => LispPolicyMode.AutoSafe, "Allow" => LispPolicyMode.Allow, "Deny" => LispPolicyMode.Deny, _ => LispPolicyMode.Ask };
-        try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; }
-        catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage("\nCAD MCP: не удалось сохранить настройку: " + error.Message); return; }
-        editor.WriteMessage("\nCAD MCP: AutoLISP — " + LispPolicy.Label(mode) +
-            (Environment.GetEnvironmentVariable("CAD_MCP_LISP_POLICY") is { Length: > 0 } environment ? ". Внимание: переменная CAD_MCP_LISP_POLICY=" + environment + " имеет приоритет" : ""));
-    }
+    public static void LispPolicyCommand() => LispPolicyPrompt.Run();
     [LispFunction("CADMCPBEGIN")]
     public static string? BeginLisp(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]

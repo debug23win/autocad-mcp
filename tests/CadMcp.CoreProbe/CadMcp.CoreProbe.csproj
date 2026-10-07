@@ -6,6 +6,7 @@
     <Compile Include="../../src/CadMcp.AutoCAD/WorkSafety.cs;../../src/CadMcp.AutoCAD/TableLinks.cs;../../src/CadMcp.AutoCAD/DrawingQuality.cs;../../src/CadMcp.AutoCAD/SolidModeling.cs;../../src/CadMcp.AutoCAD/StructuralAssemblies.cs;../../src/CadMcp.AutoCAD/StructuralSolids.cs;../../src/CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/NativeTables.cs;../../src/CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/QualityChecks.cs" />
     <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />
     <Compile Include="../../src/CadMcp.AutoCAD/Documents.cs;../../src/CadMcp.AutoCAD/Reader.cs;../../src/CadMcp.AutoCAD/Edits.cs;../../src/CadMcp.AutoCAD/Sheets.cs;../../src/CadMcp.AutoCAD/RasterImages.cs;../../src/CadMcp.AutoCAD/Exports.cs;../../src/CadMcp.AutoCAD/PdfRepair.cs;../../src/CadMcp.AutoCAD/Catalog.cs;../../src/CadMcp.AutoCAD/Verticals.cs;../../src/CadMcp.AutoCAD/DrawingSearch.cs;../../src/CadMcp.AutoCAD/UndoGroup.cs;../../src/CadMcp.AutoCAD/Dispatcher.cs" />
     <Reference Include="AcCoreMgd"><HintPath>$(AutoCADDir)/AcCoreMgd.dll</HintPath><Private>false</Private></Reference>

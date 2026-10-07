@@ -9,6 +9,7 @@ using Orientation = System.Windows.Controls.Orientation;
 using TextBox = System.Windows.Controls.TextBox;
 using Brushes = System.Windows.Media.Brushes;
 using SystemColors = System.Windows.SystemColors;
+using EditorInput = Autodesk.AutoCAD.EditorInput;
 
 namespace CadMcp.AutoCAD;
 
@@ -100,5 +101,29 @@ internal sealed class LispApprovalWindow : Window
             window.decided = null;
             if (window.IsVisible) window.Close();
         }
+    }
+}
+
+/// <summary>Command CADMCPLISP: the user's policy for AutoLISP requested by agents, stored in the CAD MCP settings.</summary>
+internal static class LispPolicyPrompt
+{
+    public static void Run()
+    {
+        var editor = App.DocumentManager.MdiActiveDocument?.Editor;
+        if (editor is null) return;
+        var current = CadSettings.StoredLispPolicy();
+        var options = new EditorInput.PromptKeywordOptions("\nAutoLISP, запрошенный агентами CAD MCP") { AppendKeywordsToMessage = true };
+        options.Keywords.Add("Ask", "Спрашивать", "Спрашивать");
+        options.Keywords.Add("AutoSafe", "Безопасный", "Безопасный");
+        options.Keywords.Add("Allow", "Разрешать", "Разрешать");
+        options.Keywords.Add("Deny", "Запретить", "Запретить");
+        options.Keywords.Default = current switch { LispPolicyMode.AutoSafe => "AutoSafe", LispPolicyMode.Allow => "Allow", LispPolicyMode.Deny => "Deny", _ => "Ask" };
+        var result = editor.GetKeywords(options);
+        if (result.Status != EditorInput.PromptStatus.OK) return;
+        var mode = result.StringResult switch { "AutoSafe" => LispPolicyMode.AutoSafe, "Allow" => LispPolicyMode.Allow, "Deny" => LispPolicyMode.Deny, _ => LispPolicyMode.Ask };
+        try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; }
+        catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage("\nCAD MCP: не удалось сохранить настройку: " + error.Message); return; }
+        editor.WriteMessage("\nCAD MCP: AutoLISP — " + LispPolicy.Label(mode) +
+            (Environment.GetEnvironmentVariable("CAD_MCP_LISP_POLICY") is { Length: > 0 } environment ? ". Внимание: переменная CAD_MCP_LISP_POLICY=" + environment + " имеет приоритет" : ""));
     }
 }
