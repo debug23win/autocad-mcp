@@ -15,6 +15,8 @@ public sealed class OperationControl : IDisposable
         return job.Cancellation.Token;
     }
     public void Phase(string id, string phase) { if (jobs.TryGetValue(id, out var job)) job.Phase = phase; }
+    /// <summary>Current phase of an accepted, unfinished operation; null once it completed.</summary>
+    public string? PhaseOf(string id) => jobs.TryGetValue(id, out var job) ? job.Phase : null;
     public string[] Cancel(Request request)
     {
         if (string.IsNullOrWhiteSpace(request.OwnerId)) throw new CadFault("OWNER_REQUIRED", "Cancellation requires the originating chat owner");

@@ -8,14 +8,22 @@ public static class LispScript
     public static string Wrap(string id)
     {
         if (id.Length is < 1 or > 96 || id.Any(c => !Portable.AsciiLetterOrDigit(c) && c is not ('-' or '_'))) throw new ArgumentException("Invalid operation id");
-        return "((lambda (/ code value undo-start undo-end) " +
+        // While the script runs, running object snaps are suspended (OSMODE bit 16384), so command points land
+        // exactly on the supplied coordinates, and FILEDIA/CMDDIA are off, so commands prompt on the command
+        // line instead of waiting in a dialog. The user's values are restored even after an error.
+        return "((lambda (/ code value undo-start undo-end saved item) " +
             $"(setq code (cadmcpbegin \"{id}\")) " +
             "(if code (progn " +
             "(setq undo-start (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_Begin\"))) " +
             "(if (vl-catch-all-error-p undo-start) " +
             $"(cadmcpfinish \"{id}\" 0 (vl-catch-all-error-message undo-start)) " +
             "(progn " +
+            "(setq saved (mapcar '(lambda (name) (cons name (getvar name))) '(\"OSMODE\" \"FILEDIA\" \"CMDDIA\"))) " +
+            "(vl-catch-all-apply 'setvar (list \"OSMODE\" (logior (cdr (assoc \"OSMODE\" saved)) 16384))) " +
+            "(vl-catch-all-apply 'setvar '(\"FILEDIA\" 0)) " +
+            "(vl-catch-all-apply 'setvar '(\"CMDDIA\" 0)) " +
             "(setq value (vl-catch-all-apply (function (lambda () (eval (read code)))))) " +
+            "(foreach item saved (vl-catch-all-apply 'setvar (list (car item) (cdr item)))) " +
             "(setq undo-end (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_End\"))) " +
             $"(cadmcpfinish \"{id}\" " +
             "(if (or (vl-catch-all-error-p value) (vl-catch-all-error-p undo-end)) 0 1) " +

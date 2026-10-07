@@ -25,6 +25,9 @@ internal sealed class ChatPanel : UserControl
     private readonly ComboBox model = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox reasoning = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox agentCount = new() { ItemsSource = new[] { "Выключены", "До 2 помощников", "До 3 помощников", "До 4 помощников" }, SelectedIndex = 2 };
+    // One user-wide AutoLISP policy (same order as LispPolicyMode); agents cannot change it.
+    private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { "Спрашивать перед каждым запуском", "Без вопросов, если нет опасных функций", "Разрешать без вопросов", "Запретить" } };
+    private bool loadingLispPolicy;
     private readonly Button refreshModels = new() { Content = "Обновить список моделей", Margin = new Thickness(0, 4, 0, 4) };
     private readonly TextBox executable = new() { Text = "codex.exe" };
     private readonly TextBox host = new() { Text = "Полный путь к CadMcp.Host.exe" };
@@ -108,7 +111,7 @@ internal sealed class ChatPanel : UserControl
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
                 input.AppendText("\nИспользуй текущее выделение в чертеже «" + data.Text("name") + "»: " + selected.GetRawText() + ". Перед работой перечитай актуальный контекст.");
         }; cadButtons.Children.Add(selection);
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount), ("AutoLISP по запросу агента", lispPolicy) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
         var connection = new StackPanel();
@@ -157,6 +160,16 @@ internal sealed class ChatPanel : UserControl
             if (restoring) return;
             maxSubagents = agentCount.SelectedIndex switch { 1 => 2, 2 => 3, 3 => 4, _ => 0 };
             Persist();
+        };
+        void LoadLispPolicy() { loadingLispPolicy = true; try { lispPolicy.SelectedIndex = (int)CadSettings.StoredLispPolicy(); } finally { loadingLispPolicy = false; } }
+        LoadLispPolicy();
+        Loaded += (_, _) => LoadLispPolicy();
+        lispPolicy.SelectionChanged += (_, _) =>
+        {
+            if (loadingLispPolicy || lispPolicy.SelectedIndex < 0) return;
+            var mode = (LispPolicyMode)lispPolicy.SelectedIndex;
+            try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; activity.Text = "AutoLISP: " + LispPolicy.Label(mode); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = "Не удалось сохранить настройку AutoLISP: " + error.Message; }
         };
         refreshModels.Click += async (_, _) => await RefreshModels();
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
