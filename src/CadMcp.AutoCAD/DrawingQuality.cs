@@ -156,10 +156,11 @@ internal static class DrawingQuality
     private static double? Elevation(Entity curve,double tolerance)
     {
         static bool Up(Vector3d normal)=>normal.IsParallelTo(Vector3d.ZAxis);
-        double flat=Math.Max(tolerance,1e-9);
+        // Absolute tolerance, or a relative one far from the origin; never the tolerance scaled by the elevation.
+        double Flat(double z)=>Math.Max(Math.Max(tolerance,1e-9),1e-9*Math.Max(1,Math.Abs(z)));
         switch(curve)
         {
-            case Line line: return Math.Abs(line.StartPoint.Z-line.EndPoint.Z)<=flat*Math.Max(1,Math.Abs(line.StartPoint.Z))?line.StartPoint.Z:null;
+            case Line line: return Math.Abs(line.StartPoint.Z-line.EndPoint.Z)<=Flat(line.StartPoint.Z)?line.StartPoint.Z:null;
             case Arc arc: return Up(arc.Normal)?arc.Center.Z:null;
             case Circle circle: return Up(circle.Normal)?circle.Center.Z:null;
             case Ellipse ellipse: return Up(ellipse.Normal)?ellipse.Center.Z:null;
@@ -168,7 +169,7 @@ internal static class DrawingQuality
             default:
                 // 3D polylines and splines have no thickness: their extents show whether they leave the plane.
                 var box=curve.GeometricExtents;
-                return box.MaxPoint.Z-box.MinPoint.Z<=flat*Math.Max(1,Math.Abs(box.MaxPoint.Z))?box.MinPoint.Z:null;
+                return box.MaxPoint.Z-box.MinPoint.Z<=Flat(box.MaxPoint.Z)?box.MinPoint.Z:null;
         }
     }
     internal static double Diagonal(IEnumerable<Entity> entities)

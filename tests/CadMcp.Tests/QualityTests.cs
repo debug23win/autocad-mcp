@@ -123,6 +123,13 @@ public sealed class QualityTests
     [InlineData("Уклон 50%%%", "50%", "60%", false, "Уклон 60%%%", 1)]
     [InlineData("%%ccc", "cc", "dd", false, "%%cdd", 1)]
     [InlineData("100%% wide", "%%", "pct", false, "100pct wide", 1)]
+    // A symbol written as a code next to a literal %, in any mix.
+    [InlineData("i=%%p0.5%", "±0.5%", "±1%", false, "i=%%p1%%%", 1)]
+    [InlineData("%%c50%", "Ø50%", "Ø60%", false, "%%c60%%%", 1)]
+    [InlineData("45%%d 10%", "45° 10%", "30° 10%", false, "30%%d 10%%%", 1)]
+    [InlineData("{\\fArial|b0;%%p5%}", "±5%", "±6%", true, "{\\fArial|b0;%%p6%%%}", 1)]
+    // A search written with codes works on the stored text and writes the new text as typed.
+    [InlineData("%%c20", "%%c", "⌀", false, "⌀20", 1)]
     [InlineData("\\U+00D8108", "U", "u", false, "\\U+00D8108", 0)]
     [InlineData("{\\fArial|b0;Path}", "Path", "C:\\Data\\{New}", true, "{\\fArial|b0;C:\\\\Data\\\\\\{New\\}}", 1)]
     public void Replacement_never_cuts_through_control_codes(string raw, string find, string replace, bool mtext, string expected, int count)

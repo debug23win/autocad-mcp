@@ -52,7 +52,8 @@ internal static class Exports
                 // The PDF is written; a reader failure leaves its check unverified instead of stopping the set.
                 object pdf;
                 try { pdf = PdfVerification.Check(paths[i], 1, paper); }
-                catch (System.Exception readError) when (readError is not OperationCanceledException) { pdf = new { state = "unverified", error = readError.GetType().Name + ": " + readError.Message }; }
+                catch (System.Exception readError) when (readError is not OperationCanceledException)
+                { pdf = new { state = "unverified", warnings = new[] { new { code = "PDF_UNVERIFIED", detail = readError.GetType().Name + ": " + readError.Message } }, error = readError.GetType().Name + ": " + readError.Message }; }
                 using var file = File.OpenRead(paths[i]);
                 produced.Add(new { pdf, number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
                     sha256 = Convert.ToHexString(SHA256.HashData(file)) });
@@ -81,7 +82,7 @@ internal static class Exports
         File.WriteAllText(csvPath, csv.ToString(), Encoding.UTF8);
         // Page size and empty-page findings do not fail the set, but the release needs review.
         var reviews = produced.Select(item => Wire.Element(item).GetProperty("pdf")).Where(pdf => pdf.Text("state") != "passed")
-            .Select(pdf => pdf.GetProperty("warnings").Clone()).ToArray();
+            .Select(pdf => pdf.TryGetProperty("warnings", out var warnings) ? warnings.Clone() : pdf.Clone()).ToArray();
         return new { manifest.status, manifest_path = manifestPath, csv_path = csvPath,
             files = produced, preflight, manifest.completeness, manifest.failed_layout, manifest.error,
             pdf_review = reviews.Length == 0 ? "passed" : "review_required", pdf_warnings = reviews.Length == 0 ? null : reviews,

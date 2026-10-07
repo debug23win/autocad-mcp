@@ -170,11 +170,20 @@ public static class CadText
     public static (string Text, int Count) Replace(string raw, string find, string replace, bool matchCase = false, bool wholeWord = false, bool mtext = false)
     {
         if (string.IsNullOrEmpty(raw) || string.IsNullOrEmpty(find)) return (raw ?? "", 0);
-        string encodedFind = Encode(find), encodedReplace = Encode(replace);
+        string encodedReplace = Encode(replace);
+        bool rawFind = find.Contains("%%", StringComparison.Ordinal);
         // In MText a backslash or brace of the new text would start a formatting code.
         if (mtext) { replace = EscapeMText(replace); encodedReplace = EscapeMText(encodedReplace); }
-        // The stored (encoded) form is tried first: "50%" must match the whole "50%%%", not stop inside its code.
-        var pattern = (encodedFind != find ? "(?<code>" + Regex.Escape(encodedFind) + ")|" : "") + "(?<plain>" + Regex.Escape(find) + ")";
+        // Each symbol of the search matches its displayed form or its control code, in any mix ("±0.5%" finds
+        // "%%p0.5%"); the stored form %%% of a single % is tried first, so "50%" takes the whole "50%%%".
+        var pattern = string.Concat(find.Select(c => c switch
+        {
+            'Ø' or 'ø' or '⌀' or '∅' => "(?:[Øø⌀∅]|%%[cC])",
+            Degree => "(?:°|%%[dD])",
+            PlusMinus => "(?:±|%%[pP])",
+            '%' => "(?:%%%|%)",
+            _ => Regex.Escape(c.ToString())
+        }));
         if (wholeWord) pattern = @"(?<![\p{L}\p{N}_])(?:" + pattern + @")(?![\p{L}\p{N}_])";
         var regex = new Regex(pattern, (matchCase ? RegexOptions.None : RegexOptions.IgnoreCase) | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
         int count = 0;
@@ -192,7 +201,9 @@ public static class CadText
                     m = m.Index + 1 <= text.Length ? regex.Match(text, m.Index + 1) : Match.Empty;
                     continue;
                 }
-                output.Append(text, copied, m.Index - copied).Append(m.Groups["code"].Success ? encodedReplace : replace);
+                // Text written with codes gets the new text with codes, so it looks the same in every font; a search that
+                // itself names codes ("%%c") works on the stored form and writes the new text as given.
+                output.Append(text, copied, m.Index - copied).Append(!rawFind && m.Value.Contains("%%", StringComparison.Ordinal) ? encodedReplace : replace);
                 copied = m.Index + m.Length;
                 count++;
                 m = regex.Match(text, copied);

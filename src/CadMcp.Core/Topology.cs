@@ -23,14 +23,16 @@ public sealed record TopologyReport(string State, int Curves, int Segments, IRea
 /// <summary>
 /// Independent 2D topology check of drawn linework: dangling ends, near misses, T-junctions,
 /// crossings without a node, overlapping or duplicate geometry, self-intersections and zero-length
-/// curves. A uniform grid keeps it near-linear in the number of segments.
+/// curves. A hierarchy of grids keeps it near-linear in the number of segments.
 /// </summary>
 public static class Topology
 {
     public const string Warning = "warning", Info = "info", Unverified = "unverified";
     private const int MaxSegments = 200_000, MaxRegistrations = 4_000_000;
-    // Relation tests allowed in one check; beyond it the geometry is reported as too dense instead of freezing CAD.
-    private const long MaxPairTests = 40_000_000;
+    // Work allowed in one check, a few seconds at most; beyond it the geometry is reported as too dense instead of
+    // freezing CAD: box and distance comparisons of segments and endpoints sharing a cell, and relation tests of the
+    // segments whose boxes touch.
+    private const long MaxScans = 500_000_000, MaxPairTests = 200_000_000;
     // Grid levels: each is Fanout times coarser, and a segment lives on the finest level where it spans at most
     // MaxSteps half-cells.
     private const int Fanout = 8, MaxSteps = 64, MaxLevels = 30;
@@ -117,17 +119,14 @@ public static class Topology
 
         // A hierarchy of grids: level k has cells of cell·8^k and holds the segments that span at most 64 of its
         // half-cells, so short segments get small cells while long or distant ones sit on a coarser level instead of
-        // filling thousands of cells. Cells are never smaller than the gap or four chord deviations, so a 3x3
-        // neighbourhood holds every candidate and an endpoint on a sampled arc still touches it.
+        // filling thousands of cells. Cells are never smaller than the gap, and a curved segment sits on a level whose
+        // cells are at least four times its chord deviation, so a 3x3 neighbourhood holds every candidate and an
+        // endpoint on a sampled arc still touches it, without one arc coarsening the cells of everything else.
         double minX = double.MaxValue, minY = double.MaxValue;
         foreach (var s in segments) { minX = Math.Min(minX, Math.Min(s.Ax, s.Bx)); minY = Math.Min(minY, Math.Min(s.Ay, s.By)); }
         var lengths = segments.Select(s => s.Length).ToArray();
         Array.Sort(lengths);
-        var chordDeviations = segments.Select(s => s.Deviation).Where(d => double.IsFinite(d) && d > 0).ToArray();
-        Array.Sort(chordDeviations);
-        // A rare crudely sampled curve does not coarsen every cell: the 99.9th percentile sets the floor.
-        double typicalDeviation = chordDeviations.Length == 0 ? 0 : chordDeviations[Math.Min(chordDeviations.Length - 1, (int)(chordDeviations.Length * 0.999))];
-        double cell = Math.Max(Math.Max(lengths.Length == 0 ? 1 : lengths[lengths.Length / 2], 2 * Math.Max(gap, tol)), 4 * typicalDeviation);
+        double cell = Math.Max(lengths.Length == 0 ? 1 : lengths[lengths.Length / 2], 2 * Math.Max(gap, tol));
         if (!double.IsFinite(cell) || cell <= 0) cell = 1;
         double Size(int level) => cell * Math.Pow(Fanout, level);
         var grids = new List<Dictionary<(long, long), List<int>>>();
@@ -139,12 +138,15 @@ public static class Topology
         {
             if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
             var s = segments[i];
+            double deviation = double.IsFinite(s.Deviation) ? Math.Max(0, s.Deviation) : 0;
             int level = 0;
-            while (level < MaxLevels && s.Length / (Size(level) / 2) > MaxSteps) level++;
+            while (level < MaxLevels && (s.Length / (Size(level) / 2) > MaxSteps || Size(level) < 4 * deviation)) level++;
+            double size = Size(level), span = Math.Ceiling(s.Length / (size / 2));
+            // Only absurd coordinates exceed the coarsest level; they are reported, never registered cell by cell.
+            if (!(span <= MaxSteps)) { registrations = MaxRegistrations + 1; break; }
             while (grids.Count <= level) grids.Add(new());
             levels[i] = level;
-            double size = Size(level);
-            int steps = Math.Max(1, (int)Math.Ceiling(s.Length / (size / 2)));
+            int steps = Math.Max(1, (int)span);
             registered.Clear();
             for (int k = 0; k <= steps; k++)
             {
@@ -159,8 +161,21 @@ public static class Topology
                 }
             }
         }
+        // Boxes of the segments grown by the tolerance: segments whose boxes miss each other cannot touch.
+        var boxes = new (double X0, double Y0, double X1, double Y1)[segments.Count];
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var s = segments[i];
+            boxes[i] = (Math.Min(s.Ax, s.Bx) - tol, Math.Min(s.Ay, s.By) - tol, Math.Max(s.Ax, s.Bx) + tol, Math.Max(s.Ay, s.By) + tol);
+        }
+        bool Touch(int a, int b)
+        {
+            ref var p = ref boxes[a]; ref var q = ref boxes[b];
+            return p.X0 <= q.X1 && q.X0 <= p.X1 && p.Y0 <= q.Y1 && q.Y0 <= p.Y1;
+        }
         // Candidates on a coarser level are found from the cells along the finer segment: those segments were registered
-        // with their neighbourhood, so any within a coarse cell of it is listed there.
+        // with their neighbourhood, so any within a coarse cell of it is listed there. The scan stops at the work limit.
+        long scans = 0;
         IEnumerable<int> Coarser(int index)
         {
             var s = segments[index];
@@ -176,30 +191,44 @@ public static class Topology
                     var key = (Cell(s.Ax + (s.Bx - s.Ax) * t, minX, size), Cell(s.Ay + (s.By - s.Ay) * t, minY, size));
                     if (key == previous) continue;
                     previous = key;
-                    if (grids[level].TryGetValue(key, out var list)) foreach (int other in list) yield return other;
+                    if (!grids[level].TryGetValue(key, out var list)) continue;
+                    foreach (int other in list)
+                    {
+                        if ((++scans & 0xFFFF) == 0) { ct.ThrowIfCancellationRequested(); if (scans > MaxScans) yield break; }
+                        if (Touch(index, other)) yield return other;
+                    }
                 }
             }
         }
-        long pairTests = 0;
-        foreach (var grid in grids) foreach (var list in grid.Values) pairTests += (long)list.Count * (list.Count - 1) / 2;
-        if (pairTests <= MaxPairTests && grids.Count > 1)
-            for (int i = 0; i < segments.Count && pairTests <= MaxPairTests; i++)
-            {
-                if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
-                foreach (int _ in Coarser(i)) pairTests++;
-            }
-        if (registrations > MaxRegistrations || pairTests > MaxPairTests)
+        TopologyReport Limit()
         {
             Add("TOPOLOGY_LIMIT", Unverified, [], 0, 0, null, segments.Count, "Geometry too dense or too large for one check; narrow the scope by layer or bounds");
             return Report();
         }
+        if (registrations > MaxRegistrations) return Limit();
+        // Chord deviation counted for an endpoint test, at most a quarter cell of the segment's level so the point stays
+        // within its registered neighbourhood.
+        var segmentDeviation = new double[segments.Count];
+        for (int i = 0; i < segments.Count; i++)
+            segmentDeviation[i] = double.IsFinite(segments[i].Deviation) ? Math.Clamp(segments[i].Deviation, 0, Size(levels[i]) / 4) : 0;
+        // Segments that may come within the tolerance or the gap of a point: farther ones cannot touch it or leave a
+        // near miss. The scan stops at the work limit.
         IEnumerable<int> Near(double x, double y)
         {
             for (int level = 0; level < grids.Count; level++)
                 if (grids[level].TryGetValue((Cell(x, minX, Size(level)), Cell(y, minY, Size(level))), out var list))
-                    foreach (int index in list) yield return index;
+                    foreach (int index in list)
+                    {
+                        if ((++scans & 0xFFFF) == 0) { ct.ThrowIfCancellationRequested(); if (scans > MaxScans) yield break; }
+                        if (Reaches(index, x, y)) yield return index;
+                    }
         }
-        double Deviation(Segment segment) => double.IsFinite(segment.Deviation) ? Math.Clamp(segment.Deviation, 0, cell / 4) : 0;
+        bool Reaches(int index, double x, double y)
+        {
+            ref var box = ref boxes[index];
+            double reach = gap + segmentDeviation[index];
+            return x >= box.X0 - reach && x <= box.X1 + reach && y >= box.Y0 - reach && y <= box.Y1 + reach;
+        }
         bool Adjacent(Segment a, Segment b)
         {
             if (a.Curve != b.Curve) return false;
@@ -229,42 +258,52 @@ public static class Topology
             }
         }
 
-        // Pairwise segment relations from shared cells of each level, then each segment against coarser levels.
+        // Pairwise segment relations from shared cells of each level, then each segment against coarser levels. A pair
+        // sharing several cells is tested in each, which is cheaper than remembering every pair; a found relation is
+        // remembered so it counts once.
         var pairs = new Dictionary<(string Code, int A, int B), (double X, double Y, int Count)>();
-        var seen = new HashSet<(int, int)>();
+        var related = new HashSet<(int, int)>();
         void Visit(int a, int b)
         {
             var s = segments[a]; var t = segments[b];
             if (s.Curve == t.Curve && (!options.SelfIntersections || Adjacent(s, t))) return;
-            if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) return;
             var relation = Relate(s, t, tol);
             if (relation is null) return;
+            if (s.Curve != t.Curve && duplicates.Contains((Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve)))) return;
             var (kind, x, y) = relation.Value;
             string? code = s.Curve == t.Curve
                 ? kind == "overlap" ? "SELF_OVERLAP" : kind == "cross" ? "SELF_INTERSECTION" : null
                 : kind == "overlap" ? "OVERLAPPING_SEGMENTS" : kind == "cross" && options.Crossings ? "UNNODED_CROSSING" : null;
-            if (code is null) return;
+            if (code is null || !related.Add((a, b))) return;
             var pairKey = (code, Math.Min(s.Curve, t.Curve), Math.Max(s.Curve, t.Curve));
             pairs[pairKey] = pairs.TryGetValue(pairKey, out var prior) ? (prior.X, prior.Y, prior.Count + 1) : (x, y, 1);
         }
-        long visited = 0;
+        // Segments sharing a cell are compared only when their boxes touch: dense parallel lines (an exploded hatch)
+        // share cells without ever touching. Work is counted as it is done.
+        long tests = 0;
         foreach (var grid in grids)
             foreach (var list in grid.Values)
                 for (int i = 0; i < list.Count; i++)
                     for (int j = i + 1; j < list.Count; j++)
                     {
-                        if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
+                        if ((++scans & 0xFFFF) == 0) { ct.ThrowIfCancellationRequested(); if (scans > MaxScans) return Limit(); }
                         int a = Math.Min(list[i], list[j]), b = Math.Max(list[i], list[j]);
-                        if (seen.Add((a, b))) Visit(a, b);
+                        if (!Touch(a, b)) continue;
+                        if (++tests > MaxPairTests) return Limit();
+                        Visit(a, b);
                     }
+        // A pair with a coarser segment is only ever found from its finer segment.
         if (grids.Count > 1)
             for (int i = 0; i < segments.Count; i++)
+            {
+                if ((i & 1023) == 0) ct.ThrowIfCancellationRequested();
                 foreach (int other in Coarser(i))
                 {
-                    if ((++visited & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
-                    int a = Math.Min(i, other), b = Math.Max(i, other);
-                    if (seen.Add((a, b))) Visit(a, b);
+                    if (++tests > MaxPairTests) return Limit();
+                    Visit(Math.Min(i, other), Math.Max(i, other));
                 }
+                if (scans > MaxScans) return Limit();
+            }
         foreach (var ((code, a, b), (x, y, count)) in pairs.OrderBy(p => p.Key.A).ThenBy(p => p.Key.B).ThenBy(p => p.Key.Code, StringComparer.Ordinal))
         {
             string[] handles = a == b ? [curves[a].Handle] : [curves[a].Handle, curves[b].Handle];
@@ -301,14 +340,18 @@ public static class Topology
                 var (c, x, y) = endpoints[e];
                 double nearestEnd = double.MaxValue; int nearestEndCurve = -1, nearestEndIndex = -1;
                 long cx = Cell(x, minX, cell), cy = Cell(y, minY, cell);
-                for (long dx = -1; dx <= 1; dx++) for (long dy = -1; dy <= 1; dy++)
+                // An end within the tolerance connects this one, so the search stops there.
+                for (long dx = -1; dx <= 1 && nearestEnd > tol; dx++) for (long dy = -1; dy <= 1 && nearestEnd > tol; dy++)
                     if (endpointGrid.TryGetValue((cx + dx, cy + dy), out var list))
                         foreach (int other in list)
                         {
+                            scans++;
                             if (other == e || endpoints[other].Curve == c) continue;
                             double d = Distance((x, y), (endpoints[other].X, endpoints[other].Y));
                             if (d < nearestEnd) { nearestEnd = d; nearestEndCurve = endpoints[other].Curve; nearestEndIndex = other; }
+                            if (nearestEnd <= tol) break;
                         }
+                if (scans > MaxScans) return Limit();
                 if (nearestEnd <= tol) continue;
                 double nearestSegment = double.MaxValue; int nearestSegmentCurve = -1;
                 foreach (int index in Near(x, y))
@@ -316,9 +359,10 @@ public static class Topology
                     var s = segments[index];
                     // A curve's own incident segments always touch its endpoint.
                     if (s.Curve == c && (s.Index == 0 || s.Index == points[c].Length - 2)) continue;
-                    double d = Math.Max(0, PointToSegment(x, y, s) - Deviation(s));
+                    double d = Math.Max(0, PointToSegment(x, y, s) - segmentDeviation[index]);
                     if (d < nearestSegment) { nearestSegment = d; nearestSegmentCurve = s.Curve; }
                 }
+                if (scans > MaxScans) return Limit();
                 if (nearestSegment <= tol)
                 {
                     Add("T_JUNCTION", Info, nearestSegmentCurve == c ? [curves[c].Handle] : [curves[c].Handle, curves[nearestSegmentCurve].Handle], x, y, nearestSegment, 1,

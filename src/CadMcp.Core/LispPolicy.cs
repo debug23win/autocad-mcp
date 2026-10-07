@@ -152,6 +152,7 @@ public static class LispPolicy
     // These names are also option keywords (PLINE Close, PEDIT Open and eXit, -LAYER New): a (command) call can
     // continue a command an earlier call left waiting. They block only where they must be a command name.
     private static readonly HashSet<string> OptionLikeDocumentCommands = new(StringComparer.OrdinalIgnoreCase) { "OPEN", "NEW", "CLOSE", "QUIT", "EXIT" };
+    private static readonly HashSet<string> FunctionForms = new(StringComparer.OrdinalIgnoreCase) { "defun", "defun-q", "lambda" };
     private static readonly HashSet<string> DocumentFunctions = new(StringComparer.OrdinalIgnoreCase) { "vla-close", "vla-activate", "vla-put-activedocument", "vla-quit" };
     // Commands that open a dialog, palette or in-place editor even with FILEDIA/CMDDIA off; a script then waits
     // for the user. Most have a command-line form with a leading hyphen.
@@ -183,8 +184,19 @@ public static class LispPolicy
         var tokens = Tokenize(code);
         var findings = new List<LispFinding>(); var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         void Add(string findingCode, string severity, string detail) { if (seen.Add(findingCode + "|" + detail)) findings.Add(new(findingCode, severity, detail)); }
-        // The wrapper completes UNDO Begin before the script, so the script's first (command) call starts a command.
+        // The wrapper completes UNDO Begin before the script, so the script's first (command) call starts a command,
+        // unless it sits in a defun or lambda body: that runs when called, possibly after another command left a prompt.
         bool firstCommand = true;
+        var deferred = new bool[tokens.Count];
+        var forms = new Stack<bool>();
+        for (int k = 0; k < tokens.Count; k++)
+        {
+            bool inside = forms.Count > 0 && forms.Peek();
+            deferred[k] = inside;
+            if (tokens[k].Kind == TokenKind.Open)
+                forms.Push(inside || k + 1 < tokens.Count && tokens[k + 1].Kind == TokenKind.Symbol && FunctionForms.Contains(tokens[k + 1].Text));
+            else if (tokens[k].Kind == TokenKind.Close && forms.Count > 0) forms.Pop();
+        }
         for (int i = 0; i < tokens.Count; i++)
         {
             var token = tokens[i];
@@ -211,7 +223,7 @@ public static class LispPolicy
                 && RiskyVariables.TryGetValue(variable.Text.Trim(), out var riskyVariable))
                 Add(riskyVariable.Code, Risky, "setvar " + variable.Text.Trim() + ": " + riskyVariable.Detail);
             if (!CommandFunctions.Contains(name) || !call) continue;
-            bool first = firstCommand;
+            bool first = firstCommand && !deferred[i - 1];
             firstCommand = false;
             var argument = i + 1 < tokens.Count ? tokens[i + 1] : default;
             if (argument.Kind != TokenKind.String) continue;

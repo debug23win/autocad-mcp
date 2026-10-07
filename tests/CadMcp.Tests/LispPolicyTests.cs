@@ -60,6 +60,9 @@ public sealed class LispPolicyTests
     // The script's first (command) starts a command, so its first string cannot be an option keyword.
     [InlineData("(command \"_CLOSE\" \"_N\")")]
     [InlineData("(vl-cmdf \"QUIT\" \"_Y\")")]
+    // A progn or condition runs in place, so its first (command) is still the script's first.
+    [InlineData("(progn (command \"_Close\" \"_N\") (princ))")]
+    [InlineData("(if (= (getvar \"DBMOD\") 0) (command \"CLOSE\"))")]
     [InlineData("(vla-open (vla-get-documents (vlax-get-acad-object)) \"c:/x.dwg\")")]
     public void Switching_or_closing_drawings_is_rejected(string code)
     {
@@ -72,6 +75,9 @@ public sealed class LispPolicyTests
     [InlineData("(command \"_.PLINE\") (foreach p pts (command p)) (command \"_Close\")")]
     [InlineData("(command \"_.-LAYER\") (command \"_New\" \"Стены\") (command \"\")")]
     [InlineData("(command \"_.PEDIT\" pl) (command \"_Open\") (command \"_eXit\")")]
+    // A (command) inside a defun or lambda runs when called and may continue a command started elsewhere.
+    [InlineData("(defun finish () (command \"_eXit\")) (command \"_.PEDIT\" (entlast)) (finish)")]
+    [InlineData("(setq answer (lambda () (command \"_Close\"))) (command \"_.PLINE\" p1 p2) (answer)")]
     public void Option_keywords_named_like_drawing_commands_are_not_blocked(string code)
     {
         // A (command) call can continue a command an earlier call left waiting: "_Close" is then the PLINE option.

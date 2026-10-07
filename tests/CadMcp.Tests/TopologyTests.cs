@@ -143,6 +143,41 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void One_arc_or_a_fan_of_long_lines_does_not_coarsen_the_whole_check()
+    {
+        // 20000 legend strokes in a 400 x 150 mm box of an 800 x 600 m site, 2000 walls, and one road arc of R = 50 m:
+        // the arc's chord deviation once set the cell size of everything and the check hit its work limit.
+        var random = new Random(5);
+        var curves = new List<TopologyCurve>();
+        for (int i = 0; i < 20000; i++)
+        {
+            double x = 1000 + random.NextDouble() * 400, y = 1000 + random.NextDouble() * 150, a = random.NextDouble() * Math.PI, length = 1 + random.NextDouble() * 2;
+            curves.Add(Line("S" + i, x, y, x + Math.Cos(a) * length, y + Math.Sin(a) * length));
+        }
+        for (int i = 0; i < 2000; i++)
+        {
+            double x = random.NextDouble() * 800000, y = random.NextDouble() * 600000, length = 1000 + random.NextDouble() * 9000;
+            curves.Add(random.Next(2) == 0 ? Line("W" + i, x, y, x + length, y) : Line("W" + i, x, y, x, y + length));
+        }
+        double sampling = Math.Sqrt(800000.0 * 800000 + 600000.0 * 600000) * 1e-5;
+        var arc = ArcSampling.Arc(400000, 300000, 50000, 0, Math.PI / 2, sampling);
+        curves.Add(new("ARC", "0", arc, false, ArcSampling.Sagitta(50000, Math.PI / 2, arc.Length - 1)));
+        // 1000 rays of 5 m from one point next to the strokes: long segments meeting in one place.
+        for (int i = 0; i < 1000; i++)
+        {
+            double a = 2 * Math.PI * i / 1000;
+            curves.Add(Line("R" + i, 1200, 1075, 1200 + 5000 * Math.Cos(a), 1075 + 5000 * Math.Sin(a)));
+        }
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var report = Topology.Analyze(curves, new TopologyOptions(1e-3, 0, MaxFindings: 1000));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), "Check is too slow: " + watch.Elapsed);
+        Assert.DoesNotContain(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+        // Coordinates no grid level can hold are reported instead of exhausting memory.
+        var absurd = Topology.Analyze([Line("A", 0, 0, 1, 1), Line("B", 0, 0, 2, 0), Line("HUGE", 0, 0, 1e40, 0)], new TopologyOptions(1e-3));
+        Assert.Contains(absurd.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+    }
+
+    [Fact]
     public void Chord_deviation_applies_only_to_curved_segments()
     {
         // A polyline whose first segment is straight and second is a coarsely sampled arc; a line stops 0.008

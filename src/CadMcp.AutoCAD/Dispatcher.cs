@@ -214,7 +214,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
         catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
-        finally { if(activate && ReferenceEquals(lisp,lispBefore) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
+        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
         if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
         {
             string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
