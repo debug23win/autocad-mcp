@@ -1,5 +1,21 @@
 # Происхождение кода и аудит этапа 3А
 
+## Дополнение после обзора проектов AutoCAD MCP (октябрь 2026)
+
+Код из этих проектов не копировался, кроме указанных данных; идеи реализованы заново.
+
+| Источник | Применение |
+|---|---|
+| [HorizunGroup/horizun-civil3d-mcp](https://github.com/HorizunGroup/horizun-civil3d-mcp/tree/b019448ca45664931529012e1d5ffb2b71ef6f68), Apache-2.0 | Дампы сигнатур Civil 3D 2024–2026 из `docs/api-probes` извлечены и нормализованы (без имён параметров) в `tests/CadMcp.Tests/Fixtures/civil-api-signatures.txt` для офлайн-проверки `CivilApiContract`. Живые наблюдения проекта использованы как сведения: кривые трассы через `AddFreeCurve(…, CurveParamType.Radius, false, CurveType.Compound)`, имя размера детали в поле `PrtSN`. Лицензия: `licenses/horizun-civil3d-mcp-Apache-2.0.txt` |
+| [seb21-art/MCP_AutocadMap3D](https://github.com/seb21-art/MCP_AutocadMap3D/tree/18932d47255a421889fd1e255ba78ab350b7afd3), MIT | Подход к назначению системы координат Map 3D: проверка кода по каталогу CS-MAP, перевод EPSG, сверка границ чертежа с областью применения. Переписан на позднее связывание в `MapCoordinateSystems` (VerticalEditing.cs). Лицензия: `licenses/seb21-art-MIT.txt` |
+| CHMOSE023/AutoCAD-MCP, ling5477/CAD-MAX (MIT) | Идеи: пробуждение очереди `WM_NULL` после постановки, отказ при модальном диалоге и закрытии AutoCAD (Dispatcher.cs) |
+| bimwright/dwg-mcp (Apache-2.0), iwanschelokov-byte/AutoCAD_mcp | Идеи: предупреждающий сканер AutoLISP и список команд, открывающих диалоги (LispPolicy.cs) |
+| Moorlack/best-cad-mcp, U-C4N/Autocad-MCP, meococ/765T-Forge (MIT) | Идеи топологических проверок, проверки выпуска и критикующего прохода (Topology.cs, QualityChecks.cs, DrawingQuality.cs) |
+| Psalmustrack/lambdacad-mcp (Apache-2.0), Dandarprox | Идеи: отключение объектных привязок на время скрипта, проверка пустого результата булевой операции |
+| phamduybill2005-creator/CH-M-I-M-AGENT (MIT), U-C4N | Методика оценки агентов: скрытый результат, вердикт по реальному DWG, жёсткие провалы, «пустой» прогон (AgentEvaluation.cs, benchmarks/) |
+| tkcHiunguyen, HorizunGroup, Sacred-G/Civil3D-mcp | Идея «просмотр → токен → применение» (cad_edit_preview, preview_hash) |
+| JardiMargalefAgusti | Идея регистрации MCP в Claude Desktop и Claude Code из установщика (ClientRegistration.cs) |
+
 ## Дополнение версии 0.2.0
 
 | Источник | Применение |

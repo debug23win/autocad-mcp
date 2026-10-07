@@ -42,3 +42,7 @@ AutoCAD, настоящие CLI и модели в этих тестах не з
 - `CadMcp.TestCli.exe --live-codex-model-test <cli> [--resume-conversation <id>]` — выбор модели и сохранение диалога;
 - `CadMcp.TestCli.exe --live-codex-approval-test <cli>` — разрешения CAD-инструментов в Codex;
 - `CadMcp.TestCli.exe --cli-config-check <cli>` — Codex принимает конфигурацию MCP и ролей помощников.
+
+## Оценка агентов
+
+Стенд в `benchmarks/` оценивает агента по фактическому состоянию DWG после прогона: задачи со скрытыми проверками, жёсткие провалы (ложный успех, удаление без запроса, правки вне задачи, выдуманный инструмент, запись без данных, повтор неизвестной правки, обход отказа от AutoLISP), три прогона на задачу, проверка грейдера «пустым» прогоном и сравнение с прошлым выпуском. Порядок — в [benchmarks/README.md](../benchmarks/README.md); команды `CadMcp.Host.exe --capture-evidence`, `--grade`, `--grade-selfcheck`.

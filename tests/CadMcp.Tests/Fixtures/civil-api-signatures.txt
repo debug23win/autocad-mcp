@@ -1,6 +1,7 @@
 # Civil 3D managed API (AeccDbMgd) signatures of the types CAD MCP calls by reflection, per release.
 # Extracted and normalized (parameter names removed) from HorizunGroup/horizun-civil3d-mcp docs/api-probes
-# at commit b019448ca45664931529012e1d5ffb2b71ef6f68. Copyright the Horizun contributors, Apache License 2.0; see docs/provenance.md.
+# at commit b019448ca45664931529012e1d5ffb2b71ef6f68. Horizun Civil 3D MCP, Copyright 2026 Horizun Group, Apache License 2.0
+# (licenses/horizun-civil3d-mcp-Apache-2.0.txt); see docs/provenance.md.
 [2024]
 Autodesk.Civil.ApplicationServices.CivilDocument|M CatchmentGroupCollection GetCatchmentGroups()
 Autodesk.Civil.ApplicationServices.CivilDocument|M ObjectId GetSitelessAlignmentId(String)
