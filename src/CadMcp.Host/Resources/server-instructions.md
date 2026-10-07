@@ -12,7 +12,7 @@ Editing
 - Put measurable requirements into expectations_json; a failed enforced check rolls the whole edit back.
 - Verify each write by a different mechanism than the edit response: cad_verify, cad_entity_get, cad_takeoff or a render.
 - Give every mutation a unique operation_id. After a timeout read cad_operation_status; never retry an unknown mutation with a new id.
-- cad_lisp is a last resort for operations missing from cad_edit_help. It may wait for the user's confirmation in AutoCAD: tell the user and poll cad_operation_status. LISP_DENIED and LISP_DISABLED are the user's decision; do not work around them.
+- cad_lisp is a last resort for operations missing from cad_edit_help. Use global command and option names with an underscore prefix ("_.-LAYER", "_C"), which also work in localized AutoCAD. It may wait for the user's confirmation in AutoCAD: tell the user and poll cad_operation_status. LISP_DENIED and LISP_DISABLED are the user's decision; do not work around them.
 
 Quality
 - Read the quality report of each edit; before publishing run cad_review and cad_release_check and resolve errors.
