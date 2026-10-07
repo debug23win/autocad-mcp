@@ -20,9 +20,19 @@ internal static class Edits
     private static bool Bool(JsonElement op, string field, bool fallback = false) => op.TryGetProperty(field, out var v) ? v.GetBoolean() : fallback;
     private static void Equal(Point3d a, Point3d b)
     { if (a.DistanceTo(b) < 1e-10) throw new CadFault("DEGENERATE_GEOMETRY", "Points must differ"); }
-    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default, Action<string>? progress = null)
+    /// <summary>Operations that change layouts, files or vendor objects outside the drawing transaction cannot be previewed.</summary>
+    public static bool Previewable(string kind) => kind is not ("layout_create" or "layout_copy" or "layout_configure" or "viewport" or "image_attach") &&
+        !kind.StartsWith("civil_", StringComparison.Ordinal) && !kind.StartsWith("map_", StringComparison.Ordinal) && !ModifyPlan.OutsideTransaction.Contains(kind);
+
+    /// <summary>
+    /// Runs the batch in one transaction. With <paramref name="preview"/> everything is computed, read back,
+    /// checked against the expectations and reviewed, then rolled back: nothing is saved and no undo step remains.
+    /// </summary>
+    public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default, Action<string>? progress = null, bool preview = false)
     {
-        using var undoGroup = new UndoGroup(doc);
+        if (preview && operations.Select(o => o.Text("op") ?? "").FirstOrDefault(k => !Previewable(k)) is { } unsupported)
+            throw new CadFault("PREVIEW_UNSUPPORTED", unsupported + " changes layouts, files or vendor objects outside the drawing transaction and cannot be previewed");
+        using var undoGroup = preview ? null : new UndoGroup(doc);
         using var tr = doc.Database.TransactionManager.StartTransaction();
         // Opened for write only where an entity is appended or cloned into it.
         var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead);
@@ -140,13 +150,19 @@ internal static class Edits
                     "intersect" => BooleanOperationType.BoolIntersect,
                     _ => throw new CadFault("INVALID_SOLID_BOOLEAN", "Unknown Boolean operation")
                 };
+                double? Volume(Solid3d solid) { try { return solid.MassProperties.Volume; } catch (Autodesk.AutoCAD.Runtime.Exception) { return null; } }
+                double? primaryBefore = Volume(primary), toolVolume = Volume(tool);
                 using (var toolCopy = (Solid3d)tool.Clone()) primary.BooleanOperation(booleanType, toolCopy);
+                double? primaryAfter = primary.IsNull ? 0 : Volume(primary);
+                // An empty result (subtracting everything, intersecting disjoint solids) is almost never intended.
+                if (primary.IsNull || primaryAfter is { } after && primaryBefore is { } before && after <= Math.Max(before, toolVolume ?? 0) * 1e-12)
+                    throw new CadFault("EMPTY_SOLID_RESULT", "The " + S(op, "operation") + " leaves an empty solid; nothing was changed");
                 bool keepTool = Bool(op, "keep_tool");
                 if (!keepTool) { RequireUnlocked(tr, tool); tool.UpgradeOpen(); tool.Erase(); }
                 touched.Add(primaryId); touched.Add(toolId);
                 if (op.TryGetProperty("id", out var solidId)) aliases.Add(solidId.GetString()!, primaryId);
                 results.Add(new { index = index++, op = kind, operation = S(op, "operation"), handle = primary.Handle.ToString(),
-                    tool_handle = tool.Handle.ToString(), tool_erased = !keepTool });
+                    tool_handle = tool.Handle.ToString(), tool_erased = !keepTool, volume_before = primaryBefore, tool_volume = toolVolume, volume_after = primaryAfter });
                 continue;
             }
             if (kind == "spds_dimstyle")
@@ -175,6 +191,15 @@ internal static class Edits
                 touched.Add(tableId);
                 if (op.Text("id") is {} tableAlias) aliases.Add(tableAlias, tableId);
                 results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = nativeTable.Handle.ToString() });
+                continue;
+            }
+            if (ModifyPlan.Supports(kind))
+            {
+                var outcome = ModifyOperations.Execute(doc.Database, tr, op, aliases, ct);
+                foreach (var changed in outcome.Touched) touched.Add(changed);
+                if (op.Text("id") is { } modifyAlias)
+                    aliases.Add(modifyAlias, outcome.Main.IsNull ? throw new CadFault("INVALID_ALIAS", kind + " produced no single entity to name") : outcome.Main);
+                results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = outcome.Main.IsNull ? null : outcome.Main.Handle.ToString(), detail = outcome.Detail });
                 continue;
             }
             Entity entity;
@@ -261,20 +286,35 @@ internal static class Edits
             expectations.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : expectations,
             aliases.ToDictionary(p => p.Key, p => p.Value.Handle.ToString()));
         bool enforce = expectations.ValueKind != JsonValueKind.Object || !expectations.TryGetProperty("enforce", out var enforcement) || enforcement.ValueKind != JsonValueKind.False;
-        if (enforce && acceptance.State is "failed" or "unverified")
+        // A preview reports failed checks instead of stopping, so the plan can be corrected before it runs.
+        if (enforce && !preview && acceptance.State is "failed" or "unverified")
             throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
-        var quality = DrawingQuality.Review(doc.Database, tr, touched, ct);
-        var data = new { quality, transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback, acceptance, table_dependencies,
+        // The review covers up to 250 entities; a larger batch is reported as not reviewed rather than failing the edit.
+        var live = touched.Where(id => !id.IsErased).ToArray();
+        var quality = live.Length <= 250 ? DrawingQuality.Review(doc.Database, tr, live, ct)
+            : new DrawingQuality.Report("unverified", live.Length, 0, [new("REVIEW_SKIPPED", "unverified", [], live.Length + " entities changed; run cad_review on parts of the result")], ["Batch larger than the 250-entity review"]);
+        object Data(IReadOnlyList<JsonElement> entities, bool truncated) => new { quality, transaction = preview ? "rolled_back_preview" : "committed", preview = preview ? true : (bool?)null,
+            coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities, entity_count = readback.Length, entities_truncated = truncated ? true : (bool?)null, acceptance, table_dependencies,
             schedule_warnings = schedule_warnings.Count == 0 ? null : schedule_warnings,
-            undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_vendor_API" } };
-        if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
+            undo = preview ? "nothing_to_undo" : undoGroup!.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback",
+            limitations = preview ? new[] { "special_objects_require_vendor_API", "preview_handles_are_provisional_and_do_not_exist_after_rollback", "DBMOD_may_report_the_drawing_as_modified" } : new[] { "special_objects_require_vendor_API" } };
+        var data = Data(readback, false);
+        if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024)
+        {
+            // A large batch keeps its full acceptance check; only the listed entities are shortened.
+            int keep = 0, size = 0;
+            while (keep < readback.Length && (size += readback[keep].GetRawText().Length) < 256 * 1024) keep++;
+            data = Data(readback[..keep], true);
+            if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
+        }
         ct.ThrowIfCancellationRequested();
+        if (preview) return data;
         tr.Commit();
         // A display failure after commit must never be reported as an uncommitted transaction.
         try { doc.Editor.Regen(); } catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Committed edit; redraw failed: " + e.Message); }
         return data;
     }
-    private static void Transform(Entity entity, Matrix3d transform, Transaction tr)
+    internal static void Transform(Entity entity, Matrix3d transform, Transaction tr)
     {
         var attributes = new List<(AttributeReference Attribute, Point3d Position)>();
         if (entity is BlockReference block)
@@ -446,7 +486,7 @@ internal static class Edits
             bottom ? bounds.MinPoint.Z : (bounds.MinPoint.Z + bounds.MaxPoint.Z) / 2);
         solid.TransformBy(Matrix3d.Displacement(target - origin));
     }
-    private static ObjectId Layer(Database db, Transaction tr, string name)
+    internal static ObjectId Layer(Database db, Transaction tr, string name)
     {
         var layers = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
         if (!layers.Has(name)) throw new CadFault("LAYER_NOT_FOUND", name + "; add a layer operation first");
@@ -454,7 +494,7 @@ internal static class Edits
         if (layer.IsLocked || layer.IsDependent) throw new CadFault("LAYER_NOT_EDITABLE", name + " is locked or dependent");
         return layer.ObjectId;
     }
-    private static ObjectId TextStyle(Database db, Transaction tr, string? name)
+    internal static ObjectId TextStyle(Database db, Transaction tr, string? name)
     {
         if (name is null) return db.Textstyle;
         var table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
@@ -465,13 +505,13 @@ internal static class Edits
         if (op.Text("target") is { } target) return aliases.TryGetValue(target, out var id) ? id : throw new CadFault("UNKNOWN_TARGET", target);
         return Handle(db, S(op, "handle"));
     }
-    private static ObjectId Handle(Database db, string value)
+    internal static ObjectId Handle(Database db, string value)
     {
         if (!long.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out var h) || !db.TryGetObjectId(new Handle(h), out var id) || id.IsNull || id.IsErased)
             throw new CadFault("ENTITY_NOT_FOUND", value);
         return id;
     }
-    private static void RequireUnlocked(Transaction tr, Entity e)
+    internal static void RequireUnlocked(Transaction tr, Entity e)
     { if (((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked) throw new CadFault("LAYER_LOCKED", e.Layer); }
     internal static Entity Editable(Database db, Transaction tr, ObjectId id, bool write, ObjectId? permittedSpace = null)
     {

@@ -8,6 +8,7 @@
     <Compile Include="../../src/CadMcp.AutoCAD/ReadingMetadata.cs;../../src/CadMcp.AutoCAD/PreviewRendering.cs;../../src/CadMcp.AutoCAD/WorkSafety.cs;../../src/CadMcp.AutoCAD/TableLinks.cs;../../src/CadMcp.AutoCAD/DrawingQuality.cs;../../src/CadMcp.AutoCAD/SolidModeling.cs;../../src/CadMcp.AutoCAD/StructuralAssemblies.cs;../../src/CadMcp.AutoCAD/StructuralSolids.cs;../../src/CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/QualityChecks.cs" Link="QualityChecks.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/ModifyOperations.cs" Link="ModifyOperations.cs" />
     <Using Include="System.IO" />
     <!-- Compile production executors into an isolated test assembly so an installed preview can coexist. -->
     <Compile Include="../../src/CadMcp.Core/*.cs" Link="Core/%(Filename)%(Extension)" />

@@ -49,7 +49,7 @@ public static class EditPlan
         ["mirror"] = "handle target first second",
         ["erase"] = "handle target",
         ["set"] = "handle target layer color_index linetype linetype_scale lineweight visible text height width rotation_deg position start end center radius closed attributes layout"
-    }.Concat(ExtendedPlan.Fields).Concat(DraftingPlan.Fields).ToDictionary(p => p.Key, p => p.Value);
+    }.Concat(ExtendedPlan.Fields).Concat(DraftingPlan.Fields).Concat(ModifyPlan.Fields).ToDictionary(p => p.Key, p => p.Value);
     public static JsonElement[] Parse(string json)
     {
         if (json.Length > 65536) throw new CadFault("PLAN_TOO_LARGE", "Edit plan must be at most 65536 characters");
@@ -71,9 +71,10 @@ public static class EditPlan
             {
                 if (!names.Add(p.Name)) throw new CadFault("DUPLICATE_FIELD", p.Name);
                 if (!allowed.Contains(p.Name)) throw new CadFault("UNKNOWN_FIELD", kind + ": " + p.Name);
-                if (!ExtendedPlan.Fields.ContainsKey(kind) && (!DraftingPlan.Supports(kind) || p.Name is "op" or "id" or "layer" or "color_index" or "layout" or "target" or "style" or "text_style")) ValidateValue(kind, p.Name, p.Value);
+                if (!ExtendedPlan.Fields.ContainsKey(kind) && !ModifyPlan.Supports(kind) && (!DraftingPlan.Supports(kind) || p.Name is "op" or "id" or "layer" or "color_index" or "layout" or "target" or "style" or "text_style")) ValidateValue(kind, p.Name, p.Value);
             }
             if (ExtendedPlan.Fields.ContainsKey(kind)) ExtendedPlan.Validate(op);
+            if (ModifyPlan.Supports(kind)) ModifyPlan.Validate(op, aliases);
             if (DraftingPlan.Supports(kind)) DraftingPlan.Validate(op, aliases);
             if (op.TryGetProperty("target", out var target) && !aliases.Contains(target.GetString() ?? ""))
                 throw new CadFault("UNKNOWN_TARGET", "target must refer to an earlier operation id");
@@ -128,6 +129,21 @@ public static class EditPlan
         }
         return result.ToArray();
     }
+    /// <summary>
+    /// Fingerprint of an edit plan and its expectations, returned by cad_edit_preview. cad_edit with
+    /// preview_hash runs only that exact plan.
+    /// </summary>
+    public static string Hash(string operationsJson, string? expectationsJson) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(operationsJson + "\0" + (expectationsJson ?? "")))).ToLowerInvariant();
+
+    /// <summary>Fails when cad_edit carries a preview_hash that does not match its plan.</summary>
+    public static void RequirePreviewed(JsonElement data)
+    {
+        if (data.Text("preview_hash") is not { } expected) return;
+        if (!string.Equals(expected.Trim(), Hash(RequiredText(data, "operations_json"), data.Text("expectations_json")), StringComparison.OrdinalIgnoreCase))
+            throw new CadFault("PREVIEW_MISMATCH", "operations_json or expectations_json differ from the previewed plan; preview the plan again");
+    }
+
     public static string RequiredText(JsonElement e, string name)
     {
         if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))

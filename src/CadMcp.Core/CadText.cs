@@ -121,6 +121,56 @@ public static class CadText
         return matched != negate;
     }
 
+    /// <summary>
+    /// Replaces <paramref name="find"/> in stored AutoCAD text. Ø, ° and ± in the search also match the
+    /// control codes %%c, %%d and %%p, and are written back in the form the text used. With
+    /// <paramref name="mtext"/>, only plain text runs between formatting codes change, so fonts, colours,
+    /// stacks and paragraphs survive; a match interrupted by formatting is not replaced.
+    /// </summary>
+    public static (string Text, int Count) Replace(string raw, string find, string replace, bool matchCase = false, bool wholeWord = false, bool mtext = false)
+    {
+        if (string.IsNullOrEmpty(raw) || string.IsNullOrEmpty(find)) return (raw ?? "", 0);
+        string encodedFind = Encode(find), encodedReplace = Encode(replace);
+        var pattern = "(" + Regex.Escape(find) + ")" + (encodedFind != find ? "|(" + Regex.Escape(encodedFind) + ")" : "");
+        if (wholeWord) pattern = @"(?<![\p{L}\p{N}_])(?:" + pattern + @")(?![\p{L}\p{N}_])";
+        var regex = new Regex(pattern, (matchCase ? RegexOptions.None : RegexOptions.IgnoreCase) | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
+        int count = 0;
+        string Run(string text) => regex.Replace(text, m => { count++; return m.Groups[1].Success ? replace : encodedReplace; });
+        if (!mtext) return (Run(raw), count);
+        var result = new StringBuilder(raw.Length);
+        foreach (var (segment, isText) in MTextSegments(raw)) result.Append(isText ? Run(segment) : segment);
+        return (result.ToString(), count);
+    }
+
+    private static string Encode(string text) => text.Replace("Ø", "%%c").Replace("ø", "%%c").Replace("⌀", "%%c").Replace("∅", "%%c")
+        .Replace(Degree.ToString(), "%%d").Replace(PlusMinus.ToString(), "%%p");
+
+    /// <summary>MText contents split into plain text runs and formatting tokens, in order.</summary>
+    public static IEnumerable<(string Segment, bool IsText)> MTextSegments(string contents)
+    {
+        var run = new StringBuilder();
+        for (int i = 0; i < contents.Length; i++)
+        {
+            char c = contents[i];
+            if (c is '{' or '}')
+            {
+                if (run.Length > 0) { yield return (run.ToString(), true); run.Clear(); }
+                yield return (c.ToString(), false); continue;
+            }
+            if (c != '\\' || i + 1 >= contents.Length) { run.Append(c); continue; }
+            if (run.Length > 0) { yield return (run.ToString(), true); run.Clear(); }
+            char code = contents[i + 1];
+            int end;
+            if (code is 'U' or 'u' && i + 6 < contents.Length && contents[i + 2] == '+') end = i + 6;
+            else if (code is 'M' or 'm' && i + 7 < contents.Length && contents[i + 2] == '+') end = i + 7;
+            else if (code is 'P' or 'N' or '~' or 'L' or 'l' or 'O' or 'o' or 'K' or 'k' or 'X' or '\\' or '{' or '}') end = i + 1;
+            else { int stop = contents.IndexOf(';', i + 2); end = stop < 0 ? contents.Length - 1 : stop; }
+            yield return (contents[i..(end + 1)], false);
+            i = end;
+        }
+        if (run.Length > 0) yield return (run.ToString(), true);
+    }
+
     private static readonly Regex UnresolvedField = new(@"#{4,}", RegexOptions.CultureInvariant);
     /// <summary>AutoCAD displays "####" for a field it cannot evaluate.</summary>
     public static bool HasUnresolvedField(string? displayed) => displayed is not null && UnresolvedField.IsMatch(displayed);

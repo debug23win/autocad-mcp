@@ -102,7 +102,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (MutationRecovery.IsMutation(r.Operation))
         {
             string id = EditPlan.RequiredText(r.Data, "operation_id");
-            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
+            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data); }
             lock (mutationGate)
             {
                 // Reading an existing receipt must also work when the queue is full.
@@ -245,6 +245,13 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 if(r.Data.Text("options_json") is {} reviewOptionsJson){data=ReviewOptions.Run(doc.Database,tr,reviewOptionsJson,reviewIds,ct);break;}
                 reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
+            case "cad_edit_preview":
+                var previewPlan = EditPlan.RequiredText(r.Data, "operations_json");
+                var previewOperations = EditPlan.Parse(previewPlan);
+                data = new { plan_hash = EditPlan.Hash(previewPlan, r.Data.Text("expectations_json")), previewed_revision = state.Revision,
+                    apply = "cad_edit with the same operations_json and expectations_json, preview_hash and expected_revision runs exactly this plan",
+                    result = Edits.Execute(doc, previewOperations, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), preview: true) };
+                break;
             case "cad_solid_get":
                 data=SolidModeling.Inspect(tr.GetObject(NativeTables.Resolve(doc.Database,r.Data.Text("handle")!),OpenMode.ForRead) as Solid3d ?? throw new CadFault("INVALID_SOLID","Solid3d required"));break;
             case "cad_assembly_get":
@@ -460,7 +467,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
-        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
+        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data); }
         else if (r.Operation == "cad_export")
         {
             exportFormat = EditPlan.RequiredText(r.Data, "format");

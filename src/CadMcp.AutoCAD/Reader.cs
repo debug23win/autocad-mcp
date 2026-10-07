@@ -141,7 +141,63 @@ internal static class Reader
         }
         var layer = (LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead);
         item["layer_off"] = layer.IsOff; item["layer_frozen"] = layer.IsFrozen;
+        ReadAttachedData(e, tr, item);
         return Wire.Element(item);
+    }
+
+    /// <summary>XData by application and the extension dictionary (XRecord values, nested keys), bounded.</summary>
+    private static void ReadAttachedData(Entity e, Transaction tr, Dictionary<string, object?> item)
+    {
+        try
+        {
+            using var xdata = e.XData;
+            if (xdata is not null)
+            {
+                var applications = new Dictionary<string, List<object>>(StringComparer.Ordinal);
+                List<object>? current = null;
+                foreach (TypedValue value in xdata)
+                {
+                    if (value.TypeCode == (short)DxfCode.ExtendedDataRegAppName)
+                    {
+                        string app = Convert.ToString(value.Value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+                        current = applications.Count < 10 ? applications[app] = new List<object>() : null;
+                    }
+                    else if (current is { Count: < 50 }) current.Add(new { code = (int)value.TypeCode, value = Value(value.Value) });
+                }
+                if (applications.Count > 0) item["xdata"] = applications;
+            }
+            if (!e.ExtensionDictionary.IsNull && tr.GetObject(e.ExtensionDictionary, OpenMode.ForRead) is DBDictionary extension)
+                item["extension_dictionary"] = Entries(extension, tr, 0);
+        }
+        catch (Autodesk.AutoCAD.Runtime.Exception error) { item["attached_data_error"] = error.ErrorStatus.ToString(); }
+    }
+
+    private static object? Value(object? value) => value switch
+    {
+        Point3d p => P(p), ObjectId id => id.Handle.ToString(), double or int or short or long or string or bool or null => value, _ => value.ToString()
+    };
+
+    private static object[] RecordValues(Xrecord record)
+    {
+        using var data = record.Data;
+        return data?.AsArray().Take(30).Select(v => (object)new { code = (int)v.TypeCode, value = Value(v.Value) }).ToArray() ?? [];
+    }
+
+    private static Dictionary<string, object?> Entries(DBDictionary dictionary, Transaction tr, int depth)
+    {
+        var entries = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (DBDictionaryEntry entry in dictionary)
+        {
+            if (entries.Count >= 30) { entries["..."] = "truncated"; break; }
+            var value = tr.GetObject(entry.Value, OpenMode.ForRead);
+            entries[entry.Key] = value switch
+            {
+                Xrecord record => RecordValues(record),
+                DBDictionary nested when depth < 1 => Entries(nested, tr, depth + 1),
+                _ => value.GetRXClass().Name
+            };
+        }
+        return entries;
     }
 
     private static Dictionary<string, object> ReadSpecializedMetadata(Entity entity)

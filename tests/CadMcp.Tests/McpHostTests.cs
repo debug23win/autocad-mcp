@@ -19,8 +19,8 @@ public sealed class McpHostTests
         var list = await host.RequestAsync("tools/list", new { });
         var tools = list.GetProperty("tools").EnumerateArray().ToArray();
         var names = tools.Select(t => t.GetProperty("name").GetString()!).ToArray();
-        Assert.Equal(38, names.Length);
-        foreach (var expected in new[] { "cad_steel_catalog", "cad_search", "cad_result_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status", "cad_render", "cad_image_register",
+        Assert.Equal(39, names.Length);
+        foreach (var expected in new[] { "cad_steel_catalog", "cad_search", "cad_result_get", "cad_edit", "cad_edit_preview", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status", "cad_render", "cad_image_register",
             "cad_image_point", "cad_vertical_catalog", "cad_vertical_get", "cad_verify", "cad_operation_list", "cad_reference_calibrate", "cad_reference_point", "cad_reference_compare" })
             Assert.Contains(expected, names);
         // The read-only operation list that limits helpers must match the tools' own read-only annotations.
@@ -43,6 +43,11 @@ public sealed class McpHostTests
         using (var contract = JsonDocument.Parse(help.GetProperty("content")[0].GetProperty("text").GetString()!))
         {
             Assert.True(contract.RootElement.GetProperty("operations").TryGetProperty("dimension_aligned", out _), "Missing edit contract");
+            foreach (var kind in ModifyPlan.Fields.Keys)
+            {
+                Assert.True(contract.RootElement.GetProperty("operations").TryGetProperty(kind, out _), "Missing operation " + kind);
+                Assert.True(contract.RootElement.GetProperty("notes").TryGetProperty(kind, out _), "Missing help note for " + kind);
+            }
             Assert.Contains("operations_json", contract.RootElement.GetProperty("contract").GetString());
         }
         var spds = await host.CallAsync("cad_spds_help", new { });
@@ -52,6 +57,12 @@ public sealed class McpHostTests
         using var editBody = JsonDocument.Parse(edit.GetProperty("content")[0].GetProperty("text").GetString()!);
         Assert.Equal("cad_edit", editBody.RootElement.GetProperty("data").GetProperty("operation").GetString());
         Assert.Equal("change1", editBody.RootElement.GetProperty("data").GetProperty("payload").GetProperty("operation_id").GetString());
+        var preview = await host.CallAsync("cad_edit_preview", new { session_id = "s", document_id = "d", operations_json = "[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]" });
+        using (var previewBody = JsonDocument.Parse(preview.GetProperty("content")[0].GetProperty("text").GetString()!))
+            Assert.Equal("cad_edit_preview", previewBody.RootElement.GetProperty("data").GetProperty("operation").GetString());
+        var bound = await host.CallAsync("cad_edit", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "change2", operations_json = "[]", preview_hash = "abc" });
+        using (var boundBody = JsonDocument.Parse(bound.GetProperty("content")[0].GetProperty("text").GetString()!))
+            Assert.Equal("abc", boundBody.RootElement.GetProperty("data").GetProperty("payload").GetProperty("preview_hash").GetString());
         var status = await host.CallAsync("cad_operation_status", new { session_id = "s", document_id = "d", operation_id = "change1" });
         Assert.Contains("cad_operation_status", status.GetProperty("content")[0].GetProperty("text").GetString());
     }
