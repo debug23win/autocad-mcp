@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Windows.Input;
 using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -28,11 +27,7 @@ public sealed class Plugin : IExtensionApplication
             documents = new(); dispatcher = new(documents); dispatcher.Start();
             var pipe = "cadmcp-worker-" + Environment.ProcessId + "-" + documents.SessionId;
             server = new(pipe, dispatcher.Enqueue); server.Start();
-            Directory.CreateDirectory(Wire.WorkerRoot);
-            descriptorPath = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
-            var temp = descriptorPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, "0.10.1-preview"), Wire.Json));
-            File.Move(temp, descriptorPath, true);
+            descriptorPath = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, Wire.Version));
             App.Idle += AddRibbon;
         }
         catch (System.Exception e)
@@ -67,18 +62,9 @@ public sealed class Plugin : IExtensionApplication
         _ = panel!.Refresh();
     }
     [LispFunction("CADMCPBEGIN")]
-    public static string? BeginLisp(ResultBuffer args)
-    {
-        try { return dispatcher?.BeginLisp((string)args.AsArray()[0].Value); }
-        catch (System.Exception) { return null; }
-    }
+    public static string? BeginLisp(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]
-    public static int FinishLisp(ResultBuffer args)
-    {
-        var values = args.AsArray();
-        if (values.Length == 3) dispatcher?.FinishLisp((string)values[0].Value, Convert.ToInt32(values[1].Value) == 1, (string)values[2].Value);
-        return 0;
-    }
+    public static int FinishLisp(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     public void Terminate()
     {
         App.Idle -= AddRibbon;

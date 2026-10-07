@@ -42,8 +42,8 @@ public sealed class ChatWorkspace:UserControl
                 string id=drawing.Text("document_id")!,name=drawing.Text("name")!,project=drawing.Text("project_key")!;present.Add(id);darkTheme=drawing.GetProperty("dark_theme").GetBoolean();
                 if(!projects.TryGetValue(id,out var entry))
                 {
-                    string root=projectStoreRoot is null?Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CadMcp","chat","projects",project):Path.Combine(projectStoreRoot,project);
-                    var panel=new ChatPanel(new ChatStateStore(root),Path.IsPathFullyQualified(name)?Path.GetDirectoryName(name):null){CadSessionId=CadSessionId,CadDocumentId=id,DarkThemeProvider=()=>DarkThemeProvider?.Invoke()??darkTheme};
+                    string root=projectStoreRoot is null?Wire.DataDirectory("chat","projects",project):Path.Combine(projectStoreRoot,project);
+                    var panel=new ChatPanel(new ChatStateStore(root),Path.IsPathFullyQualified(name)?Path.GetDirectoryName(name):null,brokerPipe){CadSessionId=CadSessionId,CadDocumentId=id,DarkThemeProvider=()=>DarkThemeProvider?.Invoke()??darkTheme};
                     var tab=new TabItem{Content=panel};entry=(tab,panel);projects.Add(id,entry);tabs.Items.Add(tab);
                 }
                 bool dark=DarkThemeProvider?.Invoke()??darkTheme;var background=dark?new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(36,40,46)):System.Windows.Media.Brushes.White;var foreground=dark?System.Windows.Media.Brushes.Gainsboro:System.Windows.Media.Brushes.Black;

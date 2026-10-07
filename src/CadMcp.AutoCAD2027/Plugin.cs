@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using System.Windows.Input;
 using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -26,10 +25,8 @@ public sealed class Plugin : IExtensionApplication
         {
         documents = new(); dispatcher = new(documents); dispatcher.Start();
         int pid = Environment.ProcessId; string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
-        server = new(pipe, dispatcher.Enqueue); server.Start(); Directory.CreateDirectory(Wire.WorkerRoot);
-        descriptor = Path.Combine(Wire.WorkerRoot, documents.SessionId + ".json");
-        File.WriteAllText(descriptor + ".tmp", JsonSerializer.Serialize(new WorkerDescriptor(documents.SessionId, pipe, pid, "0.10.1-preview"), Wire.Json));
-        File.Move(descriptor + ".tmp", descriptor, true);
+        server = new(pipe, dispatcher.Enqueue); server.Start();
+        descriptor = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, pid, Wire.Version));
         App.Idle += AddRibbon;
         }
         catch (System.Exception error) { Terminate(); App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP initialization: " + error.Message); }
@@ -64,9 +61,9 @@ public sealed class Plugin : IExtensionApplication
         catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP chat: " + error.Message); }
     }
     [LispFunction("CADMCPBEGIN")]
-    public static string? Begin(ResultBuffer args) => dispatcher?.BeginLisp((string)args.AsArray()[0].Value);
+    public static string? Begin(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]
-    public static int Finish(ResultBuffer args) { var v = args.AsArray(); dispatcher?.FinishLisp((string)v[0].Value, Convert.ToInt32(v[1].Value) == 1, (string)v[2].Value); return 0; }
+    public static int Finish(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     public void Terminate()
     {
         App.Idle -= AddRibbon; server?.Dispose(); dispatcher?.Dispose(); documents?.Dispose();

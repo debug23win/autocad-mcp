@@ -174,4 +174,11 @@ internal static class TableLinks
         return table;
     }
     internal static object Inspect(Database db,Transaction tr)=>Load(db,tr);
+    /// <summary>Handles of tables that take part in linked formulas. Read-only.</summary>
+    internal static HashSet<long> LinkedTableHandles(Database db,Transaction tr)
+    {
+        var graph=Load(db,tr);
+        if(graph.Formulas.Count==0)return [];
+        return graph.Cells.Select(c=>long.TryParse(c.Table,System.Globalization.NumberStyles.HexNumber,null,out var value)?value:-1).Where(v=>v>=0).ToHashSet();
+    }
 }

@@ -24,7 +24,8 @@ internal static class Edits
     {
         using var undoGroup = new UndoGroup(doc);
         using var tr = doc.Database.TransactionManager.StartTransaction();
-        var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForWrite);
+        // Opened for write only where an entity is appended or cloned into it.
+        var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead);
         var aliases = new Dictionary<string, ObjectId>(StringComparer.Ordinal);
         var touched = new HashSet<ObjectId>();
         var results = new List<object>();
@@ -44,8 +45,9 @@ internal static class Edits
                     SymbolUtilityServices.ValidateSymbolName(name, false);
                     layers.UpgradeOpen(); record = new() { Name = name }; layers.Add(record); tr.AddNewlyCreatedDBObject(record, true);
                 }
-                else record = (LayerTableRecord)tr.GetObject(layers[name], OpenMode.ForWrite);
+                else record = (LayerTableRecord)tr.GetObject(layers[name], OpenMode.ForRead);
                 if (record.IsDependent) throw new CadFault("XREF_LAYER", "Cannot edit a dependent layer");
+                if (!record.IsWriteEnabled && (op.TryGetProperty("color_index", out _) || op.TryGetProperty("locked", out _) || op.TryGetProperty("off", out _))) record.UpgradeOpen();
                 if (op.TryGetProperty("color_index", out var color))
                 {
                     var c = color.GetInt32();
@@ -187,6 +189,7 @@ internal static class Edits
                 if (kind == "copy")
                 {
                     var mapping = new IdMapping();
+                    if (!space.IsWriteEnabled) space.UpgradeOpen();
                     doc.Database.DeepCloneObjects(new ObjectIdCollection([sourceId]), space.ObjectId, mapping, false);
                     entity = (Entity)tr.GetObject(mapping[sourceId].Value, OpenMode.ForWrite);
                     if (op.TryGetProperty("layer", out var layer)) entity.LayerId = Layer(doc.Database, tr, layer.GetString()!);
@@ -228,6 +231,7 @@ internal static class Edits
                     entity.LayerId = Layer(doc.Database, tr, op.Text("layer") ?? "0");
                     if (op.TryGetProperty("color_index", out var c)) entity.ColorIndex = c.GetInt32();
                     var targetSpace = op.Text("layout") is { } layout ? Sheets.Space(doc.Database, tr, layout) : space;
+                    if (!targetSpace.IsWriteEnabled) targetSpace.UpgradeOpen();
                     targetSpace.AppendEntity(entity); tr.AddNewlyCreatedDBObject(entity, true);
                     if (entity is Polyline3d spatial) PopulatePolyline3d(spatial, op, tr);
                     if (entity is RasterImage raster) RasterImages.Associate(raster, tr);
@@ -244,7 +248,8 @@ internal static class Edits
             results.Add(new { index = index++, op = kind, id = op.Text("id"), handle = entity.Handle.ToString(), source_handle = sourceHandle, erased = entity.IsErased,
                 image_registration = imageRegistration });
         }
-        StructuralAssemblies.RefreshSchedules(doc.Database,tr);
+        // A restructured schedule fails this edit only when the edit touched that schedule or its sources.
+        var schedule_warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, touched.Select(id => id.Handle.Value).ToHashSet());
         var table_dependencies = TableLinks.Recalculate(doc.Database, tr);
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
@@ -260,6 +265,7 @@ internal static class Edits
             throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
         var quality = DrawingQuality.Review(doc.Database, tr, touched, ct);
         var data = new { quality, transaction = "committed", coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities = readback, acceptance, table_dependencies,
+            schedule_warnings = schedule_warnings.Count == 0 ? null : schedule_warnings,
             undo = undoGroup.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback", limitations = new[] { "special_objects_require_vendor_API" } };
         if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
         ct.ThrowIfCancellationRequested();

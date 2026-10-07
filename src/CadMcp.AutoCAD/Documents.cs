@@ -15,6 +15,21 @@ internal sealed class DocumentState(Database database)
     public long Revision { get; set; }
     public int ReadDepth { get; set; }
     public bool TablesDirty { get; set; }
+    /// <summary>Tables and block references changed since the last recalculation; null when too many to track.</summary>
+    public HashSet<long>? ChangedObjects { get; private set; } = [];
+    public void TableChanged(long handle)
+    {
+        TablesDirty = true;
+        if (ChangedObjects is { Count: >= 4096 }) ChangedObjects = null;
+        ChangedObjects?.Add(handle);
+    }
+    /// <summary>Returns the changes recorded so far and starts a new record.</summary>
+    public HashSet<long>? TakeTableChanges()
+    {
+        var changed = ChangedObjects;
+        TablesDirty = false; ChangedObjects = [];
+        return changed;
+    }
     public bool Recalculating { get; set; }
     public string? TableError { get; set; }
     public bool HistoryCommand { get; set; }
@@ -31,23 +46,28 @@ internal sealed class Documents : IDisposable
         foreach (Document d in App.DocumentManager) Register(d);
     }
     private void Created(object sender, DocumentCollectionEventArgs e) => Register(e.Document);
-    private void Destroyed(object sender, DocumentCollectionEventArgs e) => Remove(e.Document);
-    private void Changed(object sender, ObjectEventArgs e)
+    /// <summary>Raised on the CAD thread before a drawing closes, while it is still valid.</summary>
+    public event Action<Document>? Closing;
+    private void Destroyed(object sender, DocumentCollectionEventArgs e) { Closing?.Invoke(e.Document); Remove(e.Document); }
+    private void Changed(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject);
+    private void Erased(object sender, ObjectErasedEventArgs e) => Track((Database)sender, e.DBObject);
+    private void Track(Database db, DBObject changed)
     {
-        var db=(Database)sender;Touch(db);
-        if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject && state.ReadDepth==0&&!state.Recalculating&&!state.HistoryCommand)state.TablesDirty=true;
+        Touch(db);
+        if (changed is not (Table or BlockReference)) return;
+        foreach (var state in states.Values)
+            if (state.Database.UnmanagedObject == db.UnmanagedObject && state.ReadDepth == 0 && !state.Recalculating && !state.HistoryCommand)
+                state.TableChanged(changed.Handle.Value);
     }
-    private void Erased(object sender, ObjectErasedEventArgs e)
-    {var db=(Database)sender;Touch(db);if(e.DBObject is Table or BlockReference)foreach(var state in states.Values)if(state.Database.UnmanagedObject==db.UnmanagedObject&&state.ReadDepth==0&&!state.Recalculating&&!state.HistoryCommand)state.TablesDirty=true;}
     private void CommandStarting(object sender,CommandEventArgs e)
     {
         if(sender is Document doc && states.TryGetValue(doc,out var state) && e.GlobalCommandName.TrimStart('_','.').ToUpperInvariant() is "UNDO" or "U" or "REDO" or "MREDO")
-        {state.HistoryCommand=true;state.TablesDirty=false;}
+        {state.HistoryCommand=true;state.TakeTableChanges();}
     }
     private void CommandFinished(object sender,CommandEventArgs e)
     {
         if(sender is Document doc && states.TryGetValue(doc,out var state) && state.HistoryCommand && e.GlobalCommandName.TrimStart('_','.').ToUpperInvariant() is "UNDO" or "U" or "REDO" or "MREDO")
-        {state.HistoryCommand=false;state.TablesDirty=false;state.TableError=null;}
+        {state.HistoryCommand=false;state.TakeTableChanges();state.TableError=null;}
     }
     private void Touch(Database db)
     {
@@ -81,7 +101,8 @@ internal sealed class Documents : IDisposable
     public DocumentState Register(Document d)
     {
         if (states.TryGetValue(d, out var state)) return state;
-        state = new(d.Database) { TablesDirty=true }; states.Add(d, state);
+        // Linked tables are recalculated after changes, not when a drawing is opened: opening must not modify it.
+        state = new(d.Database); states.Add(d, state);
         d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
         state.Database.ObjectAppended += Changed; state.Database.ObjectModified += Changed; state.Database.ObjectErased += Erased;
         return state;

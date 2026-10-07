@@ -21,18 +21,33 @@ internal sealed class ChatBrowser : Grid
     private int selected = -1;
     private long sequence;
     private string? lastRender;
+    private Task? initialization;
     public string AssetRoot { get; }
+    private readonly string chatRoot;
     private readonly string userData;
     public event Action<int>? Selected;
     public event Action<string>? OpenLink;
     public ChatBrowser(string? dataRoot = null)
     {
-        dataRoot ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp");
-        AssetRoot = Path.Combine(dataRoot, "chat", "assets");
+        dataRoot ??= CadMcp.Core.Wire.DataRoot;
+        chatRoot = Path.Combine(dataRoot, "chat");
+        AssetRoot = Path.Combine(chatRoot, "assets");
         userData = Path.Combine(dataRoot, "WebView2");
         Children.Add(browser);
         Children.Add(fallback);
-        Loaded += async (_, _) => await Initialize();
+        // Loaded is raised again on every tab or palette switch; WebView2 may be initialized only once.
+        Loaded += async (_, _) => await (initialization ??= Initialize());
+        PruneAssets();
+    }
+    /// <summary>Remove old chat images in the background; see <see cref="ChatAssets.Prune"/>.</summary>
+    private void PruneAssets()
+    {
+        string assets = AssetRoot, chats = chatRoot;
+        _ = Task.Run(() =>
+        {
+            try { ChatAssets.Prune(assets, chats); }
+            catch (Exception error) { Debug.WriteLine("CAD MCP chat assets: " + error.Message); }
+        });
     }
     private async Task Initialize()
     {
@@ -64,6 +79,9 @@ internal sealed class ChatBrowser : Grid
             {
                 if (!args.Uri.StartsWith("https://cadmcp.local/", StringComparison.OrdinalIgnoreCase)) args.Cancel = true;
             };
+            // "Open in new window" or a middle click would otherwise open a browser window outside the
+            // navigation filter. Such links go through the same external-link check as ordinary clicks.
+            browser.CoreWebView2.NewWindowRequested += (_, args) => { args.Handled = true; OpenLink?.Invoke(args.Uri); };
             browser.CoreWebView2.NavigationCompleted += (_, args) => { ready = args.IsSuccess; lastRender = null; if (ready) Render(); };
             browser.Source = new Uri("https://cadmcp.local/chat.html");
         }
@@ -121,5 +139,43 @@ internal sealed class ChatBrowser : Grid
             lastRender = signature;
         }
         catch (Exception error) { Debug.WriteLine("CAD MCP chat render: " + error); }
+    }
+}
+
+/// <summary>Images shown in chats. Every chat shares one folder, so a file is kept while any saved chat refers to it.</summary>
+internal static class ChatAssets
+{
+    public static readonly TimeSpan MaximumUnreferencedAge = TimeSpan.FromDays(30);
+    private static int pruned;
+    /// <summary>
+    /// Delete images that no saved chat under <paramref name="chatRoot"/> refers to and that are older than
+    /// <see cref="MaximumUnreferencedAge"/>: a newer image may belong to a chat that has not been saved yet.
+    /// Runs once per process; later calls return 0.
+    /// </summary>
+    public static int Prune(string assetRoot, string chatRoot, bool force = false)
+    {
+        if (!force && Interlocked.Exchange(ref pruned, 1) == 1) return 0;
+        if (!Directory.Exists(assetRoot) || !Directory.Exists(chatRoot)) return 0;
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in Directory.EnumerateFiles(chatRoot, "chat-*.json", SearchOption.AllDirectories))
+        {
+            try
+            {
+                if (new FileInfo(file).Length > 4 * 1024 * 1024) continue;
+                var state = JsonSerializer.Deserialize<ChatState>(File.ReadAllText(file));
+                foreach (var image in state?.Messages?.SelectMany(m => m.Images ?? Array.Empty<ChatImage>()) ?? [])
+                    referenced.Add(Path.GetFileName(image.Path));
+            }
+            catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { }
+        }
+        var cutoff = DateTime.UtcNow - MaximumUnreferencedAge;
+        int removed = 0;
+        foreach (var file in new DirectoryInfo(assetRoot).EnumerateFiles())
+        {
+            if (file.LastWriteTimeUtc >= cutoff || referenced.Contains(file.Name)) continue;
+            try { file.Delete(); removed++; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+        return removed;
     }
 }
