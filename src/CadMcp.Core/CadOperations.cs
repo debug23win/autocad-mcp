@@ -21,6 +21,12 @@ public static class CadOperations
         "cad_vertical_capabilities", "cad_vertical_catalog", "cad_vertical_get"
     };
 
+    /// <summary>
+    /// What read-only review helpers may call: the read-only operations except cad_edit_preview, whose rolled-back
+    /// transaction still marks the drawing modified and is seen by other add-ins.
+    /// </summary>
+    public static readonly IReadOnlySet<string> HelperAllowed = ReadOnly.Where(o => o != "cad_edit_preview").ToHashSet(StringComparer.Ordinal);
+
     /// <summary>Read-only tools answered by the MCP host itself, without a CAD worker.</summary>
     public static readonly IReadOnlyList<string> HostTools =
         ["cad_steel_catalog", "cad_spds_help", "cad_edit_help", "cad_reference_calibrate", "cad_reference_point", "cad_reference_compare"];
@@ -32,7 +38,7 @@ public static class CadOperations
     /// Operations that run only in the active editor document, so the worker activates the target first.
     /// Vertical reads resolve the Civil/Map document of the requested database and do not switch tabs.
     /// </summary>
-    public static bool ActivatesDocument(string operation) => IsMutation(operation);
+    public static bool ActivatesDocument(string operation) => IsMutation(operation) || operation == "cad_edit_preview";
 
     /// <summary>Operations a CAD worker accepts, as advertised by cad_context.</summary>
     public static IReadOnlyList<string> WorkerOperations { get; } = ReadOnly.Where(o => o != "cad_sessions")

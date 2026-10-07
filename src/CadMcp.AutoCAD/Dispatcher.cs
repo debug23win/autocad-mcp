@@ -42,6 +42,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     /// <summary>Shows the confirmation for a waiting script; returns a handle that closes it. Null in Core Console.</summary>
     public Func<LispApprovalRequest, Action<bool, bool>, IDisposable>? ApprovalPresenter { get; set; }
     private static readonly TimeSpan ApprovalTimeout = TimeSpan.FromMinutes(10);
+    // Keys preview hashes, so cad_edit accepts only a hash this worker produced for the plan.
+    private readonly byte[] previewKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
     // Written on the CAD thread, read by pipe threads for receipts.
     private volatile LispJob? lisp;
     /// <summary>Operation id of the agent's script AutoCAD is evaluating; CADMCPLISP refuses to run meanwhile.</summary>
@@ -112,7 +114,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (MutationRecovery.IsMutation(r.Operation))
         {
             string id = EditPlan.RequiredText(r.Data, "operation_id");
-            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data); }
+            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
             lock (mutationGate)
             {
                 // Reading an existing receipt must also work when the queue is full, a dialog is open or AutoCAD quits.
@@ -269,7 +271,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_edit_preview":
                 var previewPlan = EditPlan.RequiredText(r.Data, "operations_json");
                 var previewOperations = EditPlan.Parse(previewPlan);
-                data = new { plan_hash = EditPlan.Hash(previewPlan, r.Data.Text("expectations_json")), previewed_revision = state.Revision,
+                var stateBeforePreview = DrawingReview.DocumentState(doc);
+                data = new { plan_hash = EditPlan.Hash(previewPlan, r.Data.Text("expectations_json"), state.Id, state.Revision, previewKey), previewed_revision = state.Revision,
+                    document_state_before_preview = stateBeforePreview,
                     apply = "cad_edit with the same operations_json and expectations_json, preview_hash and expected_revision runs exactly this plan",
                     result = Edits.Execute(doc, previewOperations, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), preview: true) };
                 break;
@@ -490,7 +494,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
-        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data); }
+        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
         else if (r.Operation == "cad_export")
         {
             exportFormat = EditPlan.RequiredText(r.Data, "format");
@@ -519,6 +523,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         bool mapOperation=operations?.Any(p=>p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true)==true;
         if(mapOperation && operations!.Length!=1)throw new CadFault("MAP_SINGLE_OPERATION","Map API operations must run singly with a checkpoint");
+        bool outsideTransaction=operations?.Any(p=>ModifyPlan.OutsideTransaction.Contains(p.Text("op")!))==true;
         journal.Begin(id, r);
         try
         {
@@ -569,7 +574,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
             if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
-            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
+            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
     }

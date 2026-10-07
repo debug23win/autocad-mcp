@@ -300,7 +300,9 @@ internal static class Edits
             catch (System.Exception error) when (error is not OperationCanceledException)
             { quality = new("unverified", live.Length, 0, [new("REVIEW_FAILED", "unverified", [], "Quality review did not run: " + error.Message)], ["Quality review failed"]); }
         object Data(IReadOnlyList<JsonElement> entities, bool truncated) => new { quality, transaction = preview ? "rolled_back_preview" : "committed", preview = preview ? true : (bool?)null,
-            coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities, entity_count = readback.Length, entities_truncated = truncated ? true : (bool?)null, acceptance, table_dependencies,
+            coordinate_system = "WCS", units = doc.Database.Insunits.ToString(), results, entities, entity_count = readback.Length, entities_truncated = truncated ? true : (bool?)null,
+            // A shortened readback still names every changed entity, so cad_verify and the receipt list see them all.
+            changed_handles = truncated ? readback.Select(e => e.Text("handle")).ToArray() : null, acceptance, table_dependencies,
             schedule_warnings = schedule_warnings.Count == 0 ? null : schedule_warnings,
             undo = preview ? "nothing_to_undo" : undoGroup!.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback",
             limitations = preview ? new[] { "special_objects_require_vendor_API", "preview_handles_are_provisional_and_do_not_exist_after_rollback", "DBMOD_may_report_the_drawing_as_modified" } : new[] { "special_objects_require_vendor_API" } };

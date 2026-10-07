@@ -127,21 +127,27 @@ public static class EditPlan
             }
             result.Add(op.Clone());
         }
+        // These change the drawing outside the edit transaction, so a failure of another operation of the same
+        // request could not undo them.
+        if (result.Count > 1 && result.FirstOrDefault(op => ModifyPlan.OutsideTransaction.Contains(op.Text("op")!)) is { ValueKind: JsonValueKind.Object } outside)
+            throw new CadFault("SINGLE_OPERATION_REQUIRED", outside.Text("op") + " changes the drawing outside the edit transaction; send it as the only operation of its request");
         return result.ToArray();
     }
     /// <summary>
-    /// Fingerprint of an edit plan and its expectations, returned by cad_edit_preview. cad_edit with
-    /// preview_hash runs only that exact plan.
+    /// Fingerprint of an edit plan and its expectations on one drawing at one revision, returned by
+    /// cad_edit_preview. It is keyed with a secret of the CAD worker, so only a preview produces it; cad_edit
+    /// with preview_hash runs only that exact plan on the unchanged drawing.
     /// </summary>
-    public static string Hash(string operationsJson, string? expectationsJson) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(operationsJson + "\0" + (expectationsJson ?? "")))).ToLowerInvariant();
+    public static string Hash(string operationsJson, string? expectationsJson, string? documentId, long revision, byte[] key) =>
+        Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(key, System.Text.Encoding.UTF8.GetBytes(
+            (documentId ?? "") + "\0" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\0" + operationsJson + "\0" + (expectationsJson ?? "")))).ToLowerInvariant();
 
-    /// <summary>Fails when cad_edit carries a preview_hash that does not match its plan.</summary>
-    public static void RequirePreviewed(JsonElement data)
+    /// <summary>Fails when cad_edit carries a preview_hash that does not match its plan, drawing and expected revision.</summary>
+    public static void RequirePreviewed(JsonElement data, string? documentId, long? expectedRevision, byte[] key)
     {
         if (data.Text("preview_hash") is not { } expected) return;
-        if (!string.Equals(expected.Trim(), Hash(RequiredText(data, "operations_json"), data.Text("expectations_json")), StringComparison.OrdinalIgnoreCase))
-            throw new CadFault("PREVIEW_MISMATCH", "operations_json or expectations_json differ from the previewed plan; preview the plan again");
+        if (expectedRevision is not { } revision || !string.Equals(expected.Trim(), Hash(RequiredText(data, "operations_json"), data.Text("expectations_json"), documentId, revision, key), StringComparison.OrdinalIgnoreCase))
+            throw new CadFault("PREVIEW_MISMATCH", "The plan, its expectations, the drawing or its revision differ from the preview; preview the plan again");
     }
 
     public static string RequiredText(JsonElement e, string name)

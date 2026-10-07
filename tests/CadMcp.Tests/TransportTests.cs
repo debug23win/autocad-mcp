@@ -105,6 +105,10 @@ public sealed class OperationTests
         Assert.Contains("cad_focus", CadOperations.WorkerOperations);
         Assert.DoesNotContain("cad_sessions", CadOperations.WorkerOperations);
         Assert.True(CadOperations.ActivatesDocument("cad_edit") && !CadOperations.ActivatesDocument("cad_vertical_get") && !CadOperations.ActivatesDocument("cad_search"));
+        // A preview runs the edit in the drawing it targets, so it activates it like cad_edit; helpers cannot run it.
+        Assert.True(CadOperations.ActivatesDocument("cad_edit_preview"));
+        Assert.DoesNotContain("cad_edit_preview", CadOperations.HelperAllowed);
+        Assert.True(CadOperations.HelperAllowed.IsSubsetOf(CadOperations.ReadOnly));
     }
 
     [Fact]

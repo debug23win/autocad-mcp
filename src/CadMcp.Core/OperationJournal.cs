@@ -144,8 +144,10 @@ public sealed class OperationJournal
             state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State,
             operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
             error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
-            changed_entities = result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? (int?)es.GetArrayLength() : null,
-            handles = es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).ToArray() : null,
+            changed_entities = result.TryGetProperty("entity_count", out var count) && count.TryGetInt32(out int total) ? total
+                : result.TryGetProperty("entities", out var listed) && listed.ValueKind == JsonValueKind.Array ? (int?)listed.GetArrayLength() : null,
+            handles = result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array ? changed.EnumerateArray().Select(h => h.GetString()).OfType<string>().ToArray()
+                : result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).ToArray() : null,
             document_state = outer.TryGetProperty("document_state", out var d) ? (JsonElement?)d.Clone() : null,
             transaction = result.Text("transaction"), historical = !active };
     }

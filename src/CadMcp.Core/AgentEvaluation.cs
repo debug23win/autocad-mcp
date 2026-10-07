@@ -54,7 +54,7 @@ public static class AgentEvaluation
             t.TryGetProperty("evidence_queries", out var queries) ? queries.EnumerateArray().Select(q =>
             {
                 var query = new EvidenceQuery(EditPlan.RequiredText(q, "name"), EditPlan.RequiredText(q, "operation"), q.TryGetProperty("data", out var d) ? d.Clone() : Wire.Element(new { }));
-                if (!CadOperations.ReadOnly.Contains(query.Operation)) throw new CadFault("INVALID_TASKS", query.Operation + " is not a read-only operation");
+                if (!CadOperations.HelperAllowed.Contains(query.Operation)) throw new CadFault("INVALID_TASKS", query.Operation + " is not a read-only operation");
                 return query;
             }).ToArray() : null)).ToArray();
         if (result.Select(t => t.Id).Distinct(StringComparer.Ordinal).Count() != result.Length) throw new CadFault("INVALID_TASKS", "Task ids must be unique");

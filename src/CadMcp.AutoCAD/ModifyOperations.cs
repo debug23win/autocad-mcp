@@ -133,9 +133,12 @@ internal static class ModifyOperations
                     break;
                 case Table table when include.Contains("tables"):
                     if (Locked(table)) { Skip("locked_layer"); break; }
+                    var merges = NativeTables.MergedRanges(table);
                     for (int r = 0; r < Math.Min(table.Rows.Count, 500); r++)
                         for (int c = 0; c < Math.Min(table.Columns.Count, 50); c++)
                         {
+                            // A merged range holds its text in the top-left cell; the others must not be written.
+                            if (merges.Any(m => r >= m.TopRow && r <= m.BottomRow && c >= m.LeftColumn && c <= m.RightColumn && (m.TopRow != r || m.LeftColumn != c))) continue;
                             var cell = table.Cells[r, c];
                             string raw = cell.TextString ?? "";
                             if (raw.Length == 0) continue;
@@ -147,7 +150,7 @@ internal static class ModifyOperations
                 case BlockReference reference when include.Contains("attributes"):
                     foreach (ObjectId id in reference.AttributeCollection)
                     {
-                        if (tr.GetObject(id, OpenMode.ForRead) is not AttributeReference attribute) continue;
+                        if (id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not AttributeReference attribute) continue;
                         if (attribute.HasFields) { if (CadText.Contains(attribute.TextString, find, attribute.IsMTextAttribute)) Skip("field"); continue; }
                         if (Locked(attribute) || Locked(reference)) { if (CadText.Contains(attribute.TextString, find, attribute.IsMTextAttribute)) Skip("locked_layer"); continue; }
                         changed |= Change(reference, "attribute " + attribute.Tag, attribute.TextString, attribute.IsMTextAttribute, value =>
@@ -180,7 +183,7 @@ internal static class ModifyOperations
             {
                 "current" => [db.CurrentSpaceId],
                 "model" => [blocks[BlockTableRecord.ModelSpace]],
-                "layout" => [Sheets.Space(db, tr, op.Text("layout")!).ObjectId],
+                "layout" => [Sheets.Layout(db, tr, op.Text("layout")!).BlockTableRecordId],
                 _ => blocks.Cast<ObjectId>().Where(id => ((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).IsLayout).ToArray()
             };
             foreach (var space in spaces)
@@ -226,14 +229,24 @@ internal static class ModifyOperations
         DBObjectCollection curves;
         if (op.TryGetProperty("side_point", out var sideValue))
         {
-            // Both sides are computed; the one passing nearer the side point is kept.
+            // The side is the one the side point lies on, seen from the nearest point of the curve. Each offset is
+            // tried on its own: a side AutoCAD cannot build (inside a small circle) is never replaced by the other.
             var side = P(sideValue);
-            var plus = source.GetOffsetCurves(Math.Abs(distance));
-            var minus = source.GetOffsetCurves(-Math.Abs(distance));
-            bool usePlus = Nearest(plus, side) <= Nearest(minus, side);
-            curves = usePlus ? plus : minus;
-            Dispose(usePlus ? minus : plus);
-            distance = usePlus ? Math.Abs(distance) : -Math.Abs(distance);
+            var foot = source.GetClosestPointTo(side, false);
+            var toward = side - foot;
+            if (toward.Length < Epsilon) throw new CadFault("INVALID_OFFSET", "side_point lies on the curve; pick a point on the side to offset to");
+            DBObjectCollection? chosen = null;
+            foreach (double candidate in new[] { Math.Abs(distance), -Math.Abs(distance) })
+            {
+                DBObjectCollection offset;
+                try { offset = source.GetOffsetCurves(candidate); }
+                catch (Autodesk.AutoCAD.Runtime.Exception) { continue; }
+                var near = offset.Cast<DBObject>().OfType<Curve>().Select(c => { try { return (Point3d?)c.GetClosestPointTo(foot, false); } catch (Autodesk.AutoCAD.Runtime.Exception) { return null; } })
+                    .OfType<Point3d>().OrderBy(p => p.DistanceTo(foot)).FirstOrDefault(foot);
+                if (near != foot && (near - foot).DotProduct(toward) > 0) { chosen = offset; distance = candidate; break; }
+                Dispose(offset);
+            }
+            curves = chosen ?? throw new CadFault("OFFSET_FAILED", "AutoCAD produced no offset curve on the side of side_point; the distance may exceed a curvature radius");
         }
         else curves = source.GetOffsetCurves(distance);
         var space = (BlockTableRecord)tr.GetObject(source.OwnerId, OpenMode.ForRead);
@@ -270,6 +283,7 @@ internal static class ModifyOperations
         var items = parts.Cast<DBObject>().ToList();
         var space = (BlockTableRecord)tr.GetObject(source.OwnerId, OpenMode.ForRead);
         var created = new List<ObjectId>();
+        var usedNested = new HashSet<ObjectId>();
         int attributeTexts = 0;
         try
         {
@@ -294,6 +308,8 @@ internal static class ModifyOperations
                 if (op.Text("layer") is { } layer) entity.LayerId = Edits.Layer(db, tr, layer);
                 Edits.RequireUnlocked(tr, entity);
                 Append(tr, space, entity);
+                // Explode copies nested block references without their attribute values; carry them over as EXPLODE does.
+                if (source is BlockReference outer && entity is BlockReference nested) NestedAttributes(tr, outer, nested, usedNested);
                 if (entity is DBText text && (text.HorizontalMode != TextHorizontalMode.TextLeft || text.VerticalMode != TextVerticalMode.TextBase)) text.AdjustAlignment(db);
                 created.Add(entity.ObjectId);
             }
@@ -306,6 +322,29 @@ internal static class ModifyOperations
             source_handle = H(source.ObjectId), source_erased = !keep, count = created.Count, handles = created.Take(500).Select(H).ToArray(),
             handles_truncated = created.Count > 500, attributes_as_text = attributeTexts
         });
+    }
+
+    /// <summary>Copies the attributes of the nested reference in the exploded block's definition that sits where <paramref name="copy"/> landed.</summary>
+    private static void NestedAttributes(Transaction tr, BlockReference outer, BlockReference copy, HashSet<ObjectId> used)
+    {
+        if (copy.AttributeCollection.Count > 0) return;
+        var transform = outer.BlockTransform;
+        var definition = (BlockTableRecord)tr.GetObject(outer.BlockTableRecord, OpenMode.ForRead);
+        double tolerance = 1e-6 * Math.Max(1, copy.Position.GetAsVector().Length);
+        foreach (ObjectId id in definition)
+        {
+            if (used.Contains(id) || id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not BlockReference original || original.BlockTableRecord != copy.BlockTableRecord) continue;
+            if (original.AttributeCollection.Count == 0 || original.Position.TransformBy(transform).DistanceTo(copy.Position) > tolerance) continue;
+            used.Add(id);
+            foreach (ObjectId attributeId in original.AttributeCollection)
+            {
+                if (attributeId.IsErased || tr.GetObject(attributeId, OpenMode.ForRead) is not AttributeReference attribute) continue;
+                var clone = (AttributeReference)attribute.Clone();
+                try { clone.TransformBy(transform); copy.AttributeCollection.AppendAttribute(clone); tr.AddNewlyCreatedDBObject(clone, true); }
+                catch { if (clone.ObjectId.IsNull) clone.Dispose(); throw; }
+            }
+            return;
+        }
     }
 
     private static DBText TextFrom(DBText source)
@@ -405,15 +444,19 @@ internal static class ModifyOperations
             double step = Math.Abs(Math.Abs(total) - 2 * Math.PI) < 1e-9 ? total / count : total / (count - 1);
             var center = P(op, "center");
             bool rotate = Bool(op, "rotate_items", true);
+            // Without rotation the whole selection moves as one: every item follows the centre of all of them.
+            Point3d middle = Point3d.Origin;
+            if (!rotate)
+            {
+                var box = sources[0].GeometricExtents;
+                foreach (var item in sources.Skip(1)) box.AddExtents(item.GeometricExtents);
+                middle = box.MinPoint + (box.MaxPoint - box.MinPoint) / 2;
+            }
             for (int i = 1; i < count; i++)
             {
                 var rotation = Matrix3d.Rotation(step * i, Vector3d.ZAxis, center);
-                positions.Add(rotate ? _ => rotation : entity =>
-                {
-                    var box = entity.GeometricExtents;
-                    var middle = box.MinPoint + (box.MaxPoint - box.MinPoint) / 2;
-                    return Matrix3d.Displacement(middle.TransformBy(rotation) - middle);
-                });
+                var shift = Matrix3d.Displacement(middle.TransformBy(rotation) - middle);
+                positions.Add(rotate ? _ => rotation : _ => shift);
             }
         }
         var created = new List<ObjectId>();
@@ -476,9 +519,13 @@ internal static class ModifyOperations
         var touched = new List<ObjectId> { first.ObjectId, second.ObjectId };
         if (joint is not null)
         {
-            joint.SetPropertiesFrom(first);
-            Style(db, tr, joint, op);
-            Append(tr, (BlockTableRecord)tr.GetObject(first.OwnerId, OpenMode.ForRead), joint);
+            try
+            {
+                joint.SetPropertiesFrom(first);
+                Style(db, tr, joint, op);
+                Append(tr, (BlockTableRecord)tr.GetObject(first.OwnerId, OpenMode.ForRead), joint);
+            }
+            catch { if (joint.ObjectId.IsNull) joint.Dispose(); throw; }
             touched.Insert(0, joint.ObjectId);
         }
         return new(joint?.ObjectId ?? first.ObjectId, touched, new
@@ -519,8 +566,17 @@ internal static class ModifyOperations
         parameters.Sort();
         if (parameters.Count == 0 || curve.Closed && parameters.Count < 2)
             throw new CadFault("TRIM_NO_INTERSECTION", curve.Closed ? "A closed curve needs two crossings with the boundaries" : "The boundaries do not cross the curve between its ends");
-        var pieces = curve.GetSplitCurves(new DoubleCollection(parameters.ToArray()));
         var pick = P(op, "pick_point");
+        // As TRIM does, only the span between the crossings on either side of the pick point goes; the curve is
+        // split nowhere else. On a closed curve the span may wrap past its start.
+        double picked;
+        try { picked = curve.GetParameterAtPoint(curve.GetClosestPointTo(pick, false)); }
+        catch (Autodesk.AutoCAD.Runtime.Exception) { throw new CadFault("TRIM_FAILED", "The pick point could not be located on the curve"); }
+        double? below = parameters.Where(p => p < picked).Select(p => (double?)p).LastOrDefault(), above = parameters.Where(p => p > picked).Select(p => (double?)p).FirstOrDefault();
+        if (curve.Closed) { below ??= parameters[^1]; above ??= parameters[0]; }
+        var cuts = new[] { below, above }.OfType<double>().Distinct().Order().ToArray();
+        if (curve.Closed && cuts.Length < 2) throw new CadFault("TRIM_FAILED", "The pick point lies on a crossing; pick a point inside the part to remove");
+        var pieces = curve.GetSplitCurves(new DoubleCollection(cuts));
         var list = pieces.Cast<DBObject>().OfType<Curve>().ToList();
         int removed = -1; double best = double.MaxValue;
         for (int i = 0; i < list.Count; i++)
@@ -540,7 +596,7 @@ internal static class ModifyOperations
         }
         catch { foreach (var piece in list) if (piece.ObjectId.IsNull && !piece.IsDisposed) piece.Dispose(); throw; }
         curve.Erase();
-        return new(ObjectId.Null, created.Append(curve.ObjectId).ToArray(), new { source_handle = H(curve.ObjectId), handles = created.Select(H).ToArray(), removed_length = removedLength, cuts = parameters.Count });
+        return new(ObjectId.Null, created.Append(curve.ObjectId).ToArray(), new { source_handle = H(curve.ObjectId), handles = created.Select(H).ToArray(), removed_length = removedLength, cuts = cuts.Length, crossings = parameters.Count });
     }
 
     private static double Length(Curve curve)
@@ -574,7 +630,10 @@ internal static class ModifyOperations
         foreach (Point3d candidate in candidates)
             if (beyond(candidate) is { } travel && travel > 1e-9 && travel < best) { best = travel; target = candidate; }
         if (target is null) throw new CadFault("EXTEND_NO_INTERSECTION", "No boundary lies on the extension beyond the " + (atStart ? "start" : "end"));
+        double before = Length(curve);
         curve.Extend(atStart, target.Value);
+        // Arc travel is an angle; the length gained is measured along the curve.
+        best = Length(curve) - before;
         return new(curve.ObjectId, [curve.ObjectId], new { handle = H(curve.ObjectId), end = atStart ? "start" : "end", from = new[] { endPoint.X, endPoint.Y, endPoint.Z }, to = new[] { target.Value.X, target.Value.Y, target.Value.Z }, added_length = best });
     }
 
@@ -663,7 +722,8 @@ internal static class ModifyOperations
                 leader.MLeaderStyle = styles.Contains(styleName) ? styles.GetAt(styleName) : throw new CadFault("STYLE_NOT_FOUND", styleName);
             }
             leader.ContentType = ContentType.MTextContent;
-            var text = new MText();
+            // The leader keeps a copy of this MText.
+            using var text = new MText();
             text.SetDatabaseDefaults(db);
             text.Contents = op.GetProperty("text").GetString()!;
             if (op.Text("text_style") is { } textStyle) { text.TextStyleId = Edits.TextStyle(db, tr, textStyle); leader.TextStyleId = text.TextStyleId; }
@@ -940,7 +1000,12 @@ internal static class ModifyOperations
         if (delete)
         {
             bool found = dictionary.Contains(key);
-            if (found) { dictionary.UpgradeOpen(); tr.GetObject(dictionary.GetAt(key), OpenMode.ForWrite).Erase(); }
+            if (found)
+            {
+                // Only data records are deleted; a dictionary, layout or other object at the key is left alone.
+                if (tr.GetObject(dictionary.GetAt(key), OpenMode.ForRead) is not Xrecord existing) throw new CadFault("NOT_AN_XRECORD", key);
+                existing.UpgradeOpen(); existing.Erase();
+            }
             return new(ObjectId.Null, touched, new { owner_handle = owner is null ? null : H(owner.ObjectId), dictionary = dictionaryName, key, deleted = found });
         }
         Xrecord xrecord;

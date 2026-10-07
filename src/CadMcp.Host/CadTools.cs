@@ -17,7 +17,7 @@ public sealed class CadTools
     private static async Task<Response> ScopedResponse(string operation, string? session, string? document, object data, long? revision, CancellationToken ct)
     {
         // Allowlist: an operation is available to read-only helpers only after it is declared read-only.
-        if(CadAccess.ReadOnly&&!CadOperations.ReadOnly.Contains(operation))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
+        if(CadAccess.ReadOnly&&!CadOperations.HelperAllowed.Contains(operation))throw new CadFault("HELPER_READ_ONLY","Review helpers cannot mutate drawings, focus, publish or cancel work");
         string? pinnedSession=Environment.GetEnvironmentVariable("CAD_MCP_SESSION_ID"), pinnedDocument=Environment.GetEnvironmentVariable("CAD_MCP_DOCUMENT_ID");
         if(string.IsNullOrWhiteSpace(pinnedSession))pinnedSession=null;if(string.IsNullOrWhiteSpace(pinnedDocument))pinnedDocument=null;
         if(pinnedSession is not null && session is not null && pinnedSession!=session)throw new CadFault("PROJECT_SCOPE_MISMATCH","This chat is pinned to another AutoCAD session");

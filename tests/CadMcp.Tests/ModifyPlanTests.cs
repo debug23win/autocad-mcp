@@ -92,18 +92,38 @@ public sealed class ModifyPlanTests
     }
 
     [Fact]
-    public void Plan_hash_binds_the_exact_plan_and_expectations()
+    public void Plan_hash_binds_the_exact_plan_expectations_drawing_and_revision()
     {
         string plan = """[{"op":"line","start":[0,0],"end":[1,1]}]""";
-        string hash = EditPlan.Hash(plan, null);
+        byte[] key = [1, 2, 3, 4], otherKey = [4, 3, 2, 1];
+        string hash = EditPlan.Hash(plan, null, "doc", 7, key);
         Assert.Equal(64, hash.Length);
-        Assert.Equal(hash, EditPlan.Hash(plan, ""));
-        Assert.NotEqual(hash, EditPlan.Hash(plan, """{"entity_count":1}"""));
-        Assert.NotEqual(hash, EditPlan.Hash(plan.Replace("1,1", "1,2"), null));
-        EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan }));
-        EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, preview_hash = hash.ToUpperInvariant() }));
+        Assert.Equal(hash, EditPlan.Hash(plan, "", "doc", 7, key));
+        Assert.NotEqual(hash, EditPlan.Hash(plan, """{"entity_count":1}""", "doc", 7, key));
+        Assert.NotEqual(hash, EditPlan.Hash(plan.Replace("1,1", "1,2"), null, "doc", 7, key));
+        Assert.NotEqual(hash, EditPlan.Hash(plan, null, "other", 7, key));
+        Assert.NotEqual(hash, EditPlan.Hash(plan, null, "doc", 8, key));
+        // Only the worker that previewed knows its key, so a hash cannot be made up without a preview.
+        Assert.NotEqual(hash, EditPlan.Hash(plan, null, "doc", 7, otherKey));
+        EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan }), "doc", 7, key);
+        EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, preview_hash = hash.ToUpperInvariant() }), "doc", 7, key);
         Assert.Equal("PREVIEW_MISMATCH", Assert.Throws<CadFault>(() =>
-            EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, expectations_json = """{"entity_count":1}""", preview_hash = hash }))).Code);
+            EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, expectations_json = """{"entity_count":1}""", preview_hash = hash }), "doc", 7, key)).Code);
+        Assert.Equal("PREVIEW_MISMATCH", Assert.Throws<CadFault>(() => EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, preview_hash = hash }), "doc", 8, key)).Code);
+        Assert.Equal("PREVIEW_MISMATCH", Assert.Throws<CadFault>(() => EditPlan.RequirePreviewed(Wire.Element(new { operations_json = plan, preview_hash = hash }), "doc", null, key)).Code);
+    }
+
+    [Theory]
+    [InlineData("""[{"op":"xref_attach","path":"{dwg}","name":"A","position":[0,0]},{"op":"line","start":[0,0],"end":[1,1]}]""", "SINGLE_OPERATION_REQUIRED")]
+    [InlineData("""[{"op":"line","start":[0,0],"end":[1,1]},{"op":"block_import","path":"{dwg}","names":["B"]}]""", "SINGLE_OPERATION_REQUIRED")]
+    [InlineData("""[{"op":"xdata_set","handle":"2A","app":"ACAD","values":[]}]""", "RESERVED_NAME")]
+    [InlineData("""[{"op":"xrecord_set","dictionary":"ACAD_LAYOUT","key":"Layout1","delete":true}]""", "RESERVED_NAME")]
+    [InlineData("""[{"op":"xdata_set","handle":"2A","app":"AcDbAttr","values":[]}]""", "RESERVED_NAME")]
+    public void Operations_that_could_damage_the_drawing_are_refused(string plan, string code)
+    {
+        // An absolute path on the test machine (C:\... on Windows, /tmp/... elsewhere).
+        plan = plan.Replace("{dwg}", System.Text.Json.JsonEncodedText.Encode(Path.Combine(Path.GetTempPath(), "a.dwg")).ToString());
+        Assert.Equal(code, Assert.Throws<CadFault>(() => EditPlan.Parse(plan)).Code);
     }
 
     [Theory]

@@ -108,7 +108,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                     description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
                     prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
                     mcpServers=new object[]{new Dictionary<string,object>{["cad"] = new {command=options.McpExecutable,args=options.McpArguments??Array.Empty<string>(),env=readOnlyEnvironment}}},
-                    tools = CadOperations.ReadOnly.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").ToArray()
+                    tools = CadOperations.HelperAllowed.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").ToArray()
                 }
             }),"--agent","cad_primary"]);
         }
