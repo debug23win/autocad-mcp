@@ -26,8 +26,11 @@ internal static class DrawingInsight
             case "current": yield return (db.CurrentSpaceId, SpaceName(tr, db.CurrentSpaceId)); break;
             case "model": yield return (blocks[BlockTableRecord.ModelSpace], "Model"); break;
             case "layout":
-                var space = Sheets.Space(db, tr, layoutName ?? throw new CadFault("INVALID_PARAMETER", "scope layout requires layout_name"));
-                yield return (space.ObjectId, layoutName); break;
+                // Read-only lookup: this summary must not open the layout for write.
+                var layouts = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                string requested = layoutName ?? throw new CadFault("INVALID_PARAMETER", "scope layout requires layout_name");
+                if (!layouts.Contains(requested)) throw new CadFault("LAYOUT_NOT_FOUND", requested);
+                yield return (((Layout)tr.GetObject(layouts.GetAt(requested), OpenMode.ForRead)).BlockTableRecordId, requested); break;
             case "all":
                 foreach (var (id, name) in Layouts(db, tr)) yield return (id, name);
                 break;
@@ -71,16 +74,24 @@ internal static class DrawingInsight
             return entity switch
             {
                 Circle circle => Math.PI * circle.Radius * circle.Radius,
-                Polyline { Closed: true } polyline => polyline.Area,
-                Polyline2d { Closed: true } polyline => polyline.Area,
+                Polyline polyline when polyline.Closed || EndsMeet(polyline) => polyline.Area,
+                Polyline2d polyline when polyline.Closed || EndsMeet(polyline) => polyline.Area,
                 Ellipse { Closed: true } ellipse => ellipse.Area,
-                Spline { Closed: true } spline => spline.Area,
+                Spline spline when spline.Closed || EndsMeet(spline) => spline.Area,
                 Hatch hatch => hatch.Area,
                 Region region => region.Area,
                 _ => null
             };
         }
         catch (Autodesk.AutoCAD.Runtime.Exception) { return double.NaN; }
+    }
+
+    /// <summary>An open curve drawn back to its start point (by object snap) encloses an area like a closed one.</summary>
+    private static bool EndsMeet(Curve curve)
+    {
+        if (curve is Polyline { NumberOfVertices: < 3 } || curve is Polyline2d && curve.EndParam < 2) return false;
+        var (start, end) = (curve.StartPoint, curve.EndPoint);
+        return start.DistanceTo(end) <= 1e-9 * Math.Max(1, Math.Max(start.GetAsVector().Length, end.GetAsVector().Length)) && curve.GetDistanceAtParameter(curve.EndParam) > 0;
     }
 
     // ---------------------------------------------------------------- takeoff
@@ -97,12 +108,12 @@ internal static class DrawingInsight
         int maxRows = DraftingPlan.Integer(options, "max_rows", 1, 5000, 1000);
         bool csv = options.Text("format") is "csv";
         var lengths = new SortedDictionary<string, (int Count, double Length, SortedDictionary<string, (int Count, double Length)> Types)>(StringComparer.Ordinal);
-        var areas = new SortedDictionary<string, (int Count, double Area)>(StringComparer.Ordinal);
+        var areas = new SortedDictionary<string, (int Count, double Area, SortedDictionary<string, (int Count, double Area)> Types)>(StringComparer.Ordinal);
         var blocks = new SortedDictionary<string, (int Count, SortedDictionary<string, int> Layers)>(StringComparer.Ordinal);
         var rows = new List<(string Handle, string Name, string Layer, string Space, SortedDictionary<string, string> Values)>();
         var tags = new SortedSet<string>(StringComparer.Ordinal);
         int visited = 0, unmeasured = 0;
-        bool partial = false;
+        bool partial = false, rowsDropped = false;
         var spaceNames = new List<string>();
         foreach (var (spaceId, spaceName) in Spaces(db, tr, scope, options.Text("layout_name")))
         {
@@ -128,7 +139,13 @@ internal static class DrawingInsight
                 if (include.Contains("areas") && Area(entity) is { } area)
                 {
                     if (!double.IsFinite(area)) unmeasured++;
-                    else { var entry = areas.GetValueOrDefault(entity.Layer); areas[entity.Layer] = (entry.Count + 1, entry.Area + area); }
+                    else
+                    {
+                        var entry = areas.GetValueOrDefault(entity.Layer, (0, 0, new(StringComparer.Ordinal)));
+                        var byType = entry.Types.GetValueOrDefault(type);
+                        entry.Types[type] = (byType.Count + 1, byType.Area + area);
+                        areas[entity.Layer] = (entry.Count + 1, entry.Area + area, entry.Types);
+                    }
                 }
                 if (entity is BlockReference reference and not Table && (include.Contains("blocks") || include.Contains("attributes")))
                 {
@@ -136,7 +153,8 @@ internal static class DrawingInsight
                     var entry = blocks.GetValueOrDefault(name, (0, new(StringComparer.Ordinal)));
                     entry.Layers[entity.Layer] = entry.Layers.GetValueOrDefault(entity.Layer) + 1;
                     blocks[name] = (entry.Count + 1, entry.Layers);
-                    if (include.Contains("attributes") && reference.AttributeCollection.Count > 0 && rows.Count < maxRows)
+                    if (include.Contains("attributes") && reference.AttributeCollection.Count > 0 && rows.Count >= maxRows) rowsDropped = true;
+                    else if (include.Contains("attributes") && reference.AttributeCollection.Count > 0)
                     {
                         var values = new SortedDictionary<string, string>(StringComparer.Ordinal);
                         foreach (ObjectId attributeId in reference.AttributeCollection)
@@ -149,7 +167,8 @@ internal static class DrawingInsight
         }
         var lengthRows = lengths.Select(p => new { layer = p.Key, count = p.Value.Count, length = Math.Round(p.Value.Length, 6),
             by_type = p.Value.Types.ToDictionary(t => t.Key, t => new { count = t.Value.Count, length = Math.Round(t.Value.Length, 6) }) }).ToArray();
-        var areaRows = areas.Select(p => new { layer = p.Key, count = p.Value.Count, area = Math.Round(p.Value.Area, 6) }).ToArray();
+        var areaRows = areas.Select(p => new { layer = p.Key, count = p.Value.Count, area = Math.Round(p.Value.Area, 6),
+            by_type = p.Value.Types.ToDictionary(t => t.Key, t => new { count = t.Value.Count, area = Math.Round(t.Value.Area, 6) }) }).ToArray();
         var blockRows = blocks.OrderByDescending(p => p.Value.Count).ThenBy(p => p.Key, StringComparer.Ordinal)
             .Select(p => new { name = p.Key, count = p.Value.Count, layers = p.Value.Layers }).ToArray();
         object? csvTables = null;
@@ -175,9 +194,11 @@ internal static class DrawingInsight
             blocks = include.Contains("blocks") || include.Contains("attributes") ? blockRows : null,
             attribute_columns = include.Contains("attributes") ? tags.ToArray() : null,
             attributes = include.Contains("attributes") ? rows.Select(r => new { handle = r.Handle, block = r.Name, layer = r.Layer, space = r.Space, values = r.Values }).ToArray() : null,
-            attributes_truncated = include.Contains("attributes") && rows.Count >= maxRows ? true : (bool?)null,
+            attributes_truncated = include.Contains("attributes") && rowsDropped ? true : (bool?)null,
             csv = csvTables, unmeasured = unmeasured == 0 ? (int?)null : unmeasured, partial = partial ? true : (bool?)null,
-            limitations = new[] { "top-level entities only; geometry inside blocks is counted as block references", "circle lengths are circumferences; areas use closed curves, hatches and regions", "lengths of 3D curves are true 3D lengths" }
+            limitations = new[] { "top-level entities only; geometry inside blocks is counted as block references",
+                "circle lengths are circumferences; areas use closed curves (and open ones drawn back to their start point), hatches and regions",
+                "a hatch and its boundary on one layer are both counted: areas[].by_type separates them", "lengths of 3D curves are true 3D lengths" }
         };
     }
 
@@ -224,7 +245,7 @@ internal static class DrawingInsight
                 layerCounts[entity.Layer] = layerCounts.GetValueOrDefault(entity.Layer) + 1;
                 switch (entity)
                 {
-                    case Viewport: viewports++; break;
+                    case Viewport viewport: if (!ReadingMetadata.IsOverallViewport(viewport, tr)) viewports++; break;
                     case DBText text: texts.Add((spaceName, text.Position.Y, text.Position.X, text.TextString, text.Layer)); break;
                     case MText mtext: texts.Add((spaceName, mtext.Location.Y, mtext.Location.X, mtext.Text, mtext.Layer)); break;
                     case BlockReference reference and not Table:
@@ -246,7 +267,7 @@ internal static class DrawingInsight
                 var paper = layout.PlotPaperSize;
                 layouts.Add(new
                 {
-                    name = layout.LayoutName, tab_order = layout.TabOrder, entities, viewports = Math.Max(0, viewports - 1),
+                    name = layout.LayoutName, tab_order = layout.TabOrder, entities, viewports,
                     paper_mm = paper.X > 0 ? new[] { Math.Round(paper.X, 1), Math.Round(paper.Y, 1) } : null,
                     device = layout.PlotConfigurationName, media = layout.CanonicalMediaName, titles = titles.Count == 0 ? null : titles, types
                 });
@@ -263,7 +284,10 @@ internal static class DrawingInsight
             .OrderBy(x => x.name, StringComparer.Ordinal).ToArray();
         var blocks = blockCounts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal).Take(50)
             .Select(p => new { name = p.Key, references = p.Value }).ToArray();
-        int unused = definitions.Count(b => !b.IsLayout && !b.IsAnonymous && !b.IsFromExternalReference && !b.IsDependent && !blockCounts.ContainsKey(b.Name));
+        // Used anywhere, including inside other blocks and through the anonymous copies of a dynamic block.
+        bool Referenced(BlockTableRecord block) => block.GetBlockReferenceIds(true, false).Cast<ObjectId>().Any(id => !id.IsErased) ||
+            block.IsDynamicBlock && block.GetAnonymousBlockIds().Cast<ObjectId>().Any(id => ((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).GetBlockReferenceIds(true, false).Cast<ObjectId>().Any(r => !r.IsErased));
+        int unused = definitions.Count(b => !b.IsLayout && !b.IsAnonymous && !b.IsFromExternalReference && !b.IsDependent && !blockCounts.ContainsKey(b.Name) && !Referenced(b));
         var styles = ((TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead)).Cast<ObjectId>().Select(id => (TextStyleTableRecord)tr.GetObject(id, OpenMode.ForRead))
             .Where(s => !s.IsShapeFile && !string.IsNullOrEmpty(s.Name)).Select(s => new { name = s.Name, font = s.FileName, big_font = string.IsNullOrEmpty(s.BigFontFileName) ? null : s.BigFontFileName })
             .OrderBy(s => s.name, StringComparer.Ordinal).ToArray();
@@ -298,25 +322,37 @@ internal static class DrawingInsight
     /// <summary>Outline of a DWG on disk that is not open in AutoCAD, read into a separate database.</summary>
     public static object InspectFile(string path, CancellationToken ct)
     {
-        if (!Path.IsPathFullyQualified(path) || !path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase)) throw new CadFault("INVALID_PATH", "path must be an absolute .dwg file path");
+        // Local and mapped drives only: opening \\host\share makes Windows authenticate to whatever host a text names.
+        if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)
+            || !path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
+            throw new CadFault("INVALID_PATH", "path must be an absolute .dwg path on a local or mapped drive; network (\\\\server\\share) and device paths are refused");
+        path = Path.GetFullPath(path);
         var info = new FileInfo(path);
         if (!info.Exists) throw new CadFault("FILE_NOT_FOUND", path);
-        if (info.Length > 512L * 1024 * 1024) throw new CadFault("FILE_TOO_LARGE", "Inspect drawings up to 512 MB");
+        // The file is read on the AutoCAD thread, which cannot be interrupted meanwhile.
+        if (info.Length > 200L * 1024 * 1024) throw new CadFault("FILE_TOO_LARGE", "cad_file_inspect reads drawings up to 200 MB; open larger ones in AutoCAD");
+        bool open = false;
+        foreach (Autodesk.AutoCAD.ApplicationServices.Document document in Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager)
+            try { open |= Path.IsPathFullyQualified(document.Name) && string.Equals(Path.GetFullPath(document.Name), path, StringComparison.OrdinalIgnoreCase); }
+            catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { }
         using var db = new Database(false, true);
         try { db.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.CloseInput(true); }
         catch (Autodesk.AutoCAD.Runtime.Exception error) { throw new CadFault("DWG_READ_FAILED", error.ErrorStatus + ": " + error.Message); }
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
         var outline = Outline(db, tr, Path.GetFileName(path), ct);
-        return new { path, bytes = info.Length, modified_utc = info.LastWriteTimeUtc, saved_version = db.OriginalFileVersion.ToString(), outline, opened_in_editor = false };
+        return new { path, bytes = info.Length, modified_utc = info.LastWriteTimeUtc, saved_version = db.OriginalFileVersion.ToString(), outline, opened_in_editor = open,
+            note = open ? "The drawing is open in AutoCAD: this outline shows the file as last saved; read the open drawing for unsaved changes" : null };
     }
 
     // ---------------------------------------------------------------- changes
+
+    private sealed record ChangeRow(string Handle, string Effect, string Type, string? Layer, long Revision, string[] By, DateTimeOffset At);
 
     /// <summary>
     /// What changed since a revision, one entry per object with its net effect and who changed it: a CAD MCP
     /// operation id, table_recalculation, or user (the person or another program, including UNDO).
     /// </summary>
-    public static object Changes(DocumentState state, JsonElement options)
+    public static object Changes(DocumentState state, Transaction tr, JsonElement options)
     {
         if (!options.TryGetProperty("since_revision", out var value) || !value.TryGetInt64(out long since)) throw new CadFault("INVALID_PARAMETER", "since_revision is required");
         if (since < 0 || since > state.Revision) throw new CadFault("INVALID_PARAMETER", "since_revision must be between 0 and the current revision " + state.Revision);
@@ -326,18 +362,31 @@ internal static class DrawingInsight
         if (source is not ("all" or "user" or "cad_mcp")) throw new CadFault("INVALID_PARAMETER", "source must be all, user or cad_mcp");
         var window = state.ChangesSince(since).Where(c => all || c.Entity)
             .Where(c => source == "all" || (source == "user") == (c.Author is null)).ToArray();
+        var layerNames = new Dictionary<ObjectId, string?>();
+        string? LayerName(ObjectId id)
+        {
+            if (id.IsNull) return null;
+            if (layerNames.TryGetValue(id, out var known)) return known;
+            try { known = tr.GetObject(id, OpenMode.ForRead, true) is LayerTableRecord layer ? layer.Name : null; }
+            catch (Autodesk.AutoCAD.Runtime.Exception) { known = null; }
+            return layerNames[id] = known;
+        }
+        static bool Added(string kind) => kind is "appended" or "reappended";
+        static bool Removed(string kind) => kind is "erased" or "unappended";
         var objects = window.GroupBy(c => c.Handle).Select(g =>
         {
             var first = g.First(); var last = g.Last();
-            string effect = first.Kind == "appended" ? last.Kind == "erased" ? "added_then_erased" : "added"
-                : last.Kind == "erased" ? "erased" : last.Kind == "unerased" ? "restored" : "modified";
-            return new { handle = g.Key, effect, type = last.Type, layer = last.Layer, revision = last.Revision, by = g.Select(c => c.Author ?? "user").Distinct().ToArray(), at = last.At };
-        }).OrderBy(c => c.revision).ToArray();
+            // Created and then unappended (UNDO of the creation, or an aborted transaction) leaves nothing behind.
+            if (Added(first.Kind) && last.Kind == "unappended") return null;
+            string effect = Added(first.Kind) ? Removed(last.Kind) ? "added_then_erased" : "added"
+                : Removed(last.Kind) ? "erased" : last.Kind is "unerased" or "reappended" ? "restored" : "modified";
+            return new ChangeRow(g.Key.ToString("X"), effect, last.Type, LayerName(last.Layer), last.Revision, g.Select(c => c.Author ?? "user").Distinct().ToArray(), last.At);
+        }).OfType<ChangeRow>().OrderBy(c => c.Revision).ToArray();
         return new
         {
             since_revision = since, current_revision = state.Revision, complete = since >= state.DroppedThrough,
-            counts = objects.GroupBy(c => c.effect).OrderBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count()),
-            by = objects.SelectMany(c => c.by).GroupBy(a => a).OrderBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count()),
+            counts = objects.GroupBy(c => c.Effect).OrderBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count()),
+            by = objects.SelectMany(c => c.By).GroupBy(a => a).OrderBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count()),
             changes = objects.Take(limit).ToArray(), truncated = objects.Length > limit ? true : (bool?)null,
             note = "user means the person or another program (including UNDO); the log covers this AutoCAD session and the last 20000 events"
         };

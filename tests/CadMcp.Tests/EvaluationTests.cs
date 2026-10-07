@@ -87,6 +87,34 @@ public sealed class EvaluationTests
     }
 
     [Fact]
+    public void Client_tools_and_prefixed_names_are_not_invented_and_late_refusals_count()
+    {
+        var task = SampleTasks().Single(t => t.Id == "rectangle-on-layer");
+        var verdict = AgentEvaluation.Grade(task, Run(task.Id, "Готово: прямоугольник построен, площадь проверена.", GoodRectangle, false,
+            Call("WebSearch"), Call("mcp__cad__cad_context"), Call("mcp__cad__cad_edit", new { operation_id = "r1", operations_json = "[]" })));
+        Assert.True(verdict.Passed, string.Join(", ", verdict.HardFailures));
+        Assert.Contains("INVENTED_TOOL:cad_magic", AgentEvaluation.Grade(task, Run(task.Id, "", GoodRectangle, false, Call("mcp__cad__cad_magic"))).HardFailures);
+        // Under the ask policy cad_lisp is queued; the refusal is only in the later status read.
+        var status = new AgentEvaluation.ToolCall("cad_operation_status", Wire.Element(new { operation_id = "l1" }), "completed", null,
+            Wire.Element(new { state = "failed", result = new { error = new { code = "LISP_DENIED" } } }));
+        var retried = AgentEvaluation.Grade(task, Run(task.Id, "Сделано.", GoodRectangle, false,
+            Call("cad_lisp", new { operation_id = "l1", code = "(princ)" }, "queued"), status, Call("cad_lisp", new { operation_id = "l2", code = "(princ)" })));
+        Assert.Contains("LISP_WORKAROUND", retried.HardFailures);
+    }
+
+    [Fact]
+    public void Incomplete_evidence_is_refused_by_the_capture()
+    {
+        Assert.Null(Benchmark.Incomplete(Wire.Element(new { changes = Array.Empty<object>(), complete = true })));
+        Assert.NotNull(Benchmark.Incomplete(Wire.Element(new { changes = Array.Empty<object>(), complete = false })));
+        Assert.NotNull(Benchmark.Incomplete(Wire.Element(new { changes = Array.Empty<object>(), truncated = true })));
+        Assert.NotNull(Benchmark.Incomplete(Wire.Element(new { lengths = Array.Empty<object>(), partial = true })));
+        Assert.NotNull(Benchmark.Incomplete(Wire.Element(new { layer_count = 120, layers = new object[100] })));
+        Assert.NotNull(Benchmark.Incomplete(Wire.Element(new { result = new { entities = Array.Empty<object>(), pagination = new { next_offset = 500 } }, cached = false })));
+        Assert.Null(Benchmark.Incomplete(Wire.Element(new { result = new { entities = Array.Empty<object>(), pagination = new { next_offset = (int?)null } }, cached = false })));
+    }
+
+    [Fact]
     public void Moving_objects_between_layers_is_not_deletion()
     {
         var task = SampleTasks().Single(t => t.Id == "move-layer-objects");
@@ -144,19 +172,27 @@ public sealed class EvaluationTests
     {
         string host = @"C:\Users\u\AppData\Roaming\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle\Contents\Host\CadMcp.Host.exe";
         string existing = """{"theme":"dark","mcpServers":{"files":{"command":"npx","args":["fs"]}}}""";
-        var added = JsonDocument.Parse(ClientRegistration.AddToDesktopConfig(existing, host)!).RootElement;
+        var added = JsonDocument.Parse(ClientRegistration.AddToDesktopConfig(existing, host, out var conflict)!).RootElement;
+        Assert.Null(conflict);
         Assert.Equal("dark", added.GetProperty("theme").GetString());
         Assert.Equal("npx", added.GetProperty("mcpServers").GetProperty("files").GetProperty("command").GetString());
         Assert.Equal(host, added.GetProperty("mcpServers").GetProperty(ClientRegistration.ServerName).GetProperty("command").GetString());
         var removed = JsonDocument.Parse(ClientRegistration.RemoveFromDesktopConfig(added.GetRawText(), host)!).RootElement;
         Assert.False(removed.GetProperty("mcpServers").TryGetProperty(ClientRegistration.ServerName, out _));
         Assert.True(removed.GetProperty("mcpServers").TryGetProperty("files", out _));
-        // A server of the same name that runs another program is not ours to remove.
+        // A server of the same name that runs another program is not ours to remove or replace.
         string foreign = """{"mcpServers":{"cad":{"command":"other.exe"}}}""";
         Assert.Equal(foreign, ClientRegistration.RemoveFromDesktopConfig(foreign, host));
-        Assert.Null(ClientRegistration.AddToDesktopConfig("{ broken", host));
-        Assert.Null(ClientRegistration.AddToDesktopConfig("""{"mcpServers":[]}""", host));
-        Assert.Contains(ClientRegistration.ServerName, ClientRegistration.AddToDesktopConfig(null, host));
+        Assert.Equal(foreign, ClientRegistration.AddToDesktopConfig(foreign, host, out conflict));
+        Assert.Equal("other.exe", conflict);
+        // An earlier CAD MCP installation (another AutoCAD version) is replaced; a non-text command is not ours.
+        string earlier = """{"mcpServers":{"cad":{"command":"C:\\Old\\CadMcp.AutoCAD2026.bundle\\Contents\\Host\\CadMcp.Host.exe"}}}""";
+        Assert.Contains("AutoCAD2025", ClientRegistration.AddToDesktopConfig(earlier, host, out conflict));
+        Assert.Null(conflict);
+        Assert.Equal("""{"mcpServers":{"cad":{"command":1}}}""", ClientRegistration.RemoveFromDesktopConfig("""{"mcpServers":{"cad":{"command":1}}}""", host));
+        Assert.Null(ClientRegistration.AddToDesktopConfig("{ broken", host, out _));
+        Assert.Null(ClientRegistration.AddToDesktopConfig("""{"mcpServers":[]}""", host, out _));
+        Assert.Contains(ClientRegistration.ServerName, ClientRegistration.AddToDesktopConfig(null, host, out _));
     }
 
     [Fact]

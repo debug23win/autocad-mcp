@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using CadMcp.Core;
 
@@ -62,15 +63,62 @@ internal static class Benchmark
             foreach (var query in task.EvidenceQueries ?? []) queries.Add((query.Name, query.Operation, query.Data));
         }
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        var evidence = new Dictionary<string, object?>();
-        foreach (var (name, operation, data) in queries)
+        var evidence = new Dictionary<string, JsonElement>();
+        try
         {
-            var response = await CadTools.RequestAsync(operation, session, document, data, timeout.Token);
-            if (response.Error is not null) { Console.Error.WriteLine(operation + ": " + response.Error.Code + " " + response.Error.Message); return 1; }
-            evidence[name] = response.Data;
+            foreach (var (name, operation, data) in queries)
+            {
+                var response = await CadTools.RequestAsync(operation, session, document, data, timeout.Token);
+                if (response.Error is not null) { Console.Error.WriteLine(operation + ": " + response.Error.Code + " " + response.Error.Message); return 1; }
+                var value = Wire.Element(response.Data ?? new { });
+                // A result over the response limit is archived; read it back whole.
+                if (value.Text("archive_id") is { } archived) value = await UnarchiveAsync(archived, session, document, timeout.Token);
+                // Missing entries would let "absent" and "count" checks pass and hide deletions: refuse to grade them.
+                if (Incomplete(value) is { } reason)
+                {
+                    Console.Error.WriteLine(name + " (" + operation + ") is incomplete: " + reason + ". Use a smaller fixture drawing or narrower evidence queries.");
+                    return 1;
+                }
+                evidence[name] = value;
+            }
         }
+        catch (CadFault fault) { Console.Error.WriteLine(fault.Code + ": " + fault.Message); return 1; }
         File.WriteAllText(output, JsonSerializer.Serialize(evidence, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
         Console.WriteLine("Evidence written to " + output);
         return 0;
+    }
+
+    /// <summary>Why captured evidence does not cover the whole drawing, or null.</summary>
+    public static string? Incomplete(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object) return null;
+        if (value.TryGetProperty("partial", out var partial) && partial.ValueKind == JsonValueKind.True) return "the read stopped at its entity limit";
+        if (value.TryGetProperty("truncated", out var truncated) && truncated.ValueKind == JsonValueKind.True) return "the result was truncated";
+        if (value.TryGetProperty("complete", out var complete) && complete.ValueKind == JsonValueKind.False) return "the change log dropped older changes";
+        if (value.TryGetProperty("attributes_truncated", out var attributes) && attributes.ValueKind == JsonValueKind.True) return "attribute rows reached max_rows";
+        if (value.TryGetProperty("layer_count", out var layerCount) && value.TryGetProperty("layers", out var layers) && layers.ValueKind == JsonValueKind.Array
+            && layerCount.TryGetInt32(out int count) && count > layers.GetArrayLength()) return "the outline lists only the first " + layers.GetArrayLength() + " of " + count + " layers";
+        if (value.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object)
+        {
+            if (result.TryGetProperty("pagination", out var page) && page.ValueKind == JsonValueKind.Object && page.TryGetProperty("next_offset", out var next) && next.ValueKind == JsonValueKind.Number)
+                return "the search has more pages; raise limit in its options";
+            return Incomplete(result);
+        }
+        return null;
+    }
+
+    private static async Task<JsonElement> UnarchiveAsync(string archiveId, string session, string document, CancellationToken ct)
+    {
+        var text = new StringBuilder();
+        for (int? offset = 0; offset is { } at;)
+        {
+            var page = await CadTools.RequestAsync("cad_result_get", session, document, new { archive_id = archiveId, offset = at, limit = 32000 }, ct);
+            if (page.Error is not null) throw new CadFault(page.Error.Code, page.Error.Message);
+            var data = Wire.Element(page.Data ?? new { });
+            text.Append(data.Text("text"));
+            offset = data.TryGetProperty("next_offset", out var next) && next.ValueKind == JsonValueKind.Number ? next.GetInt32() : null;
+        }
+        using var parsed = JsonDocument.Parse(text.ToString());
+        return parsed.RootElement.Clone();
     }
 }

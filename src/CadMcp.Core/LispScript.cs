@@ -10,26 +10,30 @@ public static class LispScript
         if (id.Length is < 1 or > 96 || id.Any(c => !Portable.AsciiLetterOrDigit(c) && c is not ('-' or '_'))) throw new ArgumentException("Invalid operation id");
         // While the script runs, running object snaps are suspended (OSMODE bit 16384), so command points land
         // exactly on the supplied coordinates, and FILEDIA/CMDDIA are off, so commands prompt on the command
-        // line instead of waiting in a dialog. The user's values are restored even after an error.
-        return "((lambda (/ code value undo-start undo-end saved item) " +
-            $"(setq code (cadmcpbegin \"{id}\")) " +
-            "(if code (progn " +
-            "(setq undo-start (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_Begin\"))) " +
-            "(if (vl-catch-all-error-p undo-start) " +
-            $"(cadmcpfinish \"{id}\" 0 (vl-catch-all-error-message undo-start)) " +
+        // line instead of waiting in a dialog. Afterwards each variable gets the user's value back unless the
+        // script set it itself. AutoLISP locals are dynamically scoped, so the script sees the wrapper's
+        // locals: their prefixed names keep a script's own (setq saved ...) from breaking the restore, and the
+        // restore runs under vl-catch-all-apply, so cadmcpfinish is always reached.
+        return "((lambda (/ cadmcp:code cadmcp:value cadmcp:undo-start cadmcp:undo-end cadmcp:saved cadmcp:set cadmcp:item) " +
+            $"(setq cadmcp:code (cadmcpbegin \"{id}\")) " +
+            "(if cadmcp:code (progn " +
+            "(setq cadmcp:undo-start (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_Begin\"))) " +
+            "(if (vl-catch-all-error-p cadmcp:undo-start) " +
+            $"(cadmcpfinish \"{id}\" 0 (vl-catch-all-error-message cadmcp:undo-start)) " +
             "(progn " +
-            "(setq saved (mapcar '(lambda (name) (cons name (getvar name))) '(\"OSMODE\" \"FILEDIA\" \"CMDDIA\"))) " +
-            "(vl-catch-all-apply 'setvar (list \"OSMODE\" (logior (cdr (assoc \"OSMODE\" saved)) 16384))) " +
-            "(vl-catch-all-apply 'setvar '(\"FILEDIA\" 0)) " +
-            "(vl-catch-all-apply 'setvar '(\"CMDDIA\" 0)) " +
-            "(setq value (vl-catch-all-apply (function (lambda () (eval (read code)))))) " +
-            "(foreach item saved (vl-catch-all-apply 'setvar (list (car item) (cdr item)))) " +
-            "(setq undo-end (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_End\"))) " +
+            "(setq cadmcp:saved (mapcar '(lambda (cadmcp:name) (cons cadmcp:name (getvar cadmcp:name))) '(\"OSMODE\" \"FILEDIA\" \"CMDDIA\"))) " +
+            "(setq cadmcp:set (list (cons \"OSMODE\" (logior (cdr (assoc \"OSMODE\" cadmcp:saved)) 16384)) '(\"FILEDIA\" . 0) '(\"CMDDIA\" . 0))) " +
+            "(foreach cadmcp:item cadmcp:set (vl-catch-all-apply 'setvar (list (car cadmcp:item) (cdr cadmcp:item)))) " +
+            "(setq cadmcp:value (vl-catch-all-apply (function (lambda () (eval (read cadmcp:code)))))) " +
+            "(vl-catch-all-apply (function (lambda () (foreach cadmcp:item cadmcp:saved " +
+            "(if (equal (getvar (car cadmcp:item)) (cdr (assoc (car cadmcp:item) cadmcp:set))) " +
+            "(vl-catch-all-apply 'setvar (list (car cadmcp:item) (cdr cadmcp:item)))))))) " +
+            "(setq cadmcp:undo-end (vl-catch-all-apply 'command-s '(\"_.UNDO\" \"_End\"))) " +
             $"(cadmcpfinish \"{id}\" " +
-            "(if (or (vl-catch-all-error-p value) (vl-catch-all-error-p undo-end)) 0 1) " +
-            "(cond ((vl-catch-all-error-p value) (vl-catch-all-error-message value)) " +
-            "((vl-catch-all-error-p undo-end) (vl-catch-all-error-message undo-end)) " +
-            "(T (vl-prin1-to-string value)))))))) (princ)))\n";
+            "(if (or (vl-catch-all-error-p cadmcp:value) (vl-catch-all-error-p cadmcp:undo-end)) 0 1) " +
+            "(cond ((vl-catch-all-error-p cadmcp:value) (vl-catch-all-error-message cadmcp:value)) " +
+            "((vl-catch-all-error-p cadmcp:undo-end) (vl-catch-all-error-message cadmcp:undo-end)) " +
+            "(T (vl-prin1-to-string cadmcp:value)))))))) (princ)))\n";
     }
 
     /// <summary>

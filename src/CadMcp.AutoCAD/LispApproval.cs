@@ -71,6 +71,7 @@ internal sealed class LispApprovalWindow : Window
         "LISP_REACTOR" => "Реактор, который будет выполнять код позже: " + finding.Detail,
         "LISP_SEND_COMMAND" => "Команды, передаваемые строкой: " + finding.Detail,
         "LISP_DIALOG_COMMAND" => "Команда может открыть диалог и ждать пользователя: " + finding.Detail,
+        "LISP_DOCUMENT_SWITCH" => "Может открыть, закрыть или переключить чертёж: " + finding.Detail,
         _ => finding.Detail
     };
 
@@ -111,8 +112,17 @@ internal static class LispPolicyPrompt
     {
         var editor = App.DocumentManager.MdiActiveDocument?.Editor;
         if (editor is null) return;
+        // An agent's script must not change the policy that admitted it, whether it calls the command itself or
+        // queues it with SendCommand; the scanner blocks the visible forms, this blocks the rest.
+        if (Dispatcher.RunningLispScript is { } running)
+        {
+            editor.WriteMessage("\nCAD MCP: политику AutoLISP нельзя менять из скрипта агента (операция " + running + ").");
+            return;
+        }
         var current = CadSettings.StoredLispPolicy();
-        var options = new EditorInput.PromptKeywordOptions("\nAutoLISP, запрошенный агентами CAD MCP") { AppendKeywordsToMessage = true };
+        var effective = CadSettings.EffectiveLispPolicy();
+        var options = new EditorInput.PromptKeywordOptions("\nAutoLISP, запрошенный агентами CAD MCP. Сейчас: " + LispPolicy.Label(effective) +
+            (effective != current ? " (до перезапуска AutoCAD)" : "")) { AppendKeywordsToMessage = true };
         options.Keywords.Add("Ask", "Спрашивать", "Спрашивать");
         options.Keywords.Add("AutoSafe", "Безопасный", "Безопасный");
         options.Keywords.Add("Allow", "Разрешать", "Разрешать");
@@ -121,9 +131,18 @@ internal static class LispPolicyPrompt
         var result = editor.GetKeywords(options);
         if (result.Status != EditorInput.PromptStatus.OK) return;
         var mode = result.StringResult switch { "AutoSafe" => LispPolicyMode.AutoSafe, "Allow" => LispPolicyMode.Allow, "Deny" => LispPolicyMode.Deny, _ => LispPolicyMode.Ask };
+        // Relaxing the policy needs a click that typed or scripted input cannot supply.
+        if (Strictness(mode) < Strictness(current) && System.Windows.MessageBox.Show("Разрешить агентам CAD MCP выполнять AutoLISP: " + LispPolicy.Label(mode) + "?",
+                "CAD MCP — политика AutoLISP", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        {
+            editor.WriteMessage("\nCAD MCP: политика AutoLISP не изменена.");
+            return;
+        }
         try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; }
         catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage("\nCAD MCP: не удалось сохранить настройку: " + error.Message); return; }
         editor.WriteMessage("\nCAD MCP: AutoLISP — " + LispPolicy.Label(mode) +
             (Environment.GetEnvironmentVariable("CAD_MCP_LISP_POLICY") is { Length: > 0 } environment ? ". Внимание: переменная CAD_MCP_LISP_POLICY=" + environment + " имеет приоритет" : ""));
     }
+
+    private static int Strictness(LispPolicyMode mode) => mode switch { LispPolicyMode.Deny => 3, LispPolicyMode.Ask => 2, LispPolicyMode.AutoSafe => 1, _ => 0 };
 }

@@ -64,27 +64,31 @@
       "checks": [
         {
           "evidence": "old",
-          "path": "entities",
+          "path": "result.entities",
           "op": "count",
           "expected": 0
         },
         {
           "evidence": "new",
-          "path": "entities",
+          "path": "result.entities",
           "op": "count",
           "expected": 3
         }
       ],
       "initial_evidence": {
         "old": {
-          "entities": [
-            {},
-            {},
-            {}
-          ]
+          "result": {
+            "entities": [
+              {},
+              {},
+              {}
+            ]
+          }
         },
         "new": {
-          "entities": []
+          "result": {
+            "entities": []
+          }
         },
         "changes": {
           "changes": []

@@ -144,7 +144,7 @@ public sealed class LispTests
             if (c == '"') quoted = true; else if (c == '(') depth++; else if (c == ')') depth--;
             Assert.True(depth >= 0, "LISP closes an unopened expression");
         }
-        Assert.True(depth == 0 && !quoted && script.Contains("cadmcpbegin") && script.Contains("cadmcpfinish") && script.Contains("/ code value"), "Broken LISP evaluator");
+        Assert.True(depth == 0 && !quoted && script.Contains("cadmcpbegin") && script.Contains("cadmcpfinish") && script.Contains("/ cadmcp:code cadmcp:value"), "Broken LISP evaluator");
         Assert.ThrowsAny<ArgumentException>(() => LispScript.Wrap("x\") (erase)"));
     }
 

@@ -164,13 +164,18 @@ internal sealed class ChatPanel : UserControl
         void LoadLispPolicy() { loadingLispPolicy = true; try { lispPolicy.SelectedIndex = (int)CadSettings.StoredLispPolicy(); } finally { loadingLispPolicy = false; } }
         LoadLispPolicy();
         Loaded += (_, _) => LoadLispPolicy();
-        lispPolicy.SelectionChanged += (_, _) =>
+        void StoreLispPolicy()
         {
             if (loadingLispPolicy || lispPolicy.SelectedIndex < 0) return;
             var mode = (LispPolicyMode)lispPolicy.SelectedIndex;
+            // Storing also ends a "do not ask until restart" relaxation, which AutoCAD notices by the settings
+            // file changing even when this panel runs in another process.
             try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; activity.Text = "AutoLISP: " + LispPolicy.Label(mode); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = "Не удалось сохранить настройку AutoLISP: " + error.Message; }
-        };
+        }
+        lispPolicy.SelectionChanged += (_, _) => StoreLispPolicy();
+        // Choosing the item that is already selected raises no SelectionChanged, yet must still restore that policy.
+        lispPolicy.DropDownClosed += (_, _) => StoreLispPolicy();
         refreshModels.Click += async (_, _) => await RefreshModels();
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };

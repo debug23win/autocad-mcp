@@ -16,9 +16,13 @@ internal static class ClientRegistration
 
     public static string DesktopConfigPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Claude", "claude_desktop_config.json");
 
-    /// <summary>The configuration with the cad server added or replaced; null when the existing text is not a JSON object.</summary>
-    public static string? AddToDesktopConfig(string? existing, string hostPath)
+    /// <summary>
+    /// The configuration with the cad server added, or replaced when an earlier CAD MCP host registered it; null when
+    /// the existing text is not a JSON object. A cad server running another program is kept and named in conflict.
+    /// </summary>
+    public static string? AddToDesktopConfig(string? existing, string hostPath, out string? conflict)
     {
+        conflict = null;
         JsonObject root;
         if (string.IsNullOrWhiteSpace(existing)) root = new();
         else
@@ -29,9 +33,21 @@ internal static class ClientRegistration
             if (root["mcpServers"] is not null) return null;
             root["mcpServers"] = servers = new JsonObject();
         }
+        if (servers[ServerName] is { } current && !IsThisHost(Command(current), hostPath, anyInstallation: true))
+        {
+            conflict = Command(current) ?? current.ToJsonString();
+            return existing;
+        }
         servers[ServerName] = new JsonObject { ["command"] = hostPath, ["args"] = new JsonArray() };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
+
+    private static string? Command(JsonNode? entry) => entry is JsonObject server && server["command"] is JsonValue value && value.TryGetValue<string>(out var command) ? command : null;
+
+    /// <summary>The command is this host, or with anyInstallation any CAD MCP host (another AutoCAD version or an earlier install).</summary>
+    private static bool IsThisHost(string? command, string hostPath, bool anyInstallation) =>
+        command is not null && (string.Equals(command, hostPath, StringComparison.OrdinalIgnoreCase) ||
+            anyInstallation && string.Equals(Path.GetFileName(command.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar)), "CadMcp.Host.exe", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The configuration without the cad server when it runs this host; unchanged text otherwise, null when damaged.</summary>
     public static string? RemoveFromDesktopConfig(string? existing, string hostPath)
@@ -42,7 +58,7 @@ internal static class ClientRegistration
         catch (JsonException) { return null; }
         if (root["mcpServers"] is not JsonObject servers || servers[ServerName] is not JsonObject entry) return existing;
         // A server of the same name that runs another program belongs to someone else.
-        if (!string.Equals(entry["command"]?.GetValue<string>(), hostPath, StringComparison.OrdinalIgnoreCase)) return existing;
+        if (!IsThisHost(Command(entry), hostPath, anyInstallation: false)) return existing;
         servers.Remove(ServerName);
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
@@ -76,12 +92,19 @@ internal static class ClientRegistration
         int status = 0;
         foreach (var client in targets)
         {
-            int result = client switch
+            // One client's failure (a locked file, a missing CLI) must not skip the next one.
+            int result;
+            try
             {
-                "claude-desktop" => Desktop(hostPath, remove),
-                "claude-code" => Code(hostPath, remove),
-                _ => Fail("Unknown client " + client + "; use claude-desktop, claude-code or all")
-            };
+                result = client switch
+                {
+                    "claude-desktop" => Desktop(hostPath, remove),
+                    "claude-code" => Code(hostPath, remove),
+                    _ => Fail("Unknown client " + client + "; use claude-desktop, claude-code or all")
+                };
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException or JsonException)
+            { result = Fail(client + ": " + error.Message); }
             status = Math.Max(status, result);
         }
         return status;
@@ -94,8 +117,10 @@ internal static class ClientRegistration
         string path = DesktopConfigPath;
         string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
         if (remove && existing is null) return 0;
-        string? updated = remove ? RemoveFromDesktopConfig(existing, hostPath) : AddToDesktopConfig(existing, hostPath);
+        string? conflict = null;
+        string? updated = remove ? RemoveFromDesktopConfig(existing, hostPath) : AddToDesktopConfig(existing, hostPath, out conflict);
         if (updated is null) return Fail("Claude Desktop configuration " + path + " is not a valid JSON object; it was left unchanged");
+        if (conflict is not null) return Fail("Claude Desktop already has a server named " + ServerName + " that runs " + conflict + "; it was left unchanged. Add CAD MCP under another name by hand: " + hostPath);
         if (updated == existing) { Console.WriteLine("Claude Desktop: nothing to change"); return 0; }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // The first backup keeps the user's original configuration.
@@ -110,7 +135,7 @@ internal static class ClientRegistration
     private static int Code(string hostPath, bool remove)
     {
         if (FindClaude() is not { } claude) return remove ? 0 : Fail("Claude Code (claude) is not on PATH; register later with: claude mcp add --scope user " + ServerName + " -- \"" + hostPath + "\"");
-        int Claude(params string[] arguments)
+        (int Exit, string Output) Claude(bool echo, params string[] arguments)
         {
             var start = claude.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
                 ? new ProcessStartInfo("cmd.exe", ShellArguments(claude, arguments))
@@ -119,23 +144,30 @@ internal static class ClientRegistration
             start.UseShellExecute = false; start.CreateNoWindow = true; start.RedirectStandardOutput = true; start.RedirectStandardError = true;
             using var process = Process.Start(start)!;
             var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(60_000)) { try { process.Kill(true); } catch (InvalidOperationException) { } return -1; }
-            Console.Write(output.Result); Console.Error.Write(error.Result);
-            return process.ExitCode;
+            if (!process.WaitForExit(60_000)) { try { process.Kill(true); } catch (InvalidOperationException) { } return (-1, ""); }
+            if (echo) { Console.Write(output.Result); Console.Error.Write(error.Result); }
+            return (process.ExitCode, output.Result + error.Result);
         }
         // Only a registration this host made is removed on uninstall; the marker records it.
         string marker = Wire.DataDirectory("claude-code-registration.txt");
         if (remove)
         {
             if (!File.Exists(marker) || !string.Equals(File.ReadAllText(marker).Trim(), hostPath, StringComparison.OrdinalIgnoreCase)) return 0;
-            Claude("mcp", "remove", "--scope", "user", ServerName);
+            Claude(true, "mcp", "remove", "--scope", "user", ServerName);
             File.Delete(marker);
             return 0;
         }
-        // Replacing keeps the registration pointing at this installation.
-        int removed = Claude("mcp", "remove", "--scope", "user", ServerName);
-        int added = Claude("mcp", "add", "--scope", "user", ServerName, "--", hostPath);
-        if (added != 0) return Fail("claude mcp add failed with exit code " + added + (removed == 0 ? "" : " (no previous registration)"));
+        // An existing cad server is replaced only when it runs a CAD MCP host (an earlier install or another
+        // AutoCAD version); a server of the same name that runs something else is left alone.
+        var (found, description) = Claude(false, "mcp", "get", ServerName);
+        if (found == 0)
+        {
+            if (description.IndexOf("CadMcp.Host", StringComparison.OrdinalIgnoreCase) < 0)
+                return Fail("Claude Code already has a server named " + ServerName + " that does not run CAD MCP; it was left unchanged. Add CAD MCP under another name: claude mcp add --scope user <name> -- \"" + hostPath + "\"");
+            Claude(true, "mcp", "remove", "--scope", "user", ServerName);
+        }
+        var (added, _) = Claude(true, "mcp", "add", "--scope", "user", ServerName, "--", hostPath);
+        if (added != 0) return Fail("claude mcp add failed with exit code " + added);
         Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
         File.WriteAllText(marker, hostPath);
         Console.WriteLine("Claude Code: registered " + ServerName + " for the current user");

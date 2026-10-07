@@ -40,17 +40,18 @@ internal sealed class DocumentState(Database database)
     private readonly LinkedList<DrawingChange> changes = new();
     /// <summary>Changes up to this revision were dropped from the bounded log.</summary>
     public long DroppedThrough { get; private set; }
-    public void Record(string handle, string kind, string type, string? layer, bool entity)
+    public void Record(long handle, string kind, string type, ObjectId layer, bool entity)
     {
         // Consecutive events for one object (an edit opens it several times) collapse into one entry.
         if (changes.Last?.Value is { } last && last.Handle == handle && last.Kind == kind && last.Author == Author)
-        { changes.Last.Value = last with { Revision = Revision, Layer = layer ?? last.Layer }; return; }
+        { changes.Last.Value = last with { Revision = Revision, Layer = layer.IsNull ? last.Layer : layer }; return; }
         changes.AddLast(new DrawingChange(Revision, handle, kind, type, layer, entity, Author, DateTimeOffset.UtcNow));
         while (changes.Count > 20000) { DroppedThrough = changes.First!.Value.Revision; changes.RemoveFirst(); }
     }
     public IReadOnlyList<DrawingChange> ChangesSince(long revision) => changes.Where(c => c.Revision > revision).ToArray();
 }
-internal sealed record DrawingChange(long Revision, string Handle, string Kind, string Type, string? Layer, bool Entity, string? Author, DateTimeOffset At);
+/// <summary>One logged change. The layer is kept as an id and named when the log is read, so the event costs no lookups.</summary>
+internal sealed record DrawingChange(long Revision, long Handle, string Kind, string Type, ObjectId Layer, bool Entity, string? Author, DateTimeOffset At);
 internal sealed class Documents : IDisposable
 {
     private readonly Dictionary<Document, DocumentState> states = new();
@@ -68,6 +69,20 @@ internal sealed class Documents : IDisposable
     private void Appended(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject, "appended");
     private void Modified(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject, "modified");
     private void Erased(object sender, ObjectErasedEventArgs e) => Track((Database)sender, e.DBObject, e.Erased ? "erased" : "unerased");
+    // UNDO and REDO of a creation, and the abort of a transaction that created objects, unappend and reappend them.
+    private void Unappended(object sender, ObjectEventArgs e) => Touch((Database)sender, e.DBObject, "unappended");
+    private void Reappended(object sender, ObjectEventArgs e) => Touch((Database)sender, e.DBObject, "reappended");
+    private static readonly Dictionary<Type, string> DxfNames = new();
+    /// <summary>The DXF name; cached per managed type, except for wrappers shared by many native classes.</summary>
+    private static string DxfName(DBObject changed)
+    {
+        var type = changed.GetType();
+        if (DxfNames.TryGetValue(type, out var name)) return name;
+        name = changed.GetRXClass().DxfName ?? type.Name;
+        if (!type.Name.StartsWith("Imp", StringComparison.Ordinal) && type != typeof(Entity) && type != typeof(DBObject) && type != typeof(Curve) &&
+            type != typeof(ProxyEntity) && type != typeof(ProxyObject)) DxfNames[type] = name;
+        return name;
+    }
     private void Track(Database db, DBObject changed, string kind)
     {
         Touch(db, changed, kind);
@@ -98,7 +113,7 @@ internal sealed class Documents : IDisposable
                 if (state.ReadDepth != 0) { state.ReadSideEffectEvents++; continue; }
                 state.Revision++;
                 // The change log must never disturb the edit that raised the event.
-                try { state.Record(changed.Handle.ToString(), kind, changed.GetRXClass().DxfName, (changed as Entity)?.Layer, changed is Entity); }
+                try { state.Record(changed.Handle.Value, kind, DxfName(changed), (changed as Entity)?.LayerId ?? ObjectId.Null, changed is Entity); }
                 catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP change log: " + error.Message); }
             }
     }
@@ -125,6 +140,7 @@ internal sealed class Documents : IDisposable
         state = new(d.Database); states.Add(d, state);
         d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
         state.Database.ObjectAppended += Appended; state.Database.ObjectModified += Modified; state.Database.ObjectErased += Erased;
+        state.Database.ObjectUnappended += Unappended; state.Database.ObjectReappended += Reappended;
         return state;
     }
     private void Remove(Document d)
@@ -132,6 +148,7 @@ internal sealed class Documents : IDisposable
         if (!states.TryGetValue(d, out var state)) return;
         d.CommandWillStart-=CommandStarting;d.CommandEnded-=CommandFinished;d.CommandCancelled-=CommandFinished;d.CommandFailed-=CommandFinished;
         state.Database.ObjectAppended -= Appended; state.Database.ObjectModified -= Modified; state.Database.ObjectErased -= Erased;
+        state.Database.ObjectUnappended -= Unappended; state.Database.ObjectReappended -= Reappended;
         states.Remove(d);
     }
     public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,
