@@ -5,6 +5,9 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 if (args.Contains("--version")) { Console.WriteLine("CAD MCP " + Wire.Version + " (AutoCAD / Map 3D / Civil 3D 2025–2027)"); return 0; }
+if (args.Contains("--register-client") || args.Contains("--unregister-client")) return ClientRegistration.Run(args);
+if (args.Contains("--grade")) return Benchmark.Grade(args);
+if (args.Contains("--grade-selfcheck")) return Benchmark.SelfCheck(args);
 int pipeOption = Array.IndexOf(args, "--broker-pipe");
 if (pipeOption >= 0 && pipeOption + 1 >= args.Length) { Console.Error.WriteLine("--broker-pipe requires a pipe name"); return 2; }
 string pipeName = pipeOption >= 0 ? args[pipeOption + 1] : Wire.BrokerPipe;
@@ -42,6 +45,7 @@ if (args.Contains("--broker"))
 }
 if (pipeOption >= 0) CadTools.BrokerPipe = pipeName;
 else await BrokerBootstrap.EnsureAsync(Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "CadMcp.Host.exe" : "CadMcp.Host"), CancellationToken.None);
+if (args.Contains("--capture-evidence")) return await Benchmark.CaptureAsync(args);
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Services.AddMcpServer(options => options.ServerInstructions = CadTools.ServerInstructions).WithStdioServerTransport().WithTools<CadTools>()

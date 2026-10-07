@@ -38,6 +38,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Tasks]
+Name: "claudedesktop"; Description: "Подключить CAD MCP к Claude Desktop (настройка mcpServers, остальные серверы сохраняются)"; Flags: unchecked
+Name: "claudecode"; Description: "Подключить CAD MCP к Claude Code для текущего пользователя (нужна команда claude)"; Flags: unchecked
+
+[Run]
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--register-client claude-desktop"; StatusMsg: "Подключение к Claude Desktop..."; Flags: runhidden waituntilterminated; Tasks: claudedesktop
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--register-client claude-code"; StatusMsg: "Подключение к Claude Code..."; Flags: runhidden waituntilterminated; Tasks: claudecode
+
+[UninstallRun]
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--unregister-client all"; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterMcpClients"
+
 [Icons]
 Name: "{group}\Инструкция"; Filename: "{app}\INSTALL.txt"
 Name: "{group}\Вход в Codex"; Filename: "{app}\Contents\Tools\Codex\bin\codex.exe"; Parameters: "login"

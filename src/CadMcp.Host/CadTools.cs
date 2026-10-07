@@ -39,6 +39,8 @@ public sealed class CadTools
         }
         return response;
     }
+    /// <summary>A read through the same scoping as the tools, for the benchmark's evidence capture.</summary>
+    internal static Task<Response> RequestAsync(string operation, string session, string document, object data, CancellationToken ct) => ScopedResponse(operation, session, document, data, null, ct);
     private static async Task<CallToolResult> Call(string operation,string? session,string? document,object data,long? revision,CancellationToken ct)
     {
         return Result(await ScopedResponse(operation,session,document,data,revision,ct));
