@@ -13,16 +13,16 @@ public static class ExtendedPlan
         ["assembly_create"]="kind position parameters mark material density show_annotations layer color_index layout",
         ["assembly_update"]="handle target parameters mark material density show_annotations",
         ["assembly_schedule"]="position handles title text_height column_widths layer layout",
-        ["civil_alignment_create"]="name layer style label_set site points",
+        ["civil_alignment_create"]="name layer style label_set site points radii",
         ["civil_alignment_add_line"]="handle start end",
-        ["civil_profile_create"]="name alignment_handle layer_handle style_handle label_set_handle points",
-        ["civil_profile_from_surface"]="name alignment_handle surface_handle layer_handle style_handle label_set_handle",
+        ["civil_profile_create"]="name alignment_handle layer_handle style_handle label_set_handle layer style label_set points",
+        ["civil_profile_from_surface"]="name alignment_handle surface_handle layer_handle style_handle label_set_handle layer style label_set",
         ["civil_profile_add_tangent"]="handle start end",
-        ["civil_network_create"]="name parts_list_handle surface_handle alignment_handle",
-        ["civil_network_add_pipe"]="handle family_handle size_handle start end apply_rules",
-        ["civil_network_add_structure"]="handle family_handle size_handle position rotation_deg apply_rules",
+        ["civil_network_create"]="name parts_list_handle parts_list surface_handle alignment_handle",
+        ["civil_network_add_pipe"]="handle family_handle size_handle family size start end apply_rules",
+        ["civil_network_add_structure"]="handle family_handle size_handle family size position rotation_deg apply_rules",
         ["civil_set"]="handle properties",
-        ["map_coordinate_system"]="code",
+        ["map_coordinate_system"]="code force",
         ["map_od_table"]="name description fields",
         ["map_od_add"]="handle table values",
         ["map_od_update"]="handle table record_index values"
@@ -31,6 +31,8 @@ public static class ExtendedPlan
     {
         string kind=op.Text("op")!;
         void Require(params string[] names){foreach(var name in names)if(!op.TryGetProperty(name,out _))throw new CadFault("MISSING_FIELD",kind+":"+name);}
+        // A Civil object is named by its handle or, alternatively, by its name in the drawing.
+        void OneOf(string handle,string name){if(op.TryGetProperty(handle,out _)==op.TryGetProperty(name,out _))throw new CadFault("MISSING_FIELD",kind+": supply "+handle+" or "+name+", not both");}
         if(kind is "solid_fillet" or "solid_chamfer" or "solid_shell" or "solid_section" or "assembly_update")
             if((op.Text("handle") is null)==(op.Text("target") is null))throw new CadFault("INVALID_TARGET","Supply one handle or earlier target");
         switch(kind)
@@ -43,13 +45,25 @@ public static class ExtendedPlan
             case "assembly_create":Require("kind","position","parameters","mark","material");break;
             case "assembly_update":Require("parameters");break;
             case "assembly_schedule":Require("position","handles");break;
-            case "civil_alignment_create":Require("name","layer","style","label_set","points");break;
+            case "civil_alignment_create":
+                Require("name","layer","style","label_set","points");
+                if(op.GetProperty("points").ValueKind!=JsonValueKind.Array)throw new CadFault("INVALID_POINTS","points must be an array of WCS points");
+                var pis=op.GetProperty("points").EnumerateArray().Select(EditPlan.Point).Select(p=>(p[0],p[1])).ToArray();
+                double[]? radii=null;
+                if(op.TryGetProperty("radii",out var radiusList))
+                {
+                    if(radiusList.ValueKind!=JsonValueKind.Array||radiusList.EnumerateArray().Any(r=>r.ValueKind!=JsonValueKind.Number))throw new CadFault("INVALID_RADII","radii must be an array of numbers");
+                    radii=radiusList.EnumerateArray().Select(r=>r.GetDouble()).ToArray();
+                }
+                // Geometry that cannot be built is rejected before Civil 3D is called.
+                if(pis.Length is >=2 and <=500)AlignmentGeometry.Compute(pis,radii);
+                break;
             case "civil_alignment_add_line" or "civil_profile_add_tangent":Require("handle","start","end");break;
-            case "civil_profile_create":Require("name","alignment_handle","layer_handle","style_handle","label_set_handle","points");break;
-            case "civil_profile_from_surface":Require("name","alignment_handle","surface_handle","layer_handle","style_handle","label_set_handle");break;
-            case "civil_network_create":Require("name","parts_list_handle");break;
-            case "civil_network_add_pipe":Require("handle","family_handle","size_handle","start","end");break;
-            case "civil_network_add_structure":Require("handle","family_handle","size_handle","position");break;
+            case "civil_profile_create":Require("name","alignment_handle","points");OneOf("layer_handle","layer");OneOf("style_handle","style");OneOf("label_set_handle","label_set");break;
+            case "civil_profile_from_surface":Require("name","alignment_handle","surface_handle");OneOf("layer_handle","layer");OneOf("style_handle","style");OneOf("label_set_handle","label_set");break;
+            case "civil_network_create":Require("name");OneOf("parts_list_handle","parts_list");break;
+            case "civil_network_add_pipe":Require("handle","start","end");OneOf("family_handle","family");OneOf("size_handle","size");break;
+            case "civil_network_add_structure":Require("handle","position");OneOf("family_handle","family");OneOf("size_handle","size");break;
             case "civil_set":Require("handle","properties");break;
             case "map_coordinate_system":Require("code");break;
             case "map_od_table":Require("name","fields");break;
@@ -66,9 +80,9 @@ public static class ExtendedPlan
         if((kind.StartsWith("civil_",StringComparison.Ordinal)||kind.StartsWith("map_",StringComparison.Ordinal))&&op.TryGetProperty("id",out _))throw new CadFault("INVALID_ALIAS","Vertical operations return handles in detail; use them in a subsequent request");
         foreach(var p in op.EnumerateObject())
         {
-            if(p.Name is "show_annotations" or "apply_rules" or "ruled" && p.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))throw new CadFault("INVALID_BOOLEAN",p.Name);
+            if(p.Name is "show_annotations" or "apply_rules" or "ruled" or "force" && p.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))throw new CadFault("INVALID_BOOLEAN",p.Name);
             if(p.Name is "parameters" or "properties" or "values" && p.Value.ValueKind!=JsonValueKind.Object)throw new CadFault("INVALID_PARAMETER",p.Name+" must be an object");
-            if(p.Name is "mark" or "material" or "name" or "code" or "layer" or "style" or "label_set" or "site" or "table" or "title" or "layout")EditPlan.RequiredText(op,p.Name);
+            if(p.Name is "mark" or "material" or "name" or "code" or "layer" or "style" or "label_set" or "site" or "table" or "title" or "layout" or "parts_list" or "family" or "size")EditPlan.RequiredText(op,p.Name);
         }
         if(op.TryGetProperty("density",out _))DraftingPlan.Positive(op,"density",0);
         if(op.TryGetProperty("color_index",out var aci)&&(!aci.TryGetInt32(out var c)||c is <0 or >256))throw new CadFault("INVALID_COLOR","ACI 0..256 required");

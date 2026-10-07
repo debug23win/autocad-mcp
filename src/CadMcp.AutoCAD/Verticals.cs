@@ -73,12 +73,69 @@ internal static class Verticals
                 : new { available = true, surfaces = CivilCollection(civil, "GetSurfaceIds", tr),
                     alignments = CivilCollection(civil, "GetAlignmentIds", tr),
                     profiles = CivilProfiles(civil, tr),
-                    pipe_networks = CivilCollection(civil, "GetPipeNetworkIds", tr) },
+                    pipe_networks = CivilCollection(civil, "GetPipeNetworkIds", tr),
+                    sites = CivilCollection(civil, "GetSiteIds", tr),
+                    styles = CivilStyles(civil, tr), label_sets = CivilLabelSets(civil, tr), parts_lists = CivilPartsLists(civil, tr),
+                    naming = "Operations accept these names instead of handles: style, label_set, layer, parts_list, family, size" },
             map3d = project is null ? new { available = false, reason = "Map 3D managed API is not loaded in this product" } as object
                 : new { available = true, coordinate_system = Scalar(project, "Projection"),
                     vertical_coordinate_system = Scalar(project, "VerticalProjection"),
                     object_data_tables = MapTableNames(project) }
         };
+    }
+
+    private static readonly string[] StyleCollections = ["AlignmentStyles", "ProfileStyles", "ProfileViewStyles", "SurfaceStyles", "PipeStyles", "StructureStyles",
+        "PipeRuleSetStyles", "StructureRuleSetStyles", "PointStyles", "FeatureLineStyles", "CorridorStyles", "SampleLineStyles", "SectionStyles"];
+
+    private static object[] Names(object? collection, Transaction tr, int limit = 100) =>
+        VerticalEditing.Named(collection, tr).Take(limit).Select(n => (object)new { name = n.Name, handle = n.Id.Handle.ToString() }).ToArray();
+
+    private static object? CivilStyles(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } root) return null;
+            var result = new SortedDictionary<string, object[]>(StringComparer.Ordinal);
+            foreach (var name in StyleCollections)
+                if (VendorReflection.TryGet(root, name) is { } collection) result[name] = Names(collection, tr);
+            return result;
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
+    }
+
+    /// <summary>Every label-set collection of the drawing, discovered from the LabelSetStyles root of this release.</summary>
+    private static object? CivilLabelSets(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } styles || VendorReflection.TryGet(styles, "LabelSetStyles") is not { } root) return null;
+            var result = new SortedDictionary<string, object[]>(StringComparer.Ordinal);
+            foreach (var property in root.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetIndexParameters().Length == 0))
+                if (VendorReflection.TryGet(root, property.Name) is IEnumerable collection and not string && Names(collection, tr) is { Length: > 0 } names)
+                    result[property.Name] = names;
+            return result;
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
+    }
+
+    private static object? CivilPartsLists(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } styles || VendorReflection.TryGet(styles, "PartsListSet") is not { } set) return null;
+            return VerticalEditing.Named(set, tr).Take(30).Select(list => (object)new
+            {
+                name = list.Name, handle = list.Id.Handle.ToString(),
+                families = VerticalEditing.Children(tr, tr.GetObject(list.Id, OpenMode.ForRead), "PartFamilyCount").Take(50).Select(family => new
+                {
+                    family = Convert.ToString(VendorReflection.TryGet(family.Object, "Description")), handle = family.Id.Handle.ToString(),
+                    domain = Convert.ToString(VendorReflection.TryGet(family.Object, "Domain")),
+                    sizes = VerticalEditing.Children(tr, family.Object, "PartSizeCount").Take(60)
+                        .Select(size => new { size = VerticalEditing.SizeNames(size.Object).FirstOrDefault(), handle = size.Id.Handle.ToString() }).ToArray()
+                }).ToArray()
+            }).ToArray();
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
     }
 
     public static object Inspect(Database db, Transaction tr, string handle, double[][]? samplePoints)
