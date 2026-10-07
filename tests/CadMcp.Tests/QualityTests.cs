@@ -130,6 +130,11 @@ public sealed class QualityTests
     [InlineData("{\\fArial|b0;%%p5%}", "±5%", "±6%", true, "{\\fArial|b0;%%p6%%%}", 1)]
     // A search written with codes works on the stored text and writes the new text as typed.
     [InlineData("%%c20", "%%c", "⌀", false, "⌀20", 1)]
+    // A stored %%% is one %, so the letter after it is plain text, not the code of a symbol.
+    [InlineData("5%%%d", "5%°", "6%°", false, "5%%%d", 0)]
+    [InlineData("%%%c", "%Ø", "X", false, "%%%c", 0)]
+    [InlineData("{\\fArial|b0;5%%%d}", "5%°", "6%°", true, "{\\fArial|b0;5%%%d}", 0)]
+    [InlineData("5%%%d", "5%d", "6%d", false, "6%%%d", 1)]
     [InlineData("\\U+00D8108", "U", "u", false, "\\U+00D8108", 0)]
     [InlineData("{\\fArial|b0;Path}", "Path", "C:\\Data\\{New}", true, "{\\fArial|b0;C:\\\\Data\\\\\\{New\\}}", 1)]
     public void Replacement_never_cuts_through_control_codes(string raw, string find, string replace, bool mtext, string expected, int count)
@@ -137,6 +142,17 @@ public sealed class QualityTests
         var (text, replaced) = CadText.Replace(raw, find, replace, mtext: mtext);
         Assert.Equal(expected, text);
         Assert.Equal(count, replaced);
+    }
+
+    [Fact]
+    public void A_search_of_many_percent_signs_stays_fast()
+    {
+        // Each % of the search has one way to match, so a miss is found without trying every split of %%%.
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var (text, count) = CadText.Replace(new string('%', 600), new string('%', 20) + "x", "y");
+        Assert.Equal(0, count);
+        Assert.Equal(new string('%', 600), text);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), "Replace took " + watch.Elapsed);
     }
 
     [Fact]

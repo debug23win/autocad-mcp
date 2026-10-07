@@ -184,19 +184,7 @@ public static class LispPolicy
         var tokens = Tokenize(code);
         var findings = new List<LispFinding>(); var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         void Add(string findingCode, string severity, string detail) { if (seen.Add(findingCode + "|" + detail)) findings.Add(new(findingCode, severity, detail)); }
-        // The wrapper completes UNDO Begin before the script, so the script's first (command) call starts a command,
-        // unless it sits in a defun or lambda body: that runs when called, possibly after another command left a prompt.
-        bool firstCommand = true;
-        var deferred = new bool[tokens.Count];
-        var forms = new Stack<bool>();
-        for (int k = 0; k < tokens.Count; k++)
-        {
-            bool inside = forms.Count > 0 && forms.Peek();
-            deferred[k] = inside;
-            if (tokens[k].Kind == TokenKind.Open)
-                forms.Push(inside || k + 1 < tokens.Count && tokens[k + 1].Kind == TokenKind.Symbol && FunctionForms.Contains(tokens[k + 1].Text));
-            else if (tokens[k].Kind == TokenKind.Close && forms.Count > 0) forms.Pop();
-        }
+        var firstCalls = FirstCommandCalls(tokens);
         for (int i = 0; i < tokens.Count; i++)
         {
             var token = tokens[i];
@@ -223,8 +211,7 @@ public static class LispPolicy
                 && RiskyVariables.TryGetValue(variable.Text.Trim(), out var riskyVariable))
                 Add(riskyVariable.Code, Risky, "setvar " + variable.Text.Trim() + ": " + riskyVariable.Detail);
             if (!CommandFunctions.Contains(name) || !call) continue;
-            bool first = firstCommand && !deferred[i - 1];
-            firstCommand = false;
+            bool first = firstCalls.Contains(i);
             var argument = i + 1 < tokens.Count ? tokens[i + 1] : default;
             if (argument.Kind != TokenKind.String) continue;
             string command = argument.Text.Trim();
@@ -243,6 +230,64 @@ public static class LispPolicy
             if (!commandLine && DialogCommands.Contains(command)) Add("LISP_DIALOG_COMMAND", Notice, command + ": may open a dialog and wait for the user; prefer -" + command);
         }
         return findings;
+    }
+
+    /// <summary>
+    /// (command) calls that may run before any other in the script. The wrapper completes UNDO Begin first, so such a
+    /// call starts a command and its first string is a command name. Outside defun and lambda bodies that is the first
+    /// call in the text. A body runs where it is called (a defun, or a lambda kept by setq) or created (any other lambda);
+    /// its first call is counted when the body can run before that first call: it is used or created earlier in the
+    /// text, used from another body, or the script has no call outside bodies. A body used only later, after a command
+    /// may have left a prompt, can answer that prompt.
+    /// </summary>
+    private static HashSet<int> FirstCommandCalls(List<Token> tokens)
+    {
+        // The outermost defun or lambda form around each token (its opening parenthesis), or -1, and where forms end.
+        var body = new int[tokens.Count];
+        var ends = new Dictionary<int, int>();
+        var open = new Stack<int>();
+        int outer = -1;
+        for (int k = 0; k < tokens.Count; k++)
+        {
+            body[k] = outer;
+            if (tokens[k].Kind == TokenKind.Open)
+            {
+                open.Push(k);
+                if (outer < 0 && k + 1 < tokens.Count && tokens[k + 1].Kind == TokenKind.Symbol && FunctionForms.Contains(tokens[k + 1].Text)) outer = k;
+            }
+            else if (tokens[k].Kind == TokenKind.Close && open.Count > 0)
+            {
+                int start = open.Pop();
+                ends[start] = k;
+                if (start == outer) outer = -1;
+            }
+        }
+        var calls = Enumerable.Range(1, Math.Max(0, tokens.Count - 1))
+            .Where(i => tokens[i].Kind == TokenKind.Symbol && tokens[i - 1].Kind == TokenKind.Open && CommandFunctions.Contains(tokens[i].Text)).ToList();
+        var first = new HashSet<int>();
+        int top = calls.Where(i => body[i] < 0).DefaultIfEmpty(int.MaxValue).First();
+        if (top != int.MaxValue) first.Add(top);
+        foreach (var group in calls.Where(i => body[i] >= 0).GroupBy(i => body[i]))
+        {
+            int start = group.Key, end = ends.TryGetValue(start, out int e) ? e : tokens.Count - 1;
+            bool lambda = tokens[start + 1].Text.Equals("lambda", StringComparison.OrdinalIgnoreCase);
+            // A defun is named after its head; a lambda by (setq name (lambda ...)).
+            int nameAt = !lambda ? start + 2
+                : start >= 3 && tokens[start - 3].Kind == TokenKind.Open && tokens[start - 2].Kind == TokenKind.Symbol
+                  && tokens[start - 2].Text.Equals("setq", StringComparison.OrdinalIgnoreCase) ? start - 1 : -1;
+            string? name = nameAt >= 0 && nameAt < tokens.Count && tokens[nameAt].Kind == TokenKind.Symbol ? tokens[nameAt].Text : null;
+            bool early;
+            if (name is null) early = start < top;
+            else
+            {
+                // Any other mention may call it: (f), 'f for apply or mapcar, (function f).
+                var uses = Enumerable.Range(0, tokens.Count).Where(c => (c < start || c > end) && c != nameAt && tokens[c].Kind == TokenKind.Symbol
+                    && tokens[c].Text.TrimStart('\'').Equals(name, StringComparison.OrdinalIgnoreCase));
+                early = uses.Any(c => c < top || body[c] >= 0);
+            }
+            if (early) first.Add(group.Min());
+        }
+        return first;
     }
 
     /// <summary>The n-th argument (1-based) of the call whose function symbol is at index <paramref name="call"/>: a single token or the opening parenthesis of a nested form.</summary>
@@ -265,7 +310,8 @@ public static class LispPolicy
         var blocked = findings.Where(f => f.Severity == Blocked).ToArray();
         if (blocked.Length == 0) return;
         string advice = blocked[0].Code == "LISP_POLICY_CHANGE" ? "Only the user changes the AutoLISP policy (command CADMCPLISP or the chat panel)"
-            : "Ask the user to open or switch drawings; CAD MCP works on the assigned drawing only";
+            : "Ask the user to open or switch drawings; CAD MCP works on the assigned drawing only. A keyword such as \"_Close\" that "
+              + "answers a prompt counts as a command where it can be the script's first: pass it in the same (command) call as its command";
         throw new CadFault(blocked[0].Code, string.Join("; ", blocked.Select(f => f.Detail)) + ". " + advice);
     }
 

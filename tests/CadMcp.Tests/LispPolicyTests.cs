@@ -63,6 +63,16 @@ public sealed class LispPolicyTests
     // A progn or condition runs in place, so its first (command) is still the script's first.
     [InlineData("(progn (command \"_Close\" \"_N\") (princ))")]
     [InlineData("(if (= (getvar \"DBMOD\") 0) (command \"CLOSE\"))")]
+    // A defun or lambda body that can run before any other command starts one too.
+    [InlineData("(defun f () (command \"CLOSE\" \"Y\")) (f)")]
+    [InlineData("((lambda () (command \"CLOSE\" \"Y\")))")]
+    [InlineData("(defun c:x () (vl-cmdf \"QUIT\" \"Y\")) (c:x)")]
+    [InlineData("(mapcar '(lambda (x) (command \"CLOSE\" x)) '(\"Y\"))")]
+    [InlineData("(vl-catch-all-apply (function (lambda () (command \"_CLOSE\" \"_Y\"))))")]
+    [InlineData("(defun f () (command \"CLOSE\" \"Y\")) (f) (command \"_.LINE\" p1 p2 \"\")")]
+    [InlineData("(defun f () (command \"CLOSE\" \"Y\")) (vl-catch-all-apply 'f nil) (command \"_.REGEN\")")]
+    [InlineData("(defun g () (f)) (defun f () (command \"CLOSE\" \"Y\")) (command \"_.REGEN\") (g)")]
+    [InlineData("(defun noop () (command \"_.REGEN\")) (command \"CLOSE\" \"Y\")")]
     [InlineData("(vla-open (vla-get-documents (vlax-get-acad-object)) \"c:/x.dwg\")")]
     public void Switching_or_closing_drawings_is_rejected(string code)
     {

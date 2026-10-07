@@ -205,6 +205,36 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void The_work_limit_is_reported_even_when_findings_are_full()
+    {
+        // Zero-length curves fill the findings before the segment count is checked.
+        var curves = new List<TopologyCurve>();
+        for (int i = 0; i < 5; i++) curves.Add(Line("Z" + i, i, 0, i, 0));
+        curves.Add(new("BIG", "0", Enumerable.Range(0, 200_100).Select(i => new[] { (double)i, i % 2 }).ToArray(), false));
+        var report = Topology.Analyze(curves, new TopologyOptions(1e-3, MaxFindings: 3));
+        Assert.Equal("unverified", report.State);
+        Assert.Equal(3, report.Findings.Count);
+        Assert.Contains(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+        Assert.True(report.Truncated);
+
+        // Copies of one line fill the findings, then 20000 segments packed into a 1 x 0.2 area exceed the work limit:
+        // reported at once, not after the work is done.
+        curves.Clear();
+        for (int k = 0; k < 15; k++) curves.Add(Line("D" + k, 100, 100, 101, 100));
+        for (int k = 0; k < 150; k++)
+        {
+            var points = new List<double[]>();
+            for (int j = 0; j < 67; j++) { points.Add([0, (k * 140 + j) * 1e-5]); points.Add([1, (k * 140 + j) * 1e-5]); }
+            curves.Add(new("Z" + k, "0", points, false));
+        }
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        report = Topology.Analyze(curves, new TopologyOptions(1e-9, 0, Endpoints: false, Crossings: false, MaxFindings: 100));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), "Limit took " + watch.Elapsed);
+        Assert.Equal("unverified", report.State);
+        Assert.Contains(report.Findings, f => f.Code == "TOPOLOGY_LIMIT");
+    }
+
+    [Fact]
     public void Chord_deviation_applies_only_to_curved_segments()
     {
         // A polyline whose first segment is straight and second is a coarsely sampled arc; a line stops 0.008

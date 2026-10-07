@@ -175,13 +175,14 @@ public static class CadText
         // In MText a backslash or brace of the new text would start a formatting code.
         if (mtext) { replace = EscapeMText(replace); encodedReplace = EscapeMText(encodedReplace); }
         // Each symbol of the search matches its displayed form or its control code, in any mix ("±0.5%" finds
-        // "%%p0.5%"); the stored form %%% of a single % is tried first, so "50%" takes the whole "50%%%".
+        // "%%p0.5%"). A % is the stored %%% or a lone % that does not start a code, so "50%" takes the whole "50%%%"
+        // and "5%°" does not read "5%%%d" (shown "5%d") as 5, % and %%d; a search written with codes matches as typed.
         var pattern = string.Concat(find.Select(c => c switch
         {
             'Ø' or 'ø' or '⌀' or '∅' => "(?:[Øø⌀∅]|%%[cC])",
             Degree => "(?:°|%%[dD])",
             PlusMinus => "(?:±|%%[pP])",
-            '%' => "(?:%%%|%)",
+            '%' => rawFind ? "%" : "(?:%%%|%(?!%[cCdDpPuUoO%]|%[0-9]{3}))",
             _ => Regex.Escape(c.ToString())
         }));
         if (wholeWord) pattern = @"(?<![\p{L}\p{N}_])(?:" + pattern + @")(?![\p{L}\p{N}_])";

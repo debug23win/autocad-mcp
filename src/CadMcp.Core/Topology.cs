@@ -112,11 +112,7 @@ public static class Topology
             if (closed[c] && p.Length > 2) segments.Add(new(c, p.Length - 1, p[^1].X, p[^1].Y, p[0].X, p[0].Y, At(p.Length - 1)));
         }
         var limitations = new[] { "XY projection: Z is ignored", "arcs, ellipses and splines are sampled by the caller within tolerance", "top-level entities only; blocks are not exploded" };
-        if (segments.Count > MaxSegments)
-        {
-            Add("TOPOLOGY_LIMIT", Unverified, [], 0, 0, null, segments.Count, "Too many segments (" + segments.Count + "); narrow the scope by layer or bounds");
-            return Report();
-        }
+        if (segments.Count > MaxSegments) return Limit("Too many segments (" + segments.Count + "); narrow the scope by layer or bounds");
 
         // A hierarchy of grids: level k has cells of cell·8^k and holds the segments that span at most 64 of its
         // half-cells, so short segments get small cells while long or distant ones sit on a coarser level instead of
@@ -201,12 +197,20 @@ public static class Topology
                 }
             }
         }
-        TopologyReport Limit()
+        // The limit is reported even when the findings are full, in place of the last one: without it the check would
+        // look complete.
+        TopologyReport Limit(string message = "Geometry too dense or too large for one check; narrow the scope by layer or bounds")
         {
-            Add("TOPOLOGY_LIMIT", Unverified, [], 0, 0, null, segments.Count, "Geometry too dense or too large for one check; narrow the scope by layer or bounds");
+            counts["TOPOLOGY_LIMIT"] = counts.GetValueOrDefault("TOPOLOGY_LIMIT") + 1;
+            if (findings.Count > 0 && findings.Count >= options.MaxFindings) { findings.RemoveAt(findings.Count - 1); truncated = true; }
+            findings.Add(new("TOPOLOGY_LIMIT", Unverified, [], [0, 0], null, segments.Count, message));
             return Report();
         }
         if (registrations > MaxRegistrations) return Limit();
+        // Segments sharing a cell of their level are compared pair by pair; too many such pairs are reported at once.
+        long sameLevelPairs = 0;
+        foreach (var grid in grids) foreach (var list in grid.Values) sameLevelPairs += (long)list.Count * (list.Count - 1) / 2;
+        if (sameLevelPairs > MaxScans) return Limit();
         // Chord deviation counted for an endpoint test, at most a quarter cell of the segment's level so the point stays
         // within its registered neighbourhood.
         var segmentDeviation = new double[segments.Count];
