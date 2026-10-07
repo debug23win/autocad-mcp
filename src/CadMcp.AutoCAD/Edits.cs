@@ -545,7 +545,8 @@ internal static class Edits
     }
     private static void Set(Database db, Transaction tr, Entity entity, JsonElement op)
     {
-        foreach (var p in op.EnumerateObject())
+        // Position comes last, so a move of justified text measures the text as changed by text, height or rotation.
+        foreach (var p in op.EnumerateObject().OrderBy(p => p.Name == "position" ? 1 : 0))
         {
             switch (p.Name)
             {
@@ -568,7 +569,9 @@ internal static class Edits
                 case "text" when entity is Dimension dimension: dimension.DimensionText = p.Value.GetString()!; dimension.RecomputeDimensionBlock(true); break;
                 // Justified text is positioned by its alignment point; setting Position would be undone by
                 // AdjustAlignment. Translate the whole text so its reported baseline position lands on the target.
-                case "position" when entity is DBText text: text.TransformBy(Matrix3d.Displacement(Point(op, "position") - text.Position)); break;
+                case "position" when entity is DBText text:
+                    if (text.HorizontalMode != TextHorizontalMode.TextLeft || text.VerticalMode != TextVerticalMode.TextBase) text.AdjustAlignment(db);
+                    text.TransformBy(Matrix3d.Displacement(Point(op, "position") - text.Position)); break;
                 case "position" when entity is MText text: text.Location = Point(op, "position"); break;
                 case "position" when entity is BlockReference block: block.Position = Point(op, "position"); TransformAttributes(tr, block); break;
                 case "height" when entity is DBText text: text.Height = p.Value.GetDouble(); break;

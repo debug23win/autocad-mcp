@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using CadMcp.Core;
 
 namespace CadMcp.Tests;
@@ -27,6 +28,28 @@ public sealed class CivilTests
             var missing = CivilApiContract.Members.Where(m => !members.Contains(m)).ToArray();
             Assert.True(missing.Length == 0, "Civil 3D " + release + " lacks: " + string.Join("; ", missing));
         }
+    }
+
+    [Fact]
+    public void Member_names_in_the_Civil_code_are_in_the_contract()
+    {
+        static string Source(string file) => File.ReadAllText(Path.Combine(TestEnvironment.RepositoryRoot, "src", "CadMcp.AutoCAD", file));
+        var editing = Source("VerticalEditing.cs");
+        // The Civil part of VerticalEditing; its Map part and the CS-MAP check are outside the Civil contract.
+        var civil = editing[editing.IndexOf("internal static object Civil(", StringComparison.Ordinal)..editing.IndexOf("internal static object Capabilities(", StringComparison.Ordinal)];
+        var literals = Regex.Matches(civil + Source("Verticals.cs"), "\"([A-Z][A-Za-z0-9]*)\"").Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        var members = CivilApiContract.Members.Select(m => Regex.Match(m, @"\|[MP] (?:static )?\S+ (\w+)").Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        var types = CivilApiContract.Members.Select(m => m.Split('|')[0].Split('.')[^1]).ToHashSet(StringComparer.Ordinal);
+        string[] notMembers =
+        [
+            "AeccDbMgd", "ManagedMapApi", "AcMap", "MAP", "Map", "WCS", // assembly names and product markers
+            "Compound", "PrtSN", "Point", "Id", "AlignmentLine", "Surface", // enum value, catalog field key, name suffix checks, type names
+            "Application", "DoubleValue", "FieldDefinitions", "GetObjectRecords", "GetProjectForDB", "GetTableNames", "Int32Value", // Map 3D API
+            "ODTables", "OpenForRead", "Projection", "StrValue", "TableName", "Type", "VerticalProjection"
+        ];
+        var unexplained = literals.Where(l => !members.Contains(l) && !types.Contains(l) && !CivilApiContract.Unchecked.ContainsKey(l) && !notMembers.Contains(l)).Order(StringComparer.Ordinal).ToArray();
+        Assert.True(unexplained.Length == 0, "Add these names to CivilApiContract.Members (or explain them in Unchecked): " + string.Join(", ", unexplained));
+        Assert.DoesNotContain(CivilApiContract.Unchecked.Keys, members.Contains);
     }
 
     [Fact]
@@ -63,6 +86,8 @@ public sealed class CivilTests
     {
         Assert.Equal("INVALID_CURVE", Assert.Throws<CadFault>(() => AlignmentGeometry.Compute([(0, 0), (50, 0), (100, 0)], [10])).Code);
         Assert.Equal("INVALID_CURVE", Assert.Throws<CadFault>(() => AlignmentGeometry.Compute([(0, 0), (50, 0), (0, 0.0000001)], [10])).Code);
+        // Collinear points on a diagonal: acos of the rounded cosine used to report a tiny deflection.
+        Assert.Equal("INVALID_CURVE", Assert.Throws<CadFault>(() => AlignmentGeometry.Compute([(0, 0), (1, 1), (2, 2)], [10])).Code);
         Assert.Equal("INVALID_POINTS", Assert.Throws<CadFault>(() => AlignmentGeometry.Compute([(0, 0), (0, 0)], null)).Code);
         Assert.Equal("INVALID_RADII", Assert.Throws<CadFault>(() => AlignmentGeometry.Compute([(0, 0), (10, 0), (10, 10), (20, 10)], [1])).Code);
         // Two curves sharing one tangent must fit on it together.
@@ -82,6 +107,10 @@ public sealed class CivilTests
              {"op":"map_coordinate_system","code":"EPSG:2154","force":false}]
             """);
         Assert.Equal(7, plan.Length);
+        // An empty site makes a siteless alignment.
+        EditPlan.Parse("""[{"op":"civil_alignment_create","name":"A","layer":"L","style":"S","label_set":"M","site":"","points":[[0,0],[100,0]]}]""");
+        var many = string.Join(",", Enumerable.Range(0, 501).Select(i => "[" + i + "," + (i % 2) + "]"));
+        Assert.Equal("INVALID_POINTS", Assert.Throws<CadFault>(() => EditPlan.Parse("[{\"op\":\"civil_alignment_create\",\"name\":\"A\",\"layer\":\"L\",\"style\":\"S\",\"label_set\":\"M\",\"points\":[" + many + "]}]")).Code);
     }
 
     [Theory]
@@ -93,6 +122,7 @@ public sealed class CivilTests
     [InlineData("""[{"op":"civil_alignment_create","name":"A","layer":"L","style":"S","label_set":"M","points":[[0,0],[100,0],[100,100]],"radii":[1,2]}]""", "INVALID_RADII")]
     [InlineData("""[{"op":"civil_alignment_create","name":"A","layer":"L","style":"S","label_set":"M","points":[[0,0],[100,0],[100,100]],"radii":["20"]}]""", "INVALID_RADII")]
     [InlineData("""[{"op":"map_coordinate_system","code":"LL84","force":"yes"}]""", "INVALID_BOOLEAN")]
+    [InlineData("""[{"op":"civil_alignment_create","name":"A","layer":"L","style":"S","label_set":"M","site":5,"points":[[0,0],[100,0]]}]""", "INVALID_PARAMETER")]
     public void Invalid_Civil_operations_fail_before_any_transaction(string plan, string code) =>
         Assert.Equal(code, Assert.Throws<CadFault>(() => EditPlan.Parse(plan)).Code);
 }

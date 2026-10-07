@@ -8,9 +8,10 @@ namespace CadMcp.AutoCAD;
 internal static class VerticalEditing
 {
     // Vendor members are late-bound: hidden properties, uint/ref parameters and overloads are resolved in VendorReflection.
-    private static object Get(object instance,string property)=>VendorReflection.TryGet(instance,property)??throw new CadFault("VERTICAL_API_UNAVAILABLE",property);
+    // A missing member or a failing getter is reported with the vendor's reason; an empty value is unavailable too.
+    private static object Get(object instance,string property)=>VendorReflection.Get(instance,property)??throw new CadFault("VERTICAL_API_UNAVAILABLE",property+" is empty");
     internal static object? Invoke(object instance,string method,params object?[] args)=>VendorReflection.Invoke(instance,method,args);
-    private static object Index(object instance,object index)=>VendorReflection.Index(instance,index);
+    private static object Index(object instance,object index)=>VendorReflection.Index(instance,index)??throw new CadFault("VERTICAL_INDEX_UNAVAILABLE",instance.GetType().Name+"["+index+"] is empty");
     private static void Set(object instance,string name,object? value)=>VendorReflection.Set(instance,name,value);
     private static ObjectId Id(Database db,JsonElement op,string key)=>NativeTables.Resolve(db,EditPlan.RequiredText(op,key));
     private static Point3d P(JsonElement value){var p=EditPlan.Point(value);return new(p[0],p[1],p[2]);}
@@ -33,7 +34,10 @@ internal static class VerticalEditing
         object? detail=null;
         if(kind=="civil_alignment_create")
         {
-            id=(ObjectId)Invoke(Type("Alignment"),"Create",civil,op.Text("name"),op.Text("site"),op.Text("layer"),op.Text("style"),op.Text("label_set"))!;
+            // Without a site the alignment is siteless: the id overload takes ObjectId.Null for the site.
+            id=string.IsNullOrWhiteSpace(op.Text("site"))
+                ?(ObjectId)Invoke(Type("Alignment"),"Create",civil,op.Text("name"),ObjectId.Null,LayerId(db,tr,op.Text("layer")!),CivilStyle(civil,tr,"AlignmentStyles",op.Text("style")!),CivilLabelSet(civil,tr,"Alignment",op.Text("label_set")!))!
+                :(ObjectId)Invoke(Type("Alignment"),"Create",civil,op.Text("name"),op.Text("site"),op.Text("layer"),op.Text("style"),op.Text("label_set"))!;
             var alignment=tr.GetObject(id,OpenMode.ForWrite);
             if(op.TryGetProperty("radii",out _))detail=CurvedAlignment(alignment,op);
             else Points(alignment,"AddFixedLine");
@@ -55,7 +59,8 @@ internal static class VerticalEditing
         else
         {
             id=Id(db,op,"handle");var obj=tr.GetObject(id,OpenMode.ForWrite);
-            if(obj.GetType().Assembly!=assembly||GetOptional(obj,"IsReferenceObject") is true)throw new CadFault("INVALID_CIVIL_TARGET","Editable native Civil object required; data shortcut references cannot be edited");
+            // Only an object that reads as not referenced is edited: a failing check never lets a data shortcut through.
+            if(obj.GetType().Assembly!=assembly||GetOptional(obj,"IsReferenceObject") is not false)throw new CadFault("INVALID_CIVIL_TARGET","Editable native Civil object required; data shortcut references cannot be edited");
             if(kind=="civil_alignment_add_line")Invoke(Get(obj,"Entities"),"AddFixedLine",P(op.GetProperty("start")),P(op.GetProperty("end")));
             else if(kind=="civil_profile_add_tangent")Invoke(Get(obj,"Entities"),"AddFixedTangent",XY(op.GetProperty("start")),XY(op.GetProperty("end")));
             else if(kind=="civil_network_add_pipe")
@@ -82,6 +87,7 @@ internal static class VerticalEditing
     private static object CurvedAlignment(DBObject alignment,JsonElement op)
     {
         var points=op.GetProperty("points").EnumerateArray().Select(P).ToArray();
+        if(points.Length is <2 or >500)throw new CadFault("INVALID_POINTS","2..500 PI points required");
         var radii=op.GetProperty("radii").EnumerateArray().Select(r=>r.GetDouble()).ToArray();
         var plan=AlignmentGeometry.Compute(points.Select(p=>(p.X,p.Y)).ToArray(),radii);
         var entities=Get(alignment,"Entities");
@@ -134,7 +140,7 @@ internal static class VerticalEditing
     }
 
     private static ObjectId CivilStyle(object civil,Transaction tr,string collection,string name)=>
-        Find(Named(VendorReflection.TryGet(Get(civil,"Styles"),collection),tr),name,collection);
+        Find(Named(Get(Get(civil,"Styles"),collection) is IEnumerable styles?styles:throw new CadFault("VERTICAL_API_UNAVAILABLE",collection+" cannot be listed"),tr),name,collection);
 
     /// <summary>Label set by name among the label-set collections of the object kind (Profile, Alignment ...).</summary>
     private static ObjectId CivilLabelSet(object civil,Transaction tr,string kind,string name)
@@ -159,10 +165,11 @@ internal static class VerticalEditing
     {
         var children=Children(tr,parent,countProperty).ToArray();
         if(countProperty!="PartSizeCount")return Find(children.Select(c=>(Name:Convert.ToString(VendorReflection.TryGet(c.Object,"Description"))??"",c.Id)),name,what);
-        // Sizes are listed by their catalog size name; another text value of the size record also identifies one.
-        var listed=children.Select(c=>(Name:SizeNames(c.Object).FirstOrDefault()??c.Id.Handle.ToString(),c.Id)).ToArray();
+        // Sizes are listed by their catalog size name (or handle when it cannot be read); another text value of the
+        // size record also identifies one.
+        var listed=children.Select(c=>(Name:SizeName(c.Object)??c.Id.Handle.ToString(),c.Id)).ToArray();
         if(listed.Any(n=>string.Equals(n.Name,name,StringComparison.OrdinalIgnoreCase)))return Find(listed,name,what);
-        var other=children.Where(c=>SizeNames(c.Object).Skip(1).Contains(name,StringComparer.OrdinalIgnoreCase)).Select(c=>c.Id).ToArray();
+        var other=children.Where(c=>SizeValues(c.Object).Contains(name,StringComparer.OrdinalIgnoreCase)).Select(c=>c.Id).ToArray();
         if(other.Length>1)throw new CadFault("CIVIL_NAME_AMBIGUOUS",what+" \""+name+"\" matches several sizes; use the listed size name");
         return other.Length==1?other[0]:Find(listed,name,what);
     }
@@ -175,15 +182,21 @@ internal static class VerticalEditing
     }
 
     /// <summary>
-    /// Names of a part size: the catalog size name (PrtSN, as Civil lists it) first, then the record's other text values.
-    /// The size object itself has no name property.
+    /// The catalog size name of a part size (PrtSN, as Civil lists it), or null when it cannot be read. The size
+    /// object itself has no name property.
     /// </summary>
-    internal static IEnumerable<string> SizeNames(object size)
+    internal static string? SizeName(object size)
     {
-        if(VendorReflection.TryGet(size,"SizeDataRecord") is not {} record)yield break;
+        if(VendorReflection.TryGet(size,"SizeDataRecord") is not {} record)return null;
         object? field=null;
         try{field=VendorReflection.Invoke(record,"GetDataFieldBy","PrtSN");}catch(CadFault){}
-        if(field is not null&&Convert.ToString(VendorReflection.TryGet(field,"Value"),System.Globalization.CultureInfo.InvariantCulture) is {Length:>0} sizeName)yield return sizeName;
+        return field is not null&&Convert.ToString(VendorReflection.TryGet(field,"Value"),System.Globalization.CultureInfo.InvariantCulture) is {Length:>0} sizeName?sizeName:null;
+    }
+
+    /// <summary>The other text values of a part size record (material, description), which can also identify a size.</summary>
+    internal static IEnumerable<string> SizeValues(object size)
+    {
+        if(VendorReflection.TryGet(size,"SizeDataRecord") is not {} record)yield break;
         object? all=null;
         try{all=VendorReflection.Invoke(record,"GetAllDataFields");}catch(CadFault){}
         if(all is IEnumerable fields)
@@ -282,11 +295,20 @@ internal static class MapCoordinateSystems
 
     public static Result Check(Database db,string requested,bool force)
     {
-        if(FactoryType() is not {} factoryType)return new(requested,false,null,null,null,null,null,null,"The CS-MAP catalog is unavailable; the code was assigned without validation");
-        var factory=Activator.CreateInstance(factoryType)!;
         string code=requested;
         var epsgText=requested.StartsWith("EPSG:",StringComparison.OrdinalIgnoreCase)?requested[5..]:requested;
-        if(int.TryParse(epsgText,System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out int epsg))
+        bool epsgRequested=int.TryParse(epsgText,System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out int epsg);
+        object? factory=null;
+        if(FactoryType() is {} factoryType)
+            try{factory=Activator.CreateInstance(factoryType);}
+            catch(System.Exception error) when(error is TargetInvocationException or MissingMethodException or MemberAccessException or TypeLoadException or NotSupportedException or System.IO.IOException){factory=null;}
+        if(factory is null)
+        {
+            // Without the catalog an EPSG number cannot be translated; storing it verbatim would name no system.
+            if(epsgRequested)throw new CadFault("CS_CATALOG_UNAVAILABLE","The CS-MAP catalog is unavailable, so EPSG "+epsg+" cannot be translated; give the CS-MAP code (for example LL84)");
+            return new(requested,false,null,null,null,null,null,null,"The CS-MAP catalog is unavailable; the code was assigned without validation");
+        }
+        if(epsgRequested)
         {
             // A bare number is an EPSG code; the catalog names it with its own code.
             var wkt=Call(factory,"ConvertEpsgCodeToWkt",epsg) as string;
@@ -295,7 +317,9 @@ internal static class MapCoordinateSystems
         var system=Call(factory,"CreateFromCode",code)??throw new CadFault("UNKNOWN_COORDINATE_SYSTEM","\""+code+"\" is not in the CS-MAP catalog; use a catalog code such as LL84 or an EPSG number");
         double Number(string method)=>Convert.ToDouble(Call(system,method)??double.NaN,System.Globalization.CultureInfo.InvariantCulture);
         double lonMin=Number("GetLonMin"),lonMax=Number("GetLonMax"),latMin=Number("GetLatMin"),latMax=Number("GetLatMax");
-        bool hasRange=lonMax>lonMin&&latMax>latMin;
+        bool hasRange=lonMax>lonMin&&latMax>latMin&&lonMax-lonMin<=720;
+        // A range may cross the antimeridian (lonMax beyond 180): longitudes are compared from lonMin.
+        double Wrap(double lon){if(!double.IsFinite(lon))return lon;while(lon<lonMin)lon+=360;while(lon>=lonMin+360)lon-=360;return lon;}
         string? range=hasRange?FormattableString.Invariant($"longitude {lonMin:0.###}..{lonMax:0.###}, latitude {latMin:0.###}..{latMax:0.###}"):null;
         (double Lon,double Lat)? LonLat(double x,double y)
         {
@@ -305,13 +329,20 @@ internal static class MapCoordinateSystems
         }
         Point3d min=db.Extmin,max=db.Extmax;
         bool extents=min.X<=max.X&&min.Y<=max.Y&&Math.Abs(min.X)<1e19&&Math.Abs(max.X)<1e19;
-        bool? compatible=null;double[]? center=null;
-        if(extents)
+        // Non-earth (arbitrary) systems such as XY-M have no geographic range to compare with.
+        bool arbitrary=code.StartsWith("XY-",StringComparison.OrdinalIgnoreCase);
+        bool? compatible=null;double[]? center=null;string? note=extents?null:"The drawing has no valid extents; compatibility was not checked";
+        if(extents&&arbitrary)note="A non-earth system has no geographic range; compatibility was not checked";
+        else if(extents)
         {
             compatible=true;
             foreach(var (x,y) in new[]{(min.X,min.Y),(max.X,min.Y),(min.X,max.Y),(max.X,max.Y)})
             {
-                if(Call(system,"IsValidXY",x,y) is false||LonLat(x,y) is not {} corner||hasRange&&(corner.Lon<lonMin||corner.Lon>lonMax||corner.Lat<latMin||corner.Lat>latMax)){compatible=false;break;}
+                if(Call(system,"IsValidXY",x,y) is false){compatible=false;break;}
+                if(!hasRange)continue;
+                // A conversion the catalog cannot make leaves the question open; only a corner outside the range answers it.
+                if(LonLat(x,y) is not {} corner){compatible=null;note="Drawing coordinates could not be converted to longitude/latitude; compatibility was not checked";break;}
+                if(Wrap(corner.Lon)>lonMax||corner.Lat<latMin||corner.Lat>latMax){compatible=false;break;}
             }
             if(LonLat((min.X+max.X)/2,(min.Y+max.Y)/2) is {} middle)center=[Math.Round(middle.Lon,6),Math.Round(middle.Lat,6)];
         }
@@ -319,8 +350,8 @@ internal static class MapCoordinateSystems
             throw new CadFault("CS_EXTENTS_MISMATCH","The drawing extents (X "+min.X.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+".."+max.X.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+
                 ", Y "+min.Y.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+".."+max.Y.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+") lie outside the useful range of "+code+(range is null?"":" ("+range+")")+
                 "; the coordinates are probably in another system. Set force:true only if this is intended");
-        int? epsgCode=Call(system,"GetEpsgCode") is int value&&value>0?value:null;
-        return new(Convert.ToString(Call(system,"GetCsCode"))??code,true,Call(system,"GetDescription") as string,epsgCode,Call(system,"GetUnits") as string,compatible,range,center,
-            extents?null:"The drawing has no valid extents; compatibility was not checked");
+        // GetEpsgCode is Int16 in some platform releases and Int32 in others.
+        int? epsgCode=Call(system,"GetEpsgCode") is {} value&&value.GetType().IsPrimitive&&Convert.ToInt32(value,System.Globalization.CultureInfo.InvariantCulture) is var number and >0?number:null;
+        return new(Convert.ToString(Call(system,"GetCsCode"))??code,true,Call(system,"GetDescription") as string,epsgCode,Call(system,"GetUnits") as string,compatible,range,center,note);
     }
 }

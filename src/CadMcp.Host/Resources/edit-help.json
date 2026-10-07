@@ -73,7 +73,7 @@
     "solid_boolean_result": "The result reports volume_before, tool_volume and volume_after; an operation that would leave an empty solid fails with EMPTY_SOLID_RESULT and rolls back",
     "large_batches": "Batches touching more than 250 entities are not reviewed (quality unverified, REVIEW_SKIPPED); very large readback lists are shortened (entities_truncated) while acceptance still checks all of them",
     "civil_names": "Civil objects can be named instead of handled: style and label_set (profiles), parts_list (networks), family and size (pipes and structures, within the network's parts list; a size is its catalog size name). cad_vertical_catalog lists styles, label sets, parts lists with families and sizes, and sites",
-    "map_coordinate_system": "code is a CS-MAP catalog code (for example LL84, UTM84-37N) or an EPSG number (2154 or EPSG:2154). The code is checked against the catalog and the drawing extents against the system's useful range; a mismatch fails unless force:true. Assigning a system never moves geometry"
+    "map_coordinate_system": "code is a CS-MAP catalog code (for example LL84, UTM84-37N) or an EPSG number (2154 or EPSG:2154). The code is checked against the catalog and the drawing extents against the system's useful range; a mismatch fails unless force:true. compatible is null when it could not be checked (non-earth XY-* systems, coordinates the catalog cannot convert, no extents). Without the CS-MAP catalog a code is stored unvalidated and an EPSG number is refused. Assigning a system never moves geometry"
   },
   "example": [
     {

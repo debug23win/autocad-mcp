@@ -157,18 +157,31 @@ public static class VendorReflection
         catch (TargetInvocationException e) { throw new CadFault("VERTICAL_API_ERROR", Describe(e)); }
     }
 
-    /// <summary>Reads an indexer with one parameter, such as Records[int] or Tables[string].</summary>
-    public static object Index(object instance, object index)
+    /// <summary>
+    /// Reads an indexer with one parameter, such as Records[int] or Tables[string]; an exact parameter type wins
+    /// over a converted one. A null value (an empty field) is returned as null.
+    /// </summary>
+    public static object? Index(object instance, object index)
     {
+        PropertyInfo? best = null; object? bestArgument = null; int bestScore = int.MaxValue;
         foreach (var property in instance.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             var parameters = property.GetIndexParameters();
             if (parameters.Length != 1 || property.GetMethod is not { IsPublic: true }) continue;
-            if (!TryConvert(index, parameters[0].ParameterType, out var converted, out _)) continue;
-            try { return property.GetValue(instance, [converted]) ?? throw new CadFault("VERTICAL_INDEX_UNAVAILABLE", instance.GetType().Name); }
-            catch (TargetInvocationException e) { throw new CadFault("VERTICAL_API_ERROR", Describe(e)); }
+            if (!TryConvert(index, parameters[0].ParameterType, out var converted, out int score) || score >= bestScore) continue;
+            best = property; bestArgument = converted; bestScore = score;
         }
-        throw new CadFault("VERTICAL_INDEX_UNAVAILABLE", instance.GetType().Name);
+        if (best is null) throw new CadFault("VERTICAL_INDEX_UNAVAILABLE", instance.GetType().Name);
+        try { return best.GetValue(instance, [bestArgument]); }
+        catch (TargetInvocationException e) { throw new CadFault("VERTICAL_API_ERROR", Describe(e)); }
+    }
+
+    /// <summary>Reads a property; absent members and failing getters are reported with the vendor's reason.</summary>
+    public static object? Get(object instance, string name)
+    {
+        var property = Readable(instance.GetType(), name) ?? throw new CadFault("VERTICAL_API_UNAVAILABLE", instance.GetType().FullName + "." + name);
+        try { return property.GetValue(instance); }
+        catch (TargetInvocationException e) { throw new CadFault("VERTICAL_API_ERROR", name + ": " + Describe(e)); }
     }
 
     /// <summary>

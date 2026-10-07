@@ -49,6 +49,61 @@ public static class CivilApiContract
         "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P ObjectId Item[String description] {get;}",
         "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P ObjectId Item[Int32 index] {get;}",
         "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P Int32 PartSizeCount {get;}",
-        "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P String Description {get;}"
+        "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P String Description {get;}",
+        "Autodesk.Civil.DatabaseServices.Alignment|M static ObjectId Create(CivilDocument,String,ObjectId,ObjectId,ObjectId,ObjectId)",
+        "Autodesk.Civil.DatabaseServices.Alignment|M ObjectIdCollection GetProfileIds()",
+        "Autodesk.Civil.DatabaseServices.Alignment|M ObjectIdCollection GetSampleLineGroupIds()",
+        "Autodesk.Civil.DatabaseServices.Alignment|P Double StartingStation {get;}",
+        "Autodesk.Civil.DatabaseServices.Alignment|P Double EndingStation {get;}",
+        "Autodesk.Civil.DatabaseServices.Alignment|P String StyleName {get;set;}",
+        "Autodesk.Civil.DatabaseServices.Network|M ObjectIdCollection GetPipeIds()",
+        "Autodesk.Civil.DatabaseServices.Network|M ObjectIdCollection GetStructureIds()",
+        "Autodesk.Civil.DatabaseServices.TinSurface|M TerrainSurfaceProperties GetTerrainProperties()",
+        "Autodesk.Civil.DatabaseServices.Styles.StyleBase|P String Name {get;set;}",
+        "Autodesk.Civil.DatabaseServices.Styles.PartFamily|P DomainType Domain {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P AlignmentStyleCollection AlignmentStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P CorridorStyleCollection CorridorStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P FeatureLineStyleCollection FeatureLineStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P PipeRuleSetStyleCollection PipeRuleSetStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P PipeStyleCollection PipeStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P PointStyleCollection PointStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P ProfileViewStyleCollection ProfileViewStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SampleLineStyleCollection SampleLineStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SectionStyleCollection SectionStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P StructureRuleSetStyleCollection StructureRuleSetStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P StructureStyleCollection StructureStyles {get;}",
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SurfaceStyleCollection SurfaceStyles {get;}"
     ];
+
+    /// <summary>
+    /// Names the Civil code uses that the published dumps cannot confirm, with the reason each is safe. A test requires
+    /// every member name in the Civil code paths to be in <see cref="Members"/> or here, so a typo cannot pass silently.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> Unchecked = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["IsReferenceObject"] = "declared on the Civil entity base class, outside the dumps; read fail-closed (an unreadable value refuses the edit)",
+        ["ActiveDocument"] = "CivilApplication.ActiveDocument, outside the dumps; used only for the active drawing, with a fallback by database",
+        ["SizeDataRecord"] = "part size data record, outside the dumps; read fail-soft (the size handle is listed when its name cannot be read)",
+        ["GetDataFieldBy"] = "part size data record, outside the dumps; read fail-soft",
+        ["GetAllDataFields"] = "part size data record, outside the dumps; read fail-soft",
+        ["Value"] = "part size data field, outside the dumps; read fail-soft",
+        ["StartPoint"] = "pipe property accepted by civil_set; pipes are outside the dumps and an unknown property is refused by the vendor setter",
+        ["EndPoint"] = "pipe property accepted by civil_set; as StartPoint",
+        ["RimElevation"] = "structure property accepted by civil_set and read when present",
+        ["SumpElevation"] = "structure property accepted by civil_set and read when present",
+        ["StyleId"] = "style id accepted by civil_set on any Civil object; checked by the vendor setter",
+        ["AlignmentName"] = "display property read when present and skipped otherwise",
+        ["ProfileName"] = "display property read when present and skipped otherwise",
+        ["SurfaceName"] = "display property read when present and skipped otherwise",
+        ["StartStation"] = "display property read when present and skipped otherwise",
+        ["EndStation"] = "display property read when present and skipped otherwise",
+        ["Elevation"] = "display property read when present and skipped otherwise",
+        ["Area"] = "display property read when present and skipped otherwise",
+        ["InnerDiameterOrWidth"] = "display property read when present and skipped otherwise",
+        ["InnerHeight"] = "display property read when present and skipped otherwise",
+        ["MaximumElevation"] = "surface statistics value read when present",
+        ["MinimumElevation"] = "surface statistics value read when present",
+        ["NumberOfPoints"] = "surface statistics value read when present",
+        ["NumberOfTriangles"] = "surface statistics value read when present"
+    };
 }

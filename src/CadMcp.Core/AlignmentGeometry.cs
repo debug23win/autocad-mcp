@@ -30,9 +30,9 @@ public static class AlignmentGeometry
             if (!double.IsFinite(radius) || radius < 0) throw new CadFault("INVALID_RADII", "Radii must be zero or positive");
             if (radius == 0) continue;
             double ax = pis[i].X - pis[i - 1].X, ay = pis[i].Y - pis[i - 1].Y, bx = pis[i + 1].X - pis[i].X, by = pis[i + 1].Y - pis[i].Y;
-            double cos = Math.Clamp((ax * bx + ay * by) / (lengths[i - 1] * lengths[i]), -1, 1);
-            double deflection = Math.Acos(cos);
-            if (deflection < 1e-9) throw new CadFault("INVALID_CURVE", "PI " + i + " has no deflection; use radius 0 there");
+            // atan2 keeps small angles exact; acos of a cosine rounded to 1 - 2e-16 reports 2e-8 rad for collinear points.
+            double deflection = Math.Atan2(Math.Abs(ax * by - ay * bx), ax * bx + ay * by);
+            if (deflection < 1e-7) throw new CadFault("INVALID_CURVE", "PI " + i + " has no deflection; use radius 0 there");
             if (Math.PI - deflection < 1e-6) throw new CadFault("INVALID_CURVE", "PI " + i + " reverses the direction; no curve can join the tangents");
             double tangent = radius * Math.Tan(deflection / 2), arc = radius * deflection;
             tangents[i] = tangent;

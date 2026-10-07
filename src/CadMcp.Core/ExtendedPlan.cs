@@ -49,6 +49,9 @@ public static class ExtendedPlan
                 Require("name","layer","style","label_set","points");
                 if(op.GetProperty("points").ValueKind!=JsonValueKind.Array)throw new CadFault("INVALID_POINTS","points must be an array of WCS points");
                 var pis=op.GetProperty("points").EnumerateArray().Select(EditPlan.Point).Select(p=>(p[0],p[1])).ToArray();
+                if(pis.Length is <2 or >500)throw new CadFault("INVALID_POINTS","2..500 PI points required");
+                // An empty or missing site makes a siteless alignment.
+                if(op.TryGetProperty("site",out var site)&&site.ValueKind!=JsonValueKind.String)throw new CadFault("INVALID_PARAMETER","site must be a site name or empty");
                 double[]? radii=null;
                 if(op.TryGetProperty("radii",out var radiusList))
                 {
@@ -56,7 +59,7 @@ public static class ExtendedPlan
                     radii=radiusList.EnumerateArray().Select(r=>r.GetDouble()).ToArray();
                 }
                 // Geometry that cannot be built is rejected before Civil 3D is called.
-                if(pis.Length is >=2 and <=500)AlignmentGeometry.Compute(pis,radii);
+                AlignmentGeometry.Compute(pis,radii);
                 break;
             case "civil_alignment_add_line" or "civil_profile_add_tangent":Require("handle","start","end");break;
             case "civil_profile_create":Require("name","alignment_handle","points");OneOf("layer_handle","layer");OneOf("style_handle","style");OneOf("label_set_handle","label_set");break;
@@ -82,7 +85,7 @@ public static class ExtendedPlan
         {
             if(p.Name is "show_annotations" or "apply_rules" or "ruled" or "force" && p.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))throw new CadFault("INVALID_BOOLEAN",p.Name);
             if(p.Name is "parameters" or "properties" or "values" && p.Value.ValueKind!=JsonValueKind.Object)throw new CadFault("INVALID_PARAMETER",p.Name+" must be an object");
-            if(p.Name is "mark" or "material" or "name" or "code" or "layer" or "style" or "label_set" or "site" or "table" or "title" or "layout" or "parts_list" or "family" or "size")EditPlan.RequiredText(op,p.Name);
+            if(p.Name is "mark" or "material" or "name" or "code" or "layer" or "style" or "label_set" or "table" or "title" or "layout" or "parts_list" or "family" or "size")EditPlan.RequiredText(op,p.Name);
         }
         if(op.TryGetProperty("density",out _))DraftingPlan.Positive(op,"density",0);
         if(op.TryGetProperty("color_index",out var aci)&&(!aci.TryGetInt32(out var c)||c is <0 or >256))throw new CadFault("INVALID_COLOR","ACI 0..256 required");

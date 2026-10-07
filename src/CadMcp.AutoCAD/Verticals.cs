@@ -131,7 +131,7 @@ internal static class Verticals
                     family = Convert.ToString(VendorReflection.TryGet(family.Object, "Description")), handle = family.Id.Handle.ToString(),
                     domain = Convert.ToString(VendorReflection.TryGet(family.Object, "Domain")),
                     sizes = VerticalEditing.Children(tr, family.Object, "PartSizeCount").Take(60)
-                        .Select(size => new { size = VerticalEditing.SizeNames(size.Object).FirstOrDefault(), handle = size.Id.Handle.ToString() }).ToArray()
+                        .Select(size => new { size = VerticalEditing.SizeName(size.Object), handle = size.Id.Handle.ToString() }).ToArray()
                 }).ToArray()
             }).ToArray();
         }
