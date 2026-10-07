@@ -263,7 +263,7 @@ public static class LispPolicy
             }
         }
         var calls = Enumerable.Range(1, Math.Max(0, tokens.Count - 1))
-            .Where(i => tokens[i].Kind == TokenKind.Symbol && tokens[i - 1].Kind == TokenKind.Open && CommandFunctions.Contains(tokens[i].Text)).ToList();
+            .Where(i => tokens[i].Kind == TokenKind.Symbol && tokens[i - 1].Kind == TokenKind.Open && CommandFunctions.Contains(tokens[i].Text.TrimStart('\''))).ToList();
         var first = new HashSet<int>();
         int top = calls.Where(i => body[i] < 0).DefaultIfEmpty(int.MaxValue).First();
         if (top != int.MaxValue) first.Add(top);
