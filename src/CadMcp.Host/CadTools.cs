@@ -88,6 +88,15 @@ public sealed class CadTools
     [McpServerTool(Name = "cad_edit_help", ReadOnly = true), Description("Read the native edit operation contract and examples before using cad_edit. Coordinates are WCS drawing units; angles are degrees.")]
     public static CallToolResult EditHelp() => new() { Content = [new TextContentBlock { Text = HelpContract("edit-help.json", new()
         { ["operations"] = JsonSerializer.SerializeToNode(EditPlan.Fields, Wire.Json) }) }] };
+    /// <summary>Rules for any MCP client, sent in the initialize response; the in-AutoCAD chat has its own fuller prompt.</summary>
+    public static string ServerInstructions { get; } = LoadText("server-instructions.md");
+    private static string LoadText(string resource)
+    {
+        using var stream = typeof(CadTools).Assembly.GetManifestResourceStream("CadMcp.Host.Resources." + resource)
+            ?? throw new InvalidOperationException("Missing resource " + resource);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd().ReplaceLineEndings("\n").TrimEnd();
+    }
     /// <summary>Static contract text lives in Resources/*.json; operation lists come from the validating code.</summary>
     private static string HelpContract(string resource, JsonObject generated)
     {
@@ -142,9 +151,10 @@ public sealed class CadTools
     [McpServerTool(Name = "cad_focus", ReadOnly = false), Description("Select a top-level entity in the active document without modifying DWG geometry. Changes implied selection only.")]
     public static Task<CallToolResult> Focus(string session_id, string document_id, long expected_revision, string handle, CancellationToken ct) =>
         Call("cad_focus", session_id, document_id, new { handle }, expected_revision, ct);
-    [McpServerTool(Name = "cad_render", ReadOnly = true), Description("Return a real offscreen AutoCAD preview, local_image_path, image_id and pixel dimensions. Optional layout_name selects model or an exact sheet; handles_json frames 1..500 top-level entities from one space. bounds_json:{min:[x,y,z],max:[x,y,z]} frames an explicit region. view_name current/front/back/left/right/top/isometric or view_direction_json:[x,y,z] chooses an orthographic model view; paper sheets use current/top. The live camera is unchanged. Pixel origin is top-left. Use cad_image_register with known image points for calibrated image-to-WCS mapping; do not infer preview cropping from viewport metadata.")]
+    [McpServerTool(Name = "cad_render", ReadOnly = true), Description("Return a real offscreen AutoCAD preview, local_image_path, image_id and pixel dimensions. Optional layout_name selects model or an exact sheet; handles_json frames 1..500 top-level entities from one space. bounds_json:{min:[x,y,z],max:[x,y,z]} frames an explicit region. view_name current/front/back/left/right/top/isometric or view_direction_json:[x,y,z] chooses an orthographic model view; paper sheets use current/top. The live camera is unchanged. Pixel origin is top-left. Use cad_image_register with known image points for calibrated image-to-WCS mapping; do not infer preview cropping from viewport metadata. " +
+        "Images cost context: prefer text tools first, crop with handles_json or bounds_json, keep width/height small (512x384 is often enough); attach=false saves the PNG and returns only its path and metadata (image_cost.approx_tokens tells the price).")]
     public static async Task<CallToolResult> Render(string session_id, string document_id, long expected_revision, CancellationToken ct, int width = 1024, int height = 768,
-        string? handles_json = null, string view_name = "current", string? view_direction_json = null, string? layout_name = null, string? bounds_json = null)
+        string? handles_json = null, string view_name = "current", string? view_direction_json = null, string? layout_name = null, string? bounds_json = null, bool attach = true)
     {
         var response = await ScopedResponse("cad_render",session_id,document_id,new {width,height,handles_json,view_name,view_direction_json,layout_name,bounds_json},expected_revision,ct);
         if (response.Error is not null) return Result(response);
@@ -161,9 +171,26 @@ public sealed class CadTools
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             { metadata["preview_file_warning"] = Wire.Element(error.Message); }
         }
-        return new() { Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response with { Data = metadata }, Wire.Json) },
-            ImageContentBlock.FromBytes(image, "image/png")] };
+        // Rough vision cost of an image: about one token per 750 pixels.
+        metadata["image_cost"] = Wire.Element(new { attached = attach || !metadata.ContainsKey("local_image_path"), approx_tokens = (int)Math.Ceiling(width * (double)height / 750) });
+        var text = new TextContentBlock { Text = JsonSerializer.Serialize(response with { Data = metadata }, Wire.Json) };
+        // Without a saved file the image is the only copy, so it is attached anyway.
+        if (!attach && metadata.ContainsKey("local_image_path")) return new() { Content = [text] };
+        return new() { Content = [text, ImageContentBlock.FromBytes(image, "image/png")] };
     }
+    [McpServerTool(Name = "cad_takeoff", ReadOnly = true), Description("Quantity takeoff of top-level entities: curve lengths and closed-area totals per layer (with per-type breakdown), block references counted by effective (dynamic) name, and optionally an attribute table per block reference. scope current/model/layout(+layout_name)/all; layers_json is an array of layer names or patterns (* ? # , ~); include is a comma list of lengths, areas, blocks, attributes (default lengths,areas,blocks); format csv adds semicolon-separated tables. Values are in drawing units; geometry inside blocks is not exploded.")]
+    public static Task<CallToolResult> Takeoff(string session_id, string document_id, CancellationToken ct, string scope = "current", string? layout_name = null,
+        string? layers_json = null, string? include = null, int max_rows = 1000, string format = "json") =>
+        Call("cad_takeoff", session_id, document_id, new { scope, layout_name, layers_json, include, max_rows, format }, null, ct);
+    [McpServerTool(Name = "cad_outline", ReadOnly = true), Description("Deterministic summary of the drawing in one call: units, model entity types and extents, sheets with paper size, plot device, viewports and title-block attributes, layers by use, blocks by references, external references, text and dimension styles, and a sample of texts. Read it first to orient yourself instead of paging through entities or rendering images.")]
+    public static Task<CallToolResult> Outline(string session_id, string document_id, CancellationToken ct, int text_sample = 40) =>
+        Call("cad_outline", session_id, document_id, new { text_sample }, null, ct);
+    [McpServerTool(Name = "cad_file_inspect", ReadOnly = true), Description("Outline of a DWG on disk that is not open in AutoCAD (absolute .dwg path, up to 512 MB), read into a separate database without opening a drawing tab: units, sheets, layers, blocks, external references, styles and a text sample. Nothing is modified. Use it to find the right file or block library before opening or importing from it.")]
+    public static Task<CallToolResult> FileInspect(string session_id, string document_id, string path, CancellationToken ct) =>
+        Call("cad_file_inspect", session_id, document_id, new { path }, null, ct);
+    [McpServerTool(Name = "cad_changes", ReadOnly = true), Description("Objects changed since a revision (from cad_context or a previous call) with their net effect added/modified/erased/restored, type, layer and who changed them: a CAD MCP operation_id, table_recalculation or user (the person or another program, including UNDO). source all/user/cad_mcp; include_non_entities adds layers, styles and dictionaries. Use it at the start of a turn to see what the user edited by hand, and after cad_lisp to see its exact effect. complete=false means older changes were dropped from the in-session log.")]
+    public static Task<CallToolResult> Changes(string session_id, string document_id, long since_revision, CancellationToken ct, int limit = 500, string source = "all", bool include_non_entities = false) =>
+        Call("cad_changes", session_id, document_id, new { since_revision, limit, source, include_non_entities }, null, ct);
     private sealed record CalibratedReference(ReferenceImage Image, PhotoReference Fit);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CalibratedReference> References = new();
     private static readonly System.Collections.Concurrent.ConcurrentQueue<string> ReferenceOrder = new();

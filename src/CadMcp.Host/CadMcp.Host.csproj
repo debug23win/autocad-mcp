@@ -4,7 +4,7 @@
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
-    <EmbeddedResource Include="Resources/*.json" LogicalName="CadMcp.Host.Resources.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Resources/*.json;Resources/*.md" LogicalName="CadMcp.Host.Resources.%(Filename)%(Extension)" />
     <InternalsVisibleTo Include="CadMcp.Tests" />
   </ItemGroup>
 </Project>

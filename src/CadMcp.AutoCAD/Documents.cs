@@ -34,7 +34,23 @@ internal sealed class DocumentState(Database database)
     public string? TableError { get; set; }
     public bool HistoryCommand { get; set; }
     public long ReadSideEffectEvents { get; set; }
+
+    /// <summary>The CAD MCP operation changing the drawing right now; null means the user or another program.</summary>
+    public string? Author { get; set; }
+    private readonly LinkedList<DrawingChange> changes = new();
+    /// <summary>Changes up to this revision were dropped from the bounded log.</summary>
+    public long DroppedThrough { get; private set; }
+    public void Record(string handle, string kind, string type, string? layer, bool entity)
+    {
+        // Consecutive events for one object (an edit opens it several times) collapse into one entry.
+        if (changes.Last?.Value is { } last && last.Handle == handle && last.Kind == kind && last.Author == Author)
+        { changes.Last.Value = last with { Revision = Revision, Layer = layer ?? last.Layer }; return; }
+        changes.AddLast(new DrawingChange(Revision, handle, kind, type, layer, entity, Author, DateTimeOffset.UtcNow));
+        while (changes.Count > 20000) { DroppedThrough = changes.First!.Value.Revision; changes.RemoveFirst(); }
+    }
+    public IReadOnlyList<DrawingChange> ChangesSince(long revision) => changes.Where(c => c.Revision > revision).ToArray();
 }
+internal sealed record DrawingChange(long Revision, string Handle, string Kind, string Type, string? Layer, bool Entity, string? Author, DateTimeOffset At);
 internal sealed class Documents : IDisposable
 {
     private readonly Dictionary<Document, DocumentState> states = new();
@@ -49,11 +65,12 @@ internal sealed class Documents : IDisposable
     /// <summary>Raised on the CAD thread before a drawing closes, while it is still valid.</summary>
     public event Action<Document>? Closing;
     private void Destroyed(object sender, DocumentCollectionEventArgs e) { Closing?.Invoke(e.Document); Remove(e.Document); }
-    private void Changed(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject);
-    private void Erased(object sender, ObjectErasedEventArgs e) => Track((Database)sender, e.DBObject);
-    private void Track(Database db, DBObject changed)
+    private void Appended(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject, "appended");
+    private void Modified(object sender, ObjectEventArgs e) => Track((Database)sender, e.DBObject, "modified");
+    private void Erased(object sender, ObjectErasedEventArgs e) => Track((Database)sender, e.DBObject, e.Erased ? "erased" : "unerased");
+    private void Track(Database db, DBObject changed, string kind)
     {
-        Touch(db);
+        Touch(db, changed, kind);
         if (changed is not (Table or BlockReference)) return;
         foreach (var state in states.Values)
             if (state.Database.UnmanagedObject == db.UnmanagedObject && state.ReadDepth == 0 && !state.Recalculating && !state.HistoryCommand)
@@ -69,7 +86,7 @@ internal sealed class Documents : IDisposable
         if(sender is Document doc && states.TryGetValue(doc,out var state) && state.HistoryCommand && e.GlobalCommandName.TrimStart('_','.').ToUpperInvariant() is "UNDO" or "U" or "REDO" or "MREDO")
         {state.HistoryCommand=false;state.TakeTableChanges();state.TableError=null;}
     }
-    private void Touch(Database db)
+    private void Touch(Database db, DBObject changed, string kind)
     {
         // Document.Database may return a different managed wrapper on each access.
         // Match the native database identity, retaining the wrapper subscribed to events.
@@ -78,8 +95,11 @@ internal sealed class Documents : IDisposable
             {
                 // Some object enablers emit ObjectModified while a CAD MCP read closes
                 // its transaction. This is synchronous on the CAD thread, not a user edit.
-                if (state.ReadDepth != 0) state.ReadSideEffectEvents++;
-                else state.Revision++;
+                if (state.ReadDepth != 0) { state.ReadSideEffectEvents++; continue; }
+                state.Revision++;
+                // The change log must never disturb the edit that raised the event.
+                try { state.Record(changed.Handle.ToString(), kind, changed.GetRXClass().DxfName, (changed as Entity)?.Layer, changed is Entity); }
+                catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP change log: " + error.Message); }
             }
     }
     public IDisposable ReadScope(Document document)
@@ -104,14 +124,14 @@ internal sealed class Documents : IDisposable
         // Linked tables are recalculated after changes, not when a drawing is opened: opening must not modify it.
         state = new(d.Database); states.Add(d, state);
         d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
-        state.Database.ObjectAppended += Changed; state.Database.ObjectModified += Changed; state.Database.ObjectErased += Erased;
+        state.Database.ObjectAppended += Appended; state.Database.ObjectModified += Modified; state.Database.ObjectErased += Erased;
         return state;
     }
     private void Remove(Document d)
     {
         if (!states.TryGetValue(d, out var state)) return;
         d.CommandWillStart-=CommandStarting;d.CommandEnded-=CommandFinished;d.CommandCancelled-=CommandFinished;d.CommandFailed-=CommandFinished;
-        state.Database.ObjectAppended -= Changed; state.Database.ObjectModified -= Changed; state.Database.ObjectErased -= Erased;
+        state.Database.ObjectAppended -= Appended; state.Database.ObjectModified -= Modified; state.Database.ObjectErased -= Erased;
         states.Remove(d);
     }
     public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,

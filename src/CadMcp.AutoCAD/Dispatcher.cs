@@ -245,6 +245,10 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 if(r.Data.Text("options_json") is {} reviewOptionsJson){data=ReviewOptions.Run(doc.Database,tr,reviewOptionsJson,reviewIds,ct);break;}
                 reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
+            case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
+            case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40)); break;
+            case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
+            case "cad_changes": data = DrawingInsight.Changes(state, r.Data); break;
             case "cad_edit_preview":
                 var previewPlan = EditPlan.RequiredText(r.Data, "operations_json");
                 var previewOperations = EditPlan.Parse(previewPlan);
@@ -524,6 +528,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 return new(r.RequestId, "queued", new { operation_id = id, state = "queued", findings, requires_poll = "cad_operation_status", rollback = "not_atomic", cancellation = "Esc in AutoCAD; queued scripts are not cancelled by stopping the model" }, documents.SessionId, state.Id, state.Revision);
             }
             journal.Running(id); control.Phase(id, "running");
+            state.Author = id;
             object data;
             if(mapOperation)
             {
@@ -535,6 +540,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             // A native edit has already refreshed every generated schedule and linked table in its own transaction.
             if (operations is not null && !mapOperation) state.TakeTableChanges();
             WorkSafety.Phase(documents.SessionId, id, "completed", final: true);
+            state.Author = null;
             string status = publishFolder is not null && Wire.Element(data).Text("status") == "partial" ? "partial" : "completed";
             var response = new Response(r.RequestId, status, new { operation_id = id, result = data, checkpoint, document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
             return journal.Complete(id, response);
@@ -542,6 +548,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         catch (System.Exception error)
         {
             if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
+            if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
             var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
@@ -576,6 +583,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (!ReferenceEquals(documents.Active(job.Request), job.Document)) throw new CadFault("DOCUMENT_MISMATCH", "Drawing changed before LISP execution");
             journal.Running(id);
             job.Started = true;
+            documents.Register(job.Document).Author = id;
             return "(progn\n" + job.Code + "\n)";
         }
         catch (System.Exception error) { FinishLisp(id, false, error.Message, started: false); return null; }
@@ -596,6 +604,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             documents.SessionId, job.Request.DocumentId, revision,
             success && sameDocument ? null : new(code ?? (!started && control.Cancelled(id)?"CANCELLED":"LISP_FAILED"), sameDocument || !started ? text.Substring(0, Math.Min(text.Length, 16384)) : "LISP changed or closed the active document; reconcile drawings"));
         Unsubscribe(job.Document);
+        if (!job.Document.IsDisposed && documents.Register(job.Document) is { } lispState && lispState.Author == id) lispState.Author = null;
         journal.Complete(id, response); mutationOwners.TryRemove(id, out _); control.Complete(id); WorkSafety.Phase(documents.SessionId, id, success ? "completed" : "failed", final: true);
         }
         // Cleared last, so status readers see the job as active until its receipt is written, and cleared
@@ -663,13 +672,14 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (managed.Count == 0 || changed is not null && !changed.Overlaps(managed)) return;
             using var undo = new UndoGroup(doc);
             using var tr = doc.Database.TransactionManager.StartTransaction();
+            state.Author = "table_recalculation";
             var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr);
             TableLinks.Recalculate(doc.Database, tr);
             tr.Commit();
             state.TableError = warnings.Count == 0 ? null : string.Join("; ", warnings);
         }
         catch (System.Exception error) { state.TableError = error.Message; System.Diagnostics.Trace.WriteLine("Table auto-recalculate: " + error.Message); }
-        finally { state.Recalculating = false; }
+        finally { state.Recalculating = false; if (state.Author == "table_recalculation") state.Author = null; }
     }
     public void Dispose()
     {

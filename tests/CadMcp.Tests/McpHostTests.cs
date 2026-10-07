@@ -12,15 +12,20 @@ public sealed class McpHostTests
     {
         string pipe = "cadmcp-mcp-test-" + Guid.NewGuid().ToString("N");
         using var fakeBroker = new PipeServer(pipe, (r, ct) => Task.FromResult(r.Operation == "cad_render"
-            ? new Response(r.RequestId, "partial", new { image_base64 = r.Data.Number("width", 0) == 999 ? "not base64!" : TestEnvironment.Png, source = "fixture" })
+            ? new Response(r.RequestId, "partial", new { image_base64 = r.Data.Number("width", 0) == 999 ? "not base64!" : TestEnvironment.Png, source = "fixture",
+                image_id = r.Data.Number("width", 0) == 555 ? Guid.NewGuid().ToString("N") : null })
             : new Response(r.RequestId, "completed", new { fixture = true, operation = r.Operation, payload = r.Data })));
         fakeBroker.Start();
         await using var host = await McpHostProcess.StartAsync(pipe);
+        // External MCP clients receive the agent rules with initialize.
+        var instructions = host.Initialize.GetProperty("instructions").GetString()!;
+        Assert.Contains("cad_edit_preview", instructions);
+        Assert.Contains("two identical failures", instructions);
         var list = await host.RequestAsync("tools/list", new { });
         var tools = list.GetProperty("tools").EnumerateArray().ToArray();
         var names = tools.Select(t => t.GetProperty("name").GetString()!).ToArray();
-        Assert.Equal(39, names.Length);
-        foreach (var expected in new[] { "cad_steel_catalog", "cad_search", "cad_result_get", "cad_edit", "cad_edit_preview", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status", "cad_render", "cad_image_register",
+        Assert.Equal(43, names.Length);
+        foreach (var expected in new[] { "cad_steel_catalog", "cad_search", "cad_result_get", "cad_edit", "cad_edit_preview", "cad_takeoff", "cad_outline", "cad_file_inspect", "cad_changes", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status", "cad_render", "cad_image_register",
             "cad_image_point", "cad_vertical_catalog", "cad_vertical_get", "cad_verify", "cad_operation_list", "cad_reference_calibrate", "cad_reference_point", "cad_reference_compare" })
             Assert.Contains(expected, names);
         // The read-only operation list that limits helpers must match the tools' own read-only annotations.
@@ -36,6 +41,19 @@ public sealed class McpHostTests
         Assert.Equal("image", render.GetProperty("content")[1].GetProperty("type").GetString());
         Assert.Equal(Convert.FromBase64String(TestEnvironment.Png), Convert.FromBase64String(render.GetProperty("content")[1].GetProperty("data").GetString()!));
         Assert.DoesNotContain(TestEnvironment.Png, render.GetProperty("content")[0].GetProperty("text").GetString());
+        // Without a saved file the image is still attached; with one, attach=false returns only its path.
+        var unsaved = await host.CallAsync("cad_render", new { session_id = "s", document_id = "d", expected_revision = 1, attach = false });
+        Assert.Equal(2, unsaved.GetProperty("content").GetArrayLength());
+        var detached = await host.CallAsync("cad_render", new { session_id = "s", document_id = "d", expected_revision = 1, width = 555, attach = false });
+        Assert.Single(detached.GetProperty("content").EnumerateArray());
+        using (var detachedBody = JsonDocument.Parse(detached.GetProperty("content")[0].GetProperty("text").GetString()!))
+        {
+            var detachedData = detachedBody.RootElement.GetProperty("data");
+            Assert.True(detachedData.GetProperty("image_cost").GetProperty("approx_tokens").GetInt32() > 0);
+            var savedPath = detachedData.GetProperty("local_image_path").GetString()!;
+            Assert.True(File.Exists(savedPath));
+            File.Delete(savedPath);
+        }
         var broken = await host.CallAsync("cad_render", new { session_id = "s", document_id = "d", expected_revision = 1, width = 999 });
         Assert.True(broken.GetProperty("isError").GetBoolean());
         Assert.Contains("INVALID_RENDER_IMAGE", broken.GetProperty("content")[0].GetProperty("text").GetString());

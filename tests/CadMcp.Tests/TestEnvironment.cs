@@ -52,12 +52,14 @@ internal sealed class McpHostProcess : IAsyncDisposable
     private readonly CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
     private int next = 100;
     private McpHostProcess(Process process) { this.process = process; stderr = ProviderProcess.DrainErrors(process); }
+    /// <summary>The server's initialize result (capabilities, serverInfo, instructions).</summary>
+    public JsonElement Initialize { get; private set; }
     public static async Task<McpHostProcess> StartAsync(string brokerPipe, IReadOnlyDictionary<string, string>? environment = null)
     {
         var info = ProviderProcess.StartInfo(new(TestEnvironment.HostExecutable, "unused", Path.GetTempPath()), ["--broker-pipe", brokerPipe]);
         foreach (var pair in environment ?? new Dictionary<string, string>()) info.Environment[pair.Key] = pair.Value;
         var host = new McpHostProcess(Process.Start(info)!);
-        await host.RequestAsync("initialize", new { protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "test", version = "1" } });
+        host.Initialize = await host.RequestAsync("initialize", new { protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "test", version = "1" } });
         await host.process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
         await host.process.StandardInput.FlushAsync();
         return host;

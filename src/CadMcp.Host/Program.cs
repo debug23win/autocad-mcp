@@ -44,7 +44,7 @@ if (pipeOption >= 0) CadTools.BrokerPipe = pipeName;
 else await BrokerBootstrap.EnsureAsync(Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "CadMcp.Host.exe" : "CadMcp.Host"), CancellationToken.None);
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
-builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<CadTools>()
+builder.Services.AddMcpServer(options => options.ServerInstructions = CadTools.ServerInstructions).WithStdioServerTransport().WithTools<CadTools>()
     .WithRequestFilters(filters=>filters.AddCallToolFilter(next=>async(context,ct)=>
     {using var access=CadAccess.Scope(context.Params?.Meta);return await next(context,ct);}));
 await builder.Build().RunAsync();
