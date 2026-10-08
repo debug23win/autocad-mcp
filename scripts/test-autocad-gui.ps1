@@ -32,6 +32,8 @@ $start.WorkingDirectory = Join-Path $AutoCADDir 'UserDataCache'
 if (!(Test-Path -LiteralPath $start.WorkingDirectory)) { throw "AutoCAD shortcut working directory is missing: $($start.WorkingDirectory)" }
 $start.Environment['CADMCP_PROBE_OUTPUT'] = $output
 $start.Environment['CADMCP_PROBE_PRODUCT'] = $Product
+# The probe runs cad_lisp unattended; the default policy would wait for a confirmation nobody gives.
+$start.Environment['CAD_MCP_LISP_POLICY'] = 'allow'
 foreach ($argument in @('/product',$Product,'/language',$Language,'/p',$profile,'/b',$script)) { $start.ArgumentList.Add($argument) }
 $process = [Diagnostics.Process]::Start($start)
 [IO.File]::WriteAllText($output + '.pid', $process.Id.ToString())

@@ -163,7 +163,8 @@ internal static class DrawingSearch
             if(handleFilter is not null&&!string.Equals(item.Text("handle"),handleFilter,StringComparison.OrdinalIgnoreCase))return false;
             if (layer is not null && !string.Equals(item.Text("effective_layer"), layer, StringComparison.OrdinalIgnoreCase)) return false;
             if (type is not null && !string.Equals(item.Text("type"), type, StringComparison.OrdinalIgnoreCase) && !string.Equals(item.Text("dxf_name"), type, StringComparison.OrdinalIgnoreCase)) return false;
-            if (text is not null && !(item.Text("text")?.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0)) return false;
+            // Raw text, or the displayed text: "Ø108" finds "%%c108" and formatted MText.
+            if (text is not null && item.Text("text") is var value && !(value?.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0 || CadText.Contains(value, text) || CadText.Contains(value, text, mtext: true))) return false;
             if ((scope is "view" or "viewport") && ((!item.GetProperty("visible").GetBoolean()) || item.GetProperty("layer_off").GetBoolean() || item.GetProperty("layer_frozen").GetBoolean())) return false;
             if(area.HasValue&&!item.TryGetProperty("bounds",out _)){unknownBounds++;return false;}
             if (area is { } bounds && item.TryGetProperty("bounds", out var b))

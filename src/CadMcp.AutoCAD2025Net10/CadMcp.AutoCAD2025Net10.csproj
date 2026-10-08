@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <PropertyGroup><CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
     <Compile Include="../CadMcp.AutoCAD/ReadingMetadata.cs;../CadMcp.AutoCAD/PreviewRendering.cs" />
     <Compile Include="../CadMcp.AutoCAD/WorkSafety.cs;../CadMcp.AutoCAD/TableLinks.cs;../CadMcp.AutoCAD/DrawingQuality.cs;../CadMcp.AutoCAD/SolidModeling.cs;../CadMcp.AutoCAD/StructuralAssemblies.cs;../CadMcp.AutoCAD/StructuralSolids.cs;../CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../CadMcp.AutoCAD/NativeTables.cs;../CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../CadMcp.AutoCAD/DrawingReview.cs" />
+    <Compile Include="../CadMcp.AutoCAD/LispApproval.cs;../CadMcp.AutoCAD/QualityChecks.cs;../CadMcp.AutoCAD/ModifyOperations.cs;../CadMcp.AutoCAD/TextUnits.cs;../CadMcp.AutoCAD/ObjectInspection.cs;../CadMcp.AutoCAD/DrawingInsight.cs" />
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
     <PackageReference Include="AutoCAD.NET" Version="25.0.2" PrivateAssets="all" ExcludeAssets="runtime" />
     <Compile Include="../CadMcp.AutoCAD2027/Plugin.cs" Link="Plugin.cs" />

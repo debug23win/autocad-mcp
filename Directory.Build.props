@@ -5,7 +5,10 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Every lock file records the win-x64 graph, so a plain restore and the installer's
+         win-x64 restore agree and both pass in locked mode. -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <Deterministic>true</Deterministic>
-    <Version>0.10.1-preview</Version>
+    <Version>0.11.0-preview</Version>
   </PropertyGroup>
 </Project>

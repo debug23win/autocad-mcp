@@ -25,6 +25,9 @@ internal sealed class ChatPanel : UserControl
     private readonly ComboBox model = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox reasoning = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox agentCount = new() { ItemsSource = new[] { "Выключены", "До 2 помощников", "До 3 помощников", "До 4 помощников" }, SelectedIndex = 2 };
+    // One user-wide AutoLISP policy (same order as LispPolicyMode); agents cannot change it.
+    private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { "Спрашивать перед каждым запуском", "Без вопросов, если нет опасных функций", "Разрешать без вопросов", "Запретить" } };
+    private bool loadingLispPolicy;
     private readonly Button refreshModels = new() { Content = "Обновить список моделей", Margin = new Thickness(0, 4, 0, 4) };
     private readonly TextBox executable = new() { Text = "codex.exe" };
     private readonly TextBox host = new() { Text = "Полный путь к CadMcp.Host.exe" };
@@ -67,10 +70,12 @@ internal sealed class ChatPanel : UserControl
     private int maxSubagents = 3;
     private IReadOnlyList<CodexModel> catalog = Array.Empty<CodexModel>();
     private bool settingChoices, firstLoad, restoring;
+    private readonly string brokerPipe;
     public ChatPanel() : this(null) { }
-    internal ChatPanel(ChatStateStore? stateStore,string? projectDirectory=null)
+    internal ChatPanel(ChatStateStore? stateStore,string? projectDirectory=null,string? brokerPipe=null)
     {
-        store = stateStore ?? new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "chat"));
+        this.brokerPipe = brokerPipe ?? Wire.BrokerPipe;
+        store = stateStore ?? new(Wire.DataDirectory("chat"));
         var assemblyDir = Path.GetDirectoryName(typeof(ChatPanel).Assembly.Location)!;
         var installedHost = Path.GetFullPath(Path.Combine(assemblyDir, "..", "Host", "CadMcp.Host.exe"));
         if (File.Exists(installedHost)) host.Text = installedHost;
@@ -81,7 +86,7 @@ internal sealed class ChatPanel : UserControl
         if (File.Exists(bundledCodex)) codexExecutable = bundledCodex;
         if (File.Exists(claudePath)) claudeExecutable = claudePath;
         executable.Text = codexExecutable;
-        try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state); }
+        try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
         catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
         if(restored is null && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
         InstallThemeStyles();
@@ -106,7 +111,7 @@ internal sealed class ChatPanel : UserControl
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
                 input.AppendText("\nИспользуй текущее выделение в чертеже «" + data.Text("name") + "»: " + selected.GetRawText() + ". Перед работой перечитай актуальный контекст.");
         }; cadButtons.Children.Add(selection);
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount), ("AutoLISP по запросу агента", lispPolicy) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
         var connection = new StackPanel();
@@ -156,6 +161,21 @@ internal sealed class ChatPanel : UserControl
             maxSubagents = agentCount.SelectedIndex switch { 1 => 2, 2 => 3, 3 => 4, _ => 0 };
             Persist();
         };
+        void LoadLispPolicy() { loadingLispPolicy = true; try { lispPolicy.SelectedIndex = (int)CadSettings.StoredLispPolicy(); } finally { loadingLispPolicy = false; } }
+        LoadLispPolicy();
+        Loaded += (_, _) => LoadLispPolicy();
+        void StoreLispPolicy()
+        {
+            if (loadingLispPolicy || lispPolicy.SelectedIndex < 0) return;
+            var mode = (LispPolicyMode)lispPolicy.SelectedIndex;
+            // Storing also ends a "do not ask until restart" relaxation, which AutoCAD notices by the settings
+            // file changing even when this panel runs in another process.
+            try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; activity.Text = "AutoLISP: " + LispPolicy.Label(mode); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = "Не удалось сохранить настройку AutoLISP: " + error.Message; }
+        }
+        lispPolicy.SelectionChanged += (_, _) => StoreLispPolicy();
+        // The policy may have been changed elsewhere (CADMCPLISP, another panel): show the stored one before the user picks.
+        lispPolicy.DropDownOpened += (_, _) => LoadLispPolicy();
         refreshModels.Click += async (_, _) => await RefreshModels();
         executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
@@ -211,7 +231,7 @@ internal sealed class ChatPanel : UserControl
             try
             {
                 using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_cancel", target.SessionId, target.DocumentId, Data: Wire.Element(new { }), OwnerId: operationOwner), cancel.Token);
+                await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_cancel", target.SessionId, target.DocumentId, Data: Wire.Element(new { }), OwnerId: operationOwner), cancel.Token);
                 activity.Text = "Отмена запрошена; текущая CAD-операция остановится на безопасной границе";
             }
             catch (System.Exception e) { LogError(e); activity.Text = "Не удалось подтвердить отмену CAD; проверьте состояние операции"; }
@@ -249,7 +269,7 @@ internal sealed class ChatPanel : UserControl
             chip.Children.Add(remove); attachmentItems.Children.Add(chip);
         }
     }
-    private static string LogPath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "logs", "panel.log");
+    private static string LogPath() => Wire.DataDirectory("logs", "panel.log");
     private static void LogError(System.Exception error)
     {
         try { var path = LogPath(); Directory.CreateDirectory(Path.GetDirectoryName(path)!); if (File.Exists(path) && new FileInfo(path).Length > 1024 * 1024) File.WriteAllText(path, ""); File.AppendAllText(path, DateTimeOffset.Now + " " + error + Environment.NewLine); } catch (System.Exception e) when (e is IOException or UnauthorizedAccessException) { }
@@ -261,14 +281,14 @@ internal sealed class ChatPanel : UserControl
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
-            await BrokerBootstrap.EnsureAsync(host.Text, timeout.Token);
+            await BrokerBootstrap.EnsureAsync(host.Text, timeout.Token, brokerPipe);
             if (CadSessionId is null)
             {
                 var descriptors = new Broker(Wire.WorkerRoot).Discover();
                 if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
                 CadSessionId = descriptors[0].SessionId;
             }
-            var context = await PipeClient.CallAsync(Wire.BrokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId, CadDocumentId), timeout.Token);
+            var context = await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId, CadDocumentId), timeout.Token);
             if (context.Error is { } error) throw new IOException(error.Message);
             cadContext = context;
             if (context.Data is JsonElement data)
@@ -403,7 +423,7 @@ internal sealed class ChatPanel : UserControl
             messages.Add(new ChatLine("user", initialPrompt, Images: images));
             currentAssistantIndex = messages.Count; messages.Add(new ChatLine("assistant", ""));
             input.Clear(); attachments.Clear(); RefreshAttachments(); RenderChat();
-            await BrokerBootstrap.EnsureAsync(host.Text, running.Token);
+            await BrokerBootstrap.EnsureAsync(host.Text, running.Token, brokerPipe);
             await RefreshCad();
             initialDocumentId = cadContext?.DocumentId; initialSessionId = cadContext?.SessionId;
             var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
@@ -501,7 +521,7 @@ internal sealed class ChatPanel : UserControl
         try
         {
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var response=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_operation_list",session,document,
+            var response=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_operation_list",session,document,
                 Data:Wire.Element(new{since=turnStarted.ToString("O"),limit=100}),OwnerId:operationOwner),timeout.Token);
             if(response.Error is not null)throw new IOException(response.Error.Message);
             if(response.Data is not JsonElement data || !data.TryGetProperty("operations",out var ops) || ops.GetArrayLength()==0)
@@ -514,13 +534,13 @@ internal sealed class ChatPanel : UserControl
                 await RefreshCad();
                 if(cadContext is { } context && context.DocumentId==document && context.SessionId==session)
                 {
-                    var checkedResult=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
+                    var checkedResult=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
                         Wire.Element(new{operation_id=completed.Text("operation_id")})),timeout.Token);
                     if(checkedResult.Error is null && checkedResult.Data is JsonElement checkedData) review=checkedData;
                     var allEntities=new List<JsonElement>();
                     foreach(var chunk in changedHandles.Chunk(500))
                     {
-                        var allResult=await PipeClient.CallAsync(Wire.BrokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
+                        var allResult=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
                             Wire.Element(new{handles_json=JsonSerializer.Serialize(chunk)})),timeout.Token);
                         if(allResult.Error is not null)throw new IOException(allResult.Error.Message);
                         if(allResult.Data is JsonElement allData)allEntities.AddRange(allData.GetProperty("entities").EnumerateArray().Select(e=>e.Clone()));
@@ -544,7 +564,8 @@ internal sealed class ChatPanel : UserControl
                 foreach(string view in views)await AttachPreview(document,view,liveHandles.Count is >0 and <=500?liveHandles:null);
             }
         }
-        catch(System.Exception error) when(error is IOException or OperationCanceledException or InvalidOperationException)
+        // Verification is best effort and runs from UI event handlers: no failure may escape to the dispatcher.
+        catch(System.Exception error)
         {
             LogError(error); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
         }
@@ -560,7 +581,7 @@ internal sealed class ChatPanel : UserControl
             var context = cadContext ?? throw new IOException("подключение к AutoCAD недоступно");
             if (initialDocumentId is null || context.DocumentId != initialDocumentId)
                 throw new IOException("активный чертёж изменился");
-            var result = await PipeClient.CallAsync(Wire.BrokerPipe,
+            var result = await PipeClient.CallAsync(brokerPipe,
                 new(Guid.NewGuid().ToString("N"), "cad_render", context.SessionId, context.DocumentId,
                     context.Revision, Wire.Element(new { width = 1024, height = 768,view_name=viewName,handles_json=handles is null?null:JsonSerializer.Serialize(handles) })), timeout.Token);
             if (result.Error is not null) throw new IOException(result.Error.Message);
@@ -569,7 +590,7 @@ internal sealed class ChatPanel : UserControl
                 data.Number("width", 1024), data.Number("height", 768));
             UpdateAssistant(line => line with { Images = (line.Images ?? Array.Empty<ChatImage>()).Append(preview).ToArray() });
         }
-        catch (System.Exception error) when (error is IOException or OperationCanceledException or FormatException or InvalidDataException)
+        catch (System.Exception error)
         {
             LogError(error);
             UpdateAssistant(line => line with { Text = line.Text + "\n\nИтоговый вид не получен: " + error.Message + ". Проверьте открытый чертёж перед сохранением." });
@@ -606,13 +627,22 @@ internal sealed class ChatPanel : UserControl
     }
     private void Persist()
     { try { store.Save(State()); } catch (System.Exception e) { activity.Text = "История не сохранена: " + e.Message; } }
-    private void Restore(ChatState state)
+    /// <param name="imported">
+    /// A history file chosen by the user may come from anyone. Its program paths are ignored: loading it
+    /// must never decide which executable this panel starts. Only the panel's own saved state restores them.
+    /// </param>
+    private void Restore(ChatState state, bool imported)
     {
         if (!ChatStateStore.Valid(state)) throw new InvalidDataException("Файл не соответствует формату истории CAD MCP");
         restoring = true;
         try
         {
         provider.SelectedIndex = state.Provider;
+        if (imported)
+        {
+            if (provider.SelectedIndex == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
+            state = state with { CodexExecutable = codexExecutable, ClaudeExecutable = claudeExecutable, Host = host.Text, Directory = directory.Text };
+        }
         codexExecutable = state.CodexExecutable; claudeExecutable = state.ClaudeExecutable;
         executable.Text = state.Provider == 0 ? codexExecutable : claudeExecutable;
         if (File.Exists(state.Host)) host.Text = state.Host;
@@ -645,7 +675,7 @@ internal sealed class ChatPanel : UserControl
         try
         {
             if (new FileInfo(dialog.FileName).Length > 4 * 1024 * 1024) throw new InvalidDataException("Файл истории слишком велик");
-            Restore(JsonSerializer.Deserialize<ChatState>(File.ReadAllText(dialog.FileName)) ?? throw new InvalidDataException("Пустой файл истории")); Persist();
+            Restore(JsonSerializer.Deserialize<ChatState>(File.ReadAllText(dialog.FileName)) ?? throw new InvalidDataException("Пустой файл истории"), imported: true); Persist();
             if (provider.SelectedIndex == 0) _ = RefreshModels();
         }
         catch (System.Exception e) { activity.Text = "История не открыта: " + e.Message; }

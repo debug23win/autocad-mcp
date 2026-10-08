@@ -20,6 +20,8 @@ $start.WorkingDirectory = $OutputDirectory
 foreach ($argument in @('/isolate', ('cadmcp-' + [guid]::NewGuid().ToString('N')), (Join-Path $OutputDirectory 'profile'), '/s', $script)) { $start.ArgumentList.Add($argument) }
 $result = Join-Path $OutputDirectory 'result.json'
 $start.Environment['CADMCP_PROBE_OUTPUT'] = $result
+# The probe runs cad_lisp unattended; the default policy would wait for a confirmation nobody gives.
+$start.Environment['CAD_MCP_LISP_POLICY'] = 'allow'
 $process = [Diagnostics.Process]::Start($start)
 $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
 try { if (!$process.WaitForExit(55000)) { $process.Kill(); $process.WaitForExit() } }

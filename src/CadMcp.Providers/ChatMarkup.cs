@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text;
 using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
 
 namespace CadMcp.Providers;
 
@@ -13,7 +15,18 @@ public static class ChatMarkup
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions().DisableHtml().Build();
 
-    public static string MarkdownHtml(string text) => Markdown.ToHtml(text ?? "", Pipeline);
+    public static string MarkdownHtml(string text)
+    {
+        var document = Markdown.Parse(text ?? "", Pipeline);
+        // Model text never loads images: a remote image URL could carry drawing contents out of the chat
+        // without a click. Images become ordinary links that open only when the user chooses to.
+        foreach (var link in document.Descendants<LinkInline>().Where(link => link.IsImage).ToArray())
+        {
+            link.IsImage = false;
+            if (link.FirstChild is null) link.AppendChild(new LiteralInline(link.Url ?? ""));
+        }
+        return document.ToHtml(Pipeline);
+    }
 
     public static string ConversationHtml(IReadOnlyList<ChatLine> messages, string assetDirectory)
     {

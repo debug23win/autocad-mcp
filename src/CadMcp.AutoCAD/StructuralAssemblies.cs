@@ -124,8 +124,15 @@ internal static class StructuralAssemblies
         table.CreateExtensionDictionary();var dictionary=(DBDictionary)tr.GetObject(table.ExtensionDictionary,OpenMode.ForWrite);var record=new Xrecord();dictionary.SetAt(ScheduleKey,record);tr.AddNewlyCreatedDBObject(record,true);
         string json=op.GetProperty("handles").GetRawText();using var data=new ResultBuffer(Enumerable.Range(0,(json.Length+999)/1000).Select(n=>new TypedValue((int)DxfCode.Text,json.Substring(n*1000,Math.Min(1000,json.Length-n*1000)))).ToArray());record.Data=data;
     }
-    internal static void RefreshSchedules(Database db,Transaction tr)
+    /// <summary>
+    /// Refresh generated schedules. A schedule whose rows or columns were changed by hand, or whose source
+    /// is gone, is skipped with a warning, so that one damaged table does not block every edit in the drawing.
+    /// It is still an error when <paramref name="strictFor"/> (the handles an edit touched) includes the
+    /// schedule or one of its sources: that edit would otherwise leave its own schedule stale.
+    /// </summary>
+    internal static List<string> RefreshSchedules(Database db,Transaction tr,IReadOnlySet<long>? strictFor=null)
     {
+        var warnings=new List<string>();
         var blocks=(BlockTable)tr.GetObject(db.BlockTableId,OpenMode.ForRead);
         foreach(ObjectId bid in blocks)
         {
@@ -136,10 +143,19 @@ internal static class StructuralAssemblies
                 var dictionary=(DBDictionary)tr.GetObject(table.ExtensionDictionary,OpenMode.ForRead);if(!dictionary.Contains(ScheduleKey))continue;
                 using var data=((Xrecord)tr.GetObject(dictionary.GetAt(ScheduleKey),OpenMode.ForRead)).Data;
                 var handles=JsonSerializer.Deserialize<string[]>(string.Concat(data.AsArray().Select(v=>(string)v.Value)))!;
-                if(table.Rows.Count!=handles.Length+2||table.Columns.Count!=6)throw new CadFault("SCHEDULE_STRUCTURE_CHANGED","Generated schedule structure changed; recreate it to avoid overwriting unrelated cells");
+                bool strict=strictFor is not null&&(strictFor.Contains(table.Handle.Value)||handles.Any(h=>long.TryParse(h,System.Globalization.NumberStyles.HexNumber,null,out var value)&&strictFor.Contains(value)));
+                string? missing=handles.FirstOrDefault(h=>!long.TryParse(h,System.Globalization.NumberStyles.HexNumber,null,out var value)||!db.TryGetObjectId(new Handle(value),out _));
+                (string Code,string Message)? problem=table.Rows.Count!=handles.Length+2||table.Columns.Count!=6
+                    ?("SCHEDULE_STRUCTURE_CHANGED","Schedule "+table.Handle+" rows or columns were changed by hand; it is no longer updated. Recreate it with assembly_schedule")
+                    :missing is not null?("SCHEDULE_SOURCE_MISSING","Schedule "+table.Handle+" lists a missing source "+missing+"; recreate it with assembly_schedule"):null;
+                if(problem is {} p)
+                {
+                    if(strict)throw new CadFault(p.Code,p.Message);
+                    warnings.Add(p.Message);continue;
+                }
                 for(int n=0;n<handles.Length;n++)
                 {
-                    if(!long.TryParse(handles[n],System.Globalization.NumberStyles.HexNumber,null,out var h)||!db.TryGetObjectId(new Handle(h),out var sourceId))throw new CadFault("SCHEDULE_SOURCE_MISSING",handles[n]);
+                    long.TryParse(handles[n],System.Globalization.NumberStyles.HexNumber,null,out var h);db.TryGetObjectId(new Handle(h),out var sourceId);
                     var reference=(BlockReference)tr.GetObject(sourceId,OpenMode.ForRead,true);var info=Wire.Element(Inspect(db,tr,reference));var recipe=info.GetProperty("recipe");
                     object[] values=[recipe.Text("mark")!,recipe.Text("kind")!,recipe.Text("material")!,reference.IsErased?0:1,reference.IsErased?0d:info.GetProperty("solid_mass_kg").GetDouble(),reference.IsErased?"Элемент удалён":info.Text("mass_scope")!];
                     for(int c=0;c<values.Length;c++)
@@ -148,6 +164,27 @@ internal static class StructuralAssemblies
                 if(table.IsWriteEnabled){table.GenerateLayout();table.RecomputeTableBlock(true);}
             }
         }
+        return warnings;
+    }
+    /// <summary>Handles of generated schedules and of the assemblies they list. Read-only.</summary>
+    internal static HashSet<long> ScheduleHandles(Database db,Transaction tr)
+    {
+        var result=new HashSet<long>();
+        var blocks=(BlockTable)tr.GetObject(db.BlockTableId,OpenMode.ForRead);
+        foreach(ObjectId bid in blocks)
+        {
+            var block=(BlockTableRecord)tr.GetObject(bid,OpenMode.ForRead);if(!block.IsLayout)continue;
+            foreach(ObjectId id in block)
+            {
+                if(id.IsErased||tr.GetObject(id,OpenMode.ForRead) is not Table table||table.ExtensionDictionary.IsNull)continue;
+                var dictionary=(DBDictionary)tr.GetObject(table.ExtensionDictionary,OpenMode.ForRead);if(!dictionary.Contains(ScheduleKey))continue;
+                using var data=((Xrecord)tr.GetObject(dictionary.GetAt(ScheduleKey),OpenMode.ForRead)).Data;
+                result.Add(table.Handle.Value);
+                foreach(var handle in JsonSerializer.Deserialize<string[]>(string.Concat(data.AsArray().Select(v=>(string)v.Value)))??[])
+                    if(long.TryParse(handle,System.Globalization.NumberStyles.HexNumber,null,out var value))result.Add(value);
+            }
+        }
+        return result;
     }
     internal static Table Schedule(Database db,Transaction tr,JsonElement op)
     {

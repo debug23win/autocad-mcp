@@ -19,7 +19,7 @@ internal static class Verticals
     {
         var assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "AeccDbMgd");
         var type = assembly?.GetType("Autodesk.Civil.DatabaseServices.TinSurface");
-        if (CivilDocument() is null || type is null) throw new CadFault("CIVIL3D_REQUIRED", "Civil 3D managed API is not loaded");
+        if (CivilDocument(db) is null || type is null) throw new CadFault("CIVIL3D_REQUIRED", "Civil 3D managed API is not loaded");
         var points = new Point3dCollection();
         foreach (var item in operation.GetProperty("vertices").EnumerateArray())
         {
@@ -66,19 +66,76 @@ internal static class Verticals
 
     public static object Catalog(Database db, Transaction tr)
     {
-        var civil = CivilDocument();
+        var civil = CivilDocument(db);
         var project = MapProject(db);
         return new {
             civil3d = civil is null ? new { available = false, reason = "Civil 3D managed API is not loaded in this product" } as object
                 : new { available = true, surfaces = CivilCollection(civil, "GetSurfaceIds", tr),
                     alignments = CivilCollection(civil, "GetAlignmentIds", tr),
                     profiles = CivilProfiles(civil, tr),
-                    pipe_networks = CivilCollection(civil, "GetPipeNetworkIds", tr) },
+                    pipe_networks = CivilCollection(civil, "GetPipeNetworkIds", tr),
+                    sites = CivilCollection(civil, "GetSiteIds", tr),
+                    styles = CivilStyles(civil, tr), label_sets = CivilLabelSets(civil, tr), parts_lists = CivilPartsLists(civil, tr),
+                    naming = "Operations accept these names instead of handles: style, label_set, layer, parts_list, family, size" },
             map3d = project is null ? new { available = false, reason = "Map 3D managed API is not loaded in this product" } as object
                 : new { available = true, coordinate_system = Scalar(project, "Projection"),
                     vertical_coordinate_system = Scalar(project, "VerticalProjection"),
                     object_data_tables = MapTableNames(project) }
         };
+    }
+
+    private static readonly string[] StyleCollections = ["AlignmentStyles", "ProfileStyles", "ProfileViewStyles", "SurfaceStyles", "PipeStyles", "StructureStyles",
+        "PipeRuleSetStyles", "StructureRuleSetStyles", "PointStyles", "FeatureLineStyles", "CorridorStyles", "SampleLineStyles", "SectionStyles"];
+
+    private static object[] Names(object? collection, Transaction tr, int limit = 100) =>
+        VerticalEditing.Named(collection, tr).Take(limit).Select(n => (object)new { name = n.Name, handle = n.Id.Handle.ToString() }).ToArray();
+
+    private static object? CivilStyles(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } root) return null;
+            var result = new SortedDictionary<string, object[]>(StringComparer.Ordinal);
+            foreach (var name in StyleCollections)
+                if (VendorReflection.TryGet(root, name) is { } collection) result[name] = Names(collection, tr);
+            return result;
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
+    }
+
+    /// <summary>Every label-set collection of the drawing, discovered from the LabelSetStyles root of this release.</summary>
+    private static object? CivilLabelSets(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } styles || VendorReflection.TryGet(styles, "LabelSetStyles") is not { } root) return null;
+            var result = new SortedDictionary<string, object[]>(StringComparer.Ordinal);
+            foreach (var property in root.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetIndexParameters().Length == 0))
+                if (VendorReflection.TryGet(root, property.Name) is IEnumerable collection and not string && Names(collection, tr) is { Length: > 0 } names)
+                    result[property.Name] = names;
+            return result;
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
+    }
+
+    private static object? CivilPartsLists(object civil, Transaction tr)
+    {
+        try
+        {
+            if (VendorReflection.TryGet(civil, "Styles") is not { } styles || VendorReflection.TryGet(styles, "PartsListSet") is not { } set) return null;
+            return VerticalEditing.Named(set, tr).Take(30).Select(list => (object)new
+            {
+                name = list.Name, handle = list.Id.Handle.ToString(),
+                families = VerticalEditing.Children(tr, tr.GetObject(list.Id, OpenMode.ForRead), "PartFamilyCount").Take(50).Select(family => new
+                {
+                    family = Convert.ToString(VendorReflection.TryGet(family.Object, "Description")), handle = family.Id.Handle.ToString(),
+                    domain = Convert.ToString(VendorReflection.TryGet(family.Object, "Domain")),
+                    sizes = VerticalEditing.Children(tr, family.Object, "PartSizeCount").Take(60)
+                        .Select(size => new { size = VerticalEditing.SizeName(size.Object), handle = size.Id.Handle.ToString() }).ToArray()
+                }).ToArray()
+            }).ToArray();
+        }
+        catch (System.Exception e) when (e is CadFault or Autodesk.AutoCAD.Runtime.Exception or TargetInvocationException) { return new { error = e.Message }; }
     }
 
     public static object Inspect(Database db, Transaction tr, string handle, double[][]? samplePoints)
@@ -107,19 +164,33 @@ internal static class Verticals
                     error = (string?)(e is TargetInvocationException { InnerException: { } inner } ? inner : e).Message }; }
             }).ToArray();
         }
+        // Surface point/triangle counts and elevation range live in GetGeneralProperties/GetTinProperties,
+        // not on the surface object itself.
+        var statistics = civil && type.Name.EndsWith("Surface", StringComparison.Ordinal)
+            ? VendorReflection.Statistics(obj, ["GetGeneralProperties", "GetTinProperties", "GetTerrainProperties"]) : null;
         return new { handle, class_name = type.FullName, civil3d = civil,
-            properties = Properties(obj), children = civil ? Children(obj, tr) : null,
+            properties = Properties(obj), statistics = statistics is { Count: > 0 } ? statistics : null, children = civil ? Children(obj, tr) : null,
             map_object_data = objectData, surface_elevations = elevations,
             limitations = new[] { "vendor_geometry_requires_product_API", "object_data_record_limit_100_per_entity" } };
     }
 
-    internal static object? CivilDocument()
+    /// <summary>
+    /// The Civil document of this database, so reads of a background drawing never list the active one.
+    /// CivilApplication.ActiveDocument is used only when the database is the active drawing's.
+    /// </summary>
+    internal static object? CivilDocument(Database db)
     {
         try
         {
             var assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "AeccDbMgd");
-            var type = assembly?.GetType("Autodesk.Civil.ApplicationServices.CivilApplication");
-            return type?.GetProperty("ActiveDocument", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            if (assembly is null) return null;
+            var get = assembly.GetType("Autodesk.Civil.ApplicationServices.CivilDocument")
+                ?.GetMethod("GetCivilDocument", BindingFlags.Public | BindingFlags.Static, [typeof(Database)]);
+            if (get?.Invoke(null, [db]) is { } document) return document;
+            var active = Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument?.Database;
+            if (active is null || active.UnmanagedObject != db.UnmanagedObject) return null;
+            return assembly.GetType("Autodesk.Civil.ApplicationServices.CivilApplication")
+                ?.GetProperty("ActiveDocument", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
         }
         catch (System.Exception) { return null; }
     }
@@ -173,32 +244,10 @@ internal static class Verticals
         catch (System.Exception e) { return new { available = false, reason = e.Message }; }
     }
 
-    private static Dictionary<string, object> Properties(object obj)
-    {
-        var result = new Dictionary<string, object>(StringComparer.Ordinal);
-        foreach (string name in ScalarNames)
-        {
-            var value = Scalar(obj, name);
-            if (value is not null) result[name] = value;
-        }
-        return result;
-    }
+    private static Dictionary<string, object> Properties(object obj) => VendorReflection.Scalars(obj, ScalarNames);
 
-    private static object? Scalar(object obj, string name)
-    {
-        try
-        {
-            var property = obj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-            if (property?.GetMethod is null || property.GetIndexParameters().Length != 0) return null;
-            var value = property.GetValue(obj);
-            if (value is string s) return s.Length <= 500 ? s : s[..500];
-            if (value is bool or byte or short or int or long or float or double or decimal)
-                return value is double d && !double.IsFinite(d) || value is float f && !float.IsFinite(f) ? null : value;
-            if (value is Enum) return value.ToString();
-        }
-        catch (System.Exception) { }
-        return null;
-    }
+    // Vendor classes hide inherited members (StyleBase.Name), so lookup walks the type hierarchy.
+    private static object? Scalar(object obj, string name) => VendorReflection.Scalar(VendorReflection.TryGet(obj, name));
 
     private static object? Children(object obj, Transaction tr)
     {
@@ -265,10 +314,10 @@ internal static class Verticals
                 for (int i = 0; i < parameters.Length; i++)
                 {
                     var type = parameters[i].ParameterType;
-                    args[i] = type == typeof(ObjectId) ? id : type == typeof(int) ? 0 : type == typeof(bool) ? false
-                        : type.IsEnum ? Enum.GetNames(type).Contains("OpenForRead") ? Enum.Parse(type, "OpenForRead") : Enum.GetValues(type).GetValue(0)
-                        : parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null;
-                    if (args[i] is null && !parameters[i].HasDefaultValue) supported = false;
+                    // The record offset is uint in the Map API; a boxed int would not bind.
+                    if (type == typeof(ObjectId)) args[i] = id;
+                    else if (type.IsEnum) args[i] = Enum.GetNames(type).Contains("OpenForRead") ? Enum.Parse(type, "OpenForRead") : Enum.GetValues(type).GetValue(0);
+                    else if (!VendorReflection.TryDefault(parameters[i], out args[i])) supported = false;
                 }
                 if (!supported) continue;
                 var records = method.Invoke(tables, args);
@@ -293,7 +342,7 @@ internal static class Verticals
                 finally { (records as IDisposable)?.Dispose(); }
             }
         }
-        catch (System.Exception e) { return new { error = e.Message }; }
+        catch (System.Exception e) { return new { error = VendorReflection.Describe(e) }; }
         return null;
     }
 
@@ -301,16 +350,15 @@ internal static class Verticals
     {
         try
         {
-            var count = record.GetType().GetProperty("Count")?.GetValue(record) as int?
-                ?? definitions?.GetType().GetProperty("Count")?.GetValue(definitions) as int?;
-            var indexer = record.GetType().GetProperty("Item", [typeof(int)]);
-            if (count is null || indexer is null) return new { available = false };
+            var countValue = VendorReflection.TryGet(record, "Count") ?? (definitions is null ? null : VendorReflection.TryGet(definitions, "Count"));
+            if (countValue is null) return new { available = false };
+            int count = Convert.ToInt32(countValue, System.Globalization.CultureInfo.InvariantCulture);
             var values = new List<object>();
-            var fieldIndexer = definitions?.GetType().GetProperty("Item", [typeof(int)]);
-            for (int i = 0; i < Math.Min(count.Value, 100); i++)
+            for (int i = 0; i < Math.Min(count, 100); i++)
             {
-                var value = indexer.GetValue(record, [i]);
-                var field = fieldIndexer?.GetValue(definitions, [i]);
+                var value = VendorReflection.Index(record, i);
+                object? field = null;
+                if (definitions is not null) try { field = VendorReflection.Index(definitions, i); } catch (CadFault) { }
                 if (value is not null) values.Add(new { index = i, name = field is null ? null : Scalar(field, "Name"),
                     type = Scalar(value, "Type"),
                     text = Scalar(value, "StrValue"), integer = Scalar(value, "Int32Value"),
@@ -318,6 +366,6 @@ internal static class Verticals
             }
             return values;
         }
-        catch (System.Exception e) { return new { error = e.Message }; }
+        catch (System.Exception e) { return new { error = VendorReflection.Describe(e) }; }
     }
 }

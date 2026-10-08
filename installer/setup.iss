@@ -7,7 +7,7 @@
 [Setup]
 AppId={{D076FE88-E0A5-4EAD-98E8-A92B21D56D13}
 AppName=CAD MCP для AutoCAD, Map 3D и Civil 3D 2025–2027 (предварительная версия)
-AppVersion=0.10.1-preview
+AppVersion=0.11.0-preview
 AppPublisher=CAD MCP contributors
 AppPublisherURL=https://github.com/debug23win/autocad-mcp
 DefaultDirName={userappdata}\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle
@@ -19,7 +19,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=CAD-MCP-2025-2027-0.10.1-preview-Setup
+OutputBaseFilename=CAD-MCP-2025-2027-0.11.0-preview-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -37,6 +37,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Tasks]
+Name: "claudedesktop"; Description: "Подключить CAD MCP к Claude Desktop (настройка mcpServers, остальные серверы сохраняются)"; Flags: unchecked
+Name: "claudecode"; Description: "Подключить CAD MCP к Claude Code для текущего пользователя (нужна команда claude)"; Flags: unchecked
+
+[Run]
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--register-client claude-desktop"; StatusMsg: "Подключение к Claude Desktop..."; Flags: runhidden waituntilterminated; Tasks: claudedesktop
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--register-client claude-code"; StatusMsg: "Подключение к Claude Code..."; Flags: runhidden waituntilterminated; Tasks: claudecode
+
+[UninstallRun]
+Filename: "{app}\Contents\Host\CadMcp.Host.exe"; Parameters: "--unregister-client all"; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterMcpClients"
 
 [Icons]
 Name: "{group}\Инструкция"; Filename: "{app}\INSTALL.txt"

@@ -49,7 +49,7 @@ public static class EditPlan
         ["mirror"] = "handle target first second",
         ["erase"] = "handle target",
         ["set"] = "handle target layer color_index linetype linetype_scale lineweight visible text height width rotation_deg position start end center radius closed attributes layout"
-    }.Concat(ExtendedPlan.Fields).Concat(DraftingPlan.Fields).ToDictionary(p => p.Key, p => p.Value);
+    }.Concat(ExtendedPlan.Fields).Concat(DraftingPlan.Fields).Concat(ModifyPlan.Fields).ToDictionary(p => p.Key, p => p.Value);
     public static JsonElement[] Parse(string json)
     {
         if (json.Length > 65536) throw new CadFault("PLAN_TOO_LARGE", "Edit plan must be at most 65536 characters");
@@ -71,9 +71,10 @@ public static class EditPlan
             {
                 if (!names.Add(p.Name)) throw new CadFault("DUPLICATE_FIELD", p.Name);
                 if (!allowed.Contains(p.Name)) throw new CadFault("UNKNOWN_FIELD", kind + ": " + p.Name);
-                if (!ExtendedPlan.Fields.ContainsKey(kind) && (!DraftingPlan.Supports(kind) || p.Name is "op" or "id" or "layer" or "color_index" or "layout" or "target" or "style" or "text_style")) ValidateValue(kind, p.Name, p.Value);
+                if (!ExtendedPlan.Fields.ContainsKey(kind) && !ModifyPlan.Supports(kind) && (!DraftingPlan.Supports(kind) || p.Name is "op" or "id" or "layer" or "color_index" or "layout" or "target" or "style" or "text_style")) ValidateValue(kind, p.Name, p.Value);
             }
             if (ExtendedPlan.Fields.ContainsKey(kind)) ExtendedPlan.Validate(op);
+            if (ModifyPlan.Supports(kind)) ModifyPlan.Validate(op, aliases);
             if (DraftingPlan.Supports(kind)) DraftingPlan.Validate(op, aliases);
             if (op.TryGetProperty("target", out var target) && !aliases.Contains(target.GetString() ?? ""))
                 throw new CadFault("UNKNOWN_TARGET", "target must refer to an earlier operation id");
@@ -126,8 +127,29 @@ public static class EditPlan
             }
             result.Add(op.Clone());
         }
+        // These change the drawing outside the edit transaction, so a failure of another operation of the same
+        // request could not undo them.
+        if (result.Count > 1 && result.FirstOrDefault(op => ModifyPlan.OutsideTransaction.Contains(op.Text("op")!)) is { ValueKind: JsonValueKind.Object } outside)
+            throw new CadFault("SINGLE_OPERATION_REQUIRED", outside.Text("op") + " changes the drawing outside the edit transaction; send it as the only operation of its request");
         return result.ToArray();
     }
+    /// <summary>
+    /// Fingerprint of an edit plan and its expectations on one drawing at one revision, returned by
+    /// cad_edit_preview. It is keyed with a secret of the CAD worker, so only a preview produces it; cad_edit
+    /// with preview_hash runs only that exact plan on the unchanged drawing.
+    /// </summary>
+    public static string Hash(string operationsJson, string? expectationsJson, string? documentId, long revision, byte[] key) =>
+        Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(key, System.Text.Encoding.UTF8.GetBytes(
+            (documentId ?? "") + "\0" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\0" + operationsJson + "\0" + (expectationsJson ?? "")))).ToLowerInvariant();
+
+    /// <summary>Fails when cad_edit carries a preview_hash that does not match its plan, drawing and expected revision.</summary>
+    public static void RequirePreviewed(JsonElement data, string? documentId, long? expectedRevision, byte[] key)
+    {
+        if (data.Text("preview_hash") is not { } expected) return;
+        if (expectedRevision is not { } revision || !string.Equals(expected.Trim(), Hash(RequiredText(data, "operations_json"), data.Text("expectations_json"), documentId, revision, key), StringComparison.OrdinalIgnoreCase))
+            throw new CadFault("PREVIEW_MISMATCH", "The plan, its expectations, the drawing or its revision differ from the preview; preview the plan again");
+    }
+
     public static string RequiredText(JsonElement e, string name)
     {
         if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))

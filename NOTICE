@@ -34,3 +34,15 @@ and licenses/KaTeX-MIT.txt. The Microsoft Edge WebView2 runtime is supplied by
 the user's Windows installation and is not bundled.
 
 PdfPig 0.1.16 is used for structural PDF validation. Copyright UglyToad and contributors. Apache-2.0 and retained external component notices: licenses/dependencies/PdfPig-0.1.16-LICENSE.txt. Source: https://github.com/UglyToad/PdfPig/tree/v0.1.16.
+
+Additions after the October 2026 review of AutoCAD MCP projects:
+- Civil 3D API signature data in tests/CadMcp.Tests/Fixtures/civil-api-signatures.txt lists public member
+  signatures read from the metadata of Autodesk's Civil3D.NET packages (Civil 3D .NET API SDK, Autodesk, Inc.)
+  by tests/CadMcp.CivilSignatures; no Autodesk files are included. Its format and its first 2024-2026 data
+  follow the API probes of Horizun Civil 3D MCP (HorizunGroup/horizun-civil3d-mcp, commit
+  b019448ca45664931529012e1d5ffb2b71ef6f68), Copyright 2026 Horizun Group, Apache License 2.0;
+  see licenses/horizun-civil3d-mcp-Apache-2.0.txt.
+- The Map 3D coordinate-system check in VerticalEditing.cs follows the approach of
+  seb21-art/MCP_AutocadMap3D (commit 18932d47255a421889fd1e255ba78ab350b7afd3), MIT,
+  Copyright (c) 2026 seb21-art; rewritten for late binding. See licenses/seb21-art-MIT.txt.
+Other ideas taken from reviewed projects were reimplemented without their code; docs/provenance.md lists them.

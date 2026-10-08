@@ -46,10 +46,17 @@ internal static class Exports
             try
             {
                 ct.ThrowIfCancellationRequested();
-                PlotPdf(document, paths[i], names[i], null, ct);
+                var paper = PlotPdf(document, paths[i], names[i], null, ct);
                 if (!File.Exists(paths[i]) || new FileInfo(paths[i]).Length == 0)
                     throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty PDF");
-                var pdf=PdfVerification.Check(paths[i]);
+                // The PDF is written; a wrong page count read from it fails its check, a reader failure leaves the check
+                // unverified, and neither stops the set.
+                object pdf;
+                try { pdf = PdfVerification.Check(paths[i], 1, paper); }
+                catch (CadFault fault) when (fault.Code is "PDF_PAGE_COUNT" or "PDF_INVALID_MEDIA")
+                { pdf = new { state = "failed", warnings = new[] { new { code = fault.Code, detail = fault.Message } } }; }
+                catch (System.Exception readError) when (readError is not OperationCanceledException)
+                { pdf = new { state = "unverified", warnings = new[] { new { code = "PDF_UNVERIFIED", detail = readError.GetType().Name + ": " + readError.Message } }, error = readError.GetType().Name + ": " + readError.Message }; }
                 using var file = File.OpenRead(paths[i]);
                 produced.Add(new { pdf, number = i + 1, layout = names[i], path = paths[i], bytes = file.Length,
                     sha256 = Convert.ToHexString(SHA256.HashData(file)) });
@@ -76,9 +83,15 @@ internal static class Exports
                 .Append(row.GetProperty("sha256").GetString()).Append("\r\n");
         }
         File.WriteAllText(csvPath, csv.ToString(), Encoding.UTF8);
+        // Page size and empty-page findings do not fail the set, but the release needs review; a wrong page count fails it.
+        var checks = produced.Select(item => Wire.Element(item).GetProperty("pdf")).ToArray();
+        var reviews = checks.Where(pdf => pdf.Text("state") != "passed")
+            .Select(pdf => pdf.TryGetProperty("warnings", out var warnings) ? warnings.Clone() : pdf.Clone()).ToArray();
+        string pdfReview = reviews.Length == 0 ? "passed" : checks.Any(pdf => pdf.Text("state") == "failed") ? "failed" : "review_required";
         return new { manifest.status, manifest_path = manifestPath, csv_path = csvPath,
             files = produced, preflight, manifest.completeness, manifest.failed_layout, manifest.error,
-            verification = "strict_PDF_parse_page_count_and_manifest_completeness" };
+            pdf_review = pdfReview, pdf_warnings = reviews.Length == 0 ? null : reviews,
+            verification = "strict_PDF_parse_page_count_paper_size_nonempty_pages_and_manifest_completeness" };
     }
 
     private static string SafeFileName(string name)
@@ -101,16 +114,62 @@ internal static class Exports
         if (!Directory.Exists(Path.GetDirectoryName(path))) throw new CadFault("OUTPUT_FOLDER_MISSING", Path.GetDirectoryName(path)!);
         if (File.Exists(path)) throw new CadFault("OUTPUT_EXISTS", "Choose a new output path; existing files are not overwritten");
         ct.ThrowIfCancellationRequested();
+        (double, double)? paper = null;
         if (format == "dxf") document.Database.DxfOut(path, 16, DwgVersion.Current);
-        else PlotPdf(document, path, layoutName, mediaName, ct);
+        else paper = PlotPdf(document, path, layoutName, mediaName, ct);
         if (!File.Exists(path) || new FileInfo(path).Length == 0) throw new CadFault("EXPORT_NOT_FOUND", "AutoCAD did not produce a nonempty file");
+        // The file exists; an independent re-read decides whether it holds what was exported.
+        object check;
+        try { check = format == "dxf" ? VerifyDxf(document.Database, path) : PdfVerification.Check(path, 1, paper); }
+        // A wrong page count or page size read from the file fails the check.
+        catch (CadFault fault) when (fault.Code is "PDF_PAGE_COUNT" or "PDF_INVALID_MEDIA")
+        { check = new { state = "failed", warnings = new[] { new { code = fault.Code, detail = fault.Message } } }; }
+        // The file is written; a reader failure (unsupported fonts, compression, encryption) leaves it unverified, not failed.
+        catch (System.Exception error) when (error is not OperationCanceledException)
+        { check = new { state = "unverified", error = error.GetType().Name + ": " + error.Message }; }
         using var file = File.OpenRead(path);
         return new { format, path, bytes = file.Length, sha256 = Convert.ToHexString(SHA256.HashData(file)),
             layout = format == "pdf" ? layoutName ?? LayoutManager.Current.CurrentLayout : null,
-            verification = "output_file_exists_and_hash_verified" };
+            content_check = check,
+            verification = format == "dxf" ? "output_hash_and_DXF_reread_entity_census" : "output_hash_strict_PDF_parse_paper_size_and_nonempty_page" };
     }
 
-    private static void PlotPdf(Document document, string path, string? layoutName, string? mediaName, CancellationToken ct)
+    /// <summary>
+    /// Re-reads an exported DXF into a separate database and compares entity counts per layout, DXF type and
+    /// layer with the source. Differences (for example proxies of vendor objects) need review.
+    /// </summary>
+    private static object VerifyDxf(Database source, string path)
+    {
+        using var copy = new Database(false, true);
+        copy.DxfIn(path, null);
+        var expected = Census(source); var actual = Census(copy);
+        var differences = expected.Keys.Union(actual.Keys).Where(k => expected.GetValueOrDefault(k) != actual.GetValueOrDefault(k))
+            .OrderBy(k => k, StringComparer.Ordinal).Take(100)
+            .Select(k => new { key = k, source = expected.GetValueOrDefault(k), dxf = actual.GetValueOrDefault(k) }).ToArray();
+        return new { state = differences.Length == 0 ? "passed" : "review_required", source_entities = expected.Values.Sum(), dxf_entities = actual.Values.Sum(),
+            differences, key_format = "layout|DXF type|layer", method = "DxfIn into a separate database" };
+    }
+    private static Dictionary<string, int> Census(Database db)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        using var tr = db.TransactionManager.StartOpenCloseTransaction();
+        var layouts = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+        foreach (System.Collections.DictionaryEntry entry in layouts)
+        {
+            var layout = (Layout)tr.GetObject((ObjectId)entry.Value!, OpenMode.ForRead);
+            var space = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+            foreach (ObjectId id in space)
+            {
+                if (id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not Entity entity) continue;
+                string key = (layout.ModelType ? "Model" : layout.LayoutName) + "|" + entity.GetRXClass().DxfName + "|" + entity.Layer;
+                counts[key] = counts.GetValueOrDefault(key) + 1;
+            }
+        }
+        return counts;
+    }
+
+    /// <summary>Plots one layout to PDF and returns the plotted paper size in millimetres.</summary>
+    private static (double, double)? PlotPdf(Document document, string path, string? layoutName, string? mediaName, CancellationToken ct)
     {
         if (PlotFactory.ProcessPlotState != ProcessPlotState.NotPlotting) throw new CadFault("PLOT_BUSY", "Another AutoCAD plot is running");
         var layoutManager = LayoutManager.Current;
@@ -122,8 +181,9 @@ internal static class Exports
             // PlotEngine may otherwise only queue output. Receipts/hash/repair need the finished file.
             App.SetSystemVariable("BACKGROUNDPLOT",0);
             if (!string.Equals(originalLayout, layoutName, StringComparison.OrdinalIgnoreCase)) layoutManager.CurrentLayout = layoutName;
-            PlotCurrentPdf(document, path, layoutName, mediaName, ct);
+            var paper = PlotCurrentPdf(document, path, layoutName, mediaName, ct);
             PdfRepair.NormalizeStructure(path);
+            return paper;
         }
         finally
         {
@@ -136,7 +196,7 @@ internal static class Exports
         }
     }
 
-    private static void PlotCurrentPdf(Document document, string path, string layoutName, string? mediaName, CancellationToken ct)
+    private static (double, double)? PlotCurrentPdf(Document document, string path, string layoutName, string? mediaName, CancellationToken ct)
     {
         using var transaction = document.Database.TransactionManager.StartTransaction();
         var layouts = (DBDictionary)transaction.GetObject(document.Database.LayoutDictionaryId, OpenMode.ForRead);
@@ -175,5 +235,8 @@ internal static class Exports
         engine.EndPage(null);
         engine.EndDocument(null);
         engine.EndPlot(null);
+        // Paper size of the validated plot, in millimetres; orientation is compared both ways.
+        var size = (info.ValidatedSettings ?? settings).PlotPaperSize;
+        return size.X > 0 && size.Y > 0 ? (size.X, size.Y) : null;
     }
 }

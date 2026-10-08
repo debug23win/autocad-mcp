@@ -1,0 +1,112 @@
+{
+  "coordinates": "WCS drawing units, [x,y] or [x,y,z]",
+  "angles": "degrees around WCS Z",
+  "contract": "operations_json is a JSON array of 1..100 objects. Every object has op. Optional id names an entity for later target references. Existing entities use handle; handle and target are mutually exclusive. Create a missing layer first. Read cad_catalog for block/style names. Native C# supports meshes, spatial curves, 3D solids, extrude, sweep, revolve and solid Boolean operations; use these before cad_lisp. Repeat only the EXACT request with the SAME operation_id; do not change expected_revision when replaying. Read cad_operation_status after an ambiguous response. After success use returned revision for further calls. Locked layers, xref and most specialized objects are not edited through the native path. The whole native batch rolls back on any pre-commit error. Do not repeat unknown mutations automatically.",
+  "acceptance": {
+    "parameter": "expectations_json",
+    "enforcement": "Default enforce=true: failed or unavailable measurements roll back the native transaction before commit. Set enforce=false only for an explicitly diagnostic check. entity_count counts live entities affected by this batch, not the whole drawing.",
+    "example": {
+      "units": "Millimeters",
+      "entity_count": 1,
+      "checks": [
+        {
+          "target": "beam",
+          "property": "length",
+          "expected": 5000,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    "task_contract": "Optional task:string, bounds_size:[x,y,z], bounds_tolerance:number, type_counts:{nativeType:count}, review_views:[current/front/back/left/right/top/isometric], visual_requirements:[strings]. Numeric checks accept either expected or minimum/maximum (inclusive), plus tolerance. Assembly properties: assembly.solid_mass_kg, assembly.solid_volume_m3, assembly.centerline_length, assembly.profile_code. Bounds/counts refer to the supplied verification handles or affected batch; final task verification must include every final object. Visual requirements remain pending until actual renders are reviewed.",
+    "verification": "Use cad_verify after commit for fresh checks. Geometry acceptance does not prove visual similarity or disk save."
+  },
+  "notes": {
+    "assembly_profiles": "Read cad_steel_catalog. beam/column parameters:{length,profile:exact_catalog_code}; length uses drawing units, catalog millimetres convert using DWG units. Or supply explicit width,height,web_thickness,flange_thickness, optional root_radius. Do not combine profile with explicit dimensions. Rebar points are the sharp centerline vertices, bend_radius is the centerline radius (default 2*diameter), adjacent legs must accommodate tangency. Screw-pile blade is a native volumetric 48-segment ruled solid; mass includes blade. Existing version-1 assemblies retain their geometry until assembly_update, with legacy mass limitations reported.",
+    "polyline": "points share WCS Z; bulges: one number per vertex; closed:boolean; width:nonnegative constant segment width",
+    "polyline3d": "points is 2..2000 full [x,y,z] WCS points; optional closed:boolean",
+    "spline": "fit_points is 3..2000 full [x,y,z] WCS points; optional degree 1..11 below point count, closed:boolean; zero fit tolerance",
+    "mesh": "vertices is 3..5000 full [x,y,z] WCS points; faces is 1..2000 arrays of 3 or 4 distinct zero-based vertex indices. Produces an unsmoothed native SubDMesh, not an inferred mesh from a photograph",
+    "extrude": "handle/target identifies an existing closed planar polyline or circle; direction:[dx,dy,dz] is a nonzero WCS extrusion vector; source profile remains",
+    "sweep": "handle/target identifies an existing closed profile; path_handle/path_target identifies an existing path curve; profile should start on and be oriented for the path; source entities remain",
+    "revolve": "handle/target identifies an existing closed planar profile; axis_start/axis_end define the WCS axis; angle_deg has magnitude at most 360; source remains",
+    "solid_boolean": "handle/target is the primary Solid3d, tool_handle/tool_target is the other Solid3d; operation union/subtract/intersect; keep_tool defaults false; entire result is one transaction",
+    "rotate3d": "handle/target identifies an entity; axis_start/axis_end define the WCS rotation axis; angle_deg is signed",
+    "sphere_cone_wedge_torus": "sphere center is geometric center; cone center is bottom center; wedge/torus center is bounding-box center; torus minor_radius < major_radius",
+    "block": "name:existing local block; scale:positive scalar or [sx,sy,sz]; attributes:{TAG:string}",
+    "block_define": "name:new local definition; base_point:WCS insertion base; handles:1..100 current-space top-level source entities. Source entities remain; native C# clones them into the definition",
+    "layout_create": "Create an empty paper-space layout with the supplied name. Add title block and viewports separately before export",
+    "layout_copy": "Copy a complete existing paper-space layout including sheet contents and plot settings",
+    "layout_configure": "Set print device, media, plot style, paper units and rotation for a named paper-space layout",
+    "viewport": "Place a locked paper-space model viewport on a named layout. center/width/height are paper coordinates; model_center/model_height define WCS view and scale",
+    "image_attach": "Attach PNG/JPEG/TIFF/BMP by absolute path. control_points has 3..20 {pixel:[x,y],world:[x,y,z]} anchors; pixel origin top-left, all WCS Z equal. Affine residual and orientation are returned. Source file remains externally referenced",
+    "civil_tin_create": "In Civil 3D only, create a native TIN surface from 3..5000 non-collinear WCS [x,y,z] vertices using the current template's default surface style",
+    "civil_tin_add_points": "In Civil 3D only, add 3..5000 WCS [x,y,z] vertices to an existing TIN surface by handle",
+    "ellipse": "major_axis is a nonzero WCS XY vector from the center; radius_ratio is >0 and <=1; optional start/end angles default to 0/360 degrees",
+    "hatch": "boundaries:[handle or earlier id], closed polylines/circles; first is outer, others are islands; pattern defaults SOLID",
+    "set": "Only properties supported by the entity type are accepted; text is DBText/MText/Dimension; attributed blocks move/rotate through transform tools; use attributes to change tag values",
+    "cylinder": "center is center of bottom face, height positive along WCS Z",
+    "box": "center is solid center",
+    "color_index": "ACI 0..256 for entities (0 ByBlock, 256 ByLayer); layers 1..255",
+    "lineweight": "hundredths of mm; -1 ByLayer, -2 ByBlock, -3 default",
+    "civil_alignment_create": "In Civil 3D only. layer, style and label_set are existing names (site may be empty for a siteless alignment); points are 2..500 WCS [x,y] or [x,y,z] PI points joined by fixed tangent lines; Z is ignored. Optional radii (one per interior PI, 0 for none) add circular free curves; radii that do not fit their tangents are rejected before Civil 3D is called, and the built alignment (tangents, curves, radii, total length) is compared with the plan before commit",
+    "civil_profile_create": "points are [station, elevation] pairs with strictly increasing stations; layer/style/label set are given by handle (layer_handle, style_handle, label_set_handle) or by name (layer, style, label_set), names as listed by cad_vertical_catalog",
+    "civil_network_add_pipe": "start/end are WCS points of the pipe centreline (Civil 3D Pipe.StartPoint/EndPoint), not inverts: invert elevation = centreline elevation minus half the inner pipe height. family_handle/size_handle come from the network parts list",
+    "text_replace": "find/replace in stored text: TEXT, MTEXT (only plain runs between formatting codes change; fonts, colours, stacks and paragraphs survive), attribute values; include may add dimensions, tables and block_definitions (definitions change every reference, inserted attribute values stay). Ø, ° and ± also match %%c, %%d and %%p, in any mix (\"±0.5%\" finds %%p0.5%), and text found in its coded form gets the replacement coded too; a find that itself contains codes (%%c) works on the stored text and writes the replacement as given. Fields, formulas and locked layers are skipped and counted. Scope: handles, or scope current/model/layout(+layout)/all, optional layers patterns, match_case, whole_word, max_changes (default 500). Preview with cad_edit_preview first",
+    "offset": "handle/target is a line, arc, circle, 2D polyline, ellipse or spline; distance is nonzero; side_point picks the side (otherwise the sign decides). Results keep the source properties unless layer/color_index are given; id names the first result",
+    "explode": "Explodes one top-level entity into its parts in the same space and erases it unless keep_original. For blocks attributes_as_text (default true) turns attribute values into TEXT/MTEXT like BURST; false leaves attribute definitions (tags) like EXPLODE. Nested block references keep their attribute values",
+    "join": "handle/target is the base, others are handles or ids of curves meeting it end to end in one plane. A line or arc base becomes a polyline; joined curves are erased; not_joined lists the rest. Fails if nothing joins",
+    "array_rect": "items: handles or ids in the current space; rows and columns 1..100, row_spacing/column_spacing in drawing units (negative goes down/left), optional angle_deg rotates the grid. Plain copies, not an associative array; at most 2000 copies",
+    "array_polar": "items, center, count (total including the original, 2..500), angle_deg total fill (default 360: evenly spaced; otherwise first and last at the ends; negative is clockwise), rotate_items default true; without rotation the selection moves as one around its common centre",
+    "fillet": "Two lines in one WCS XY plane (handle/target and other_handle/other_target); each keeps its end farther from the corner. radius 0 makes a sharp corner; id names the arc. FILLET_TOO_LARGE when a line would vanish",
+    "chamfer": "Two lines as for fillet; distance along the first line, other_distance (default distance) along the second; id names the new chamfer line",
+    "polyline_fillet": "Rounds corners of a lightweight polyline (LWPOLYLINE) in place with arcs of radius, as the Polyline option of FILLET; the handle stays. vertices (indices before the change) limits it to those corners, default every corner. A corner between two straight segments becomes two tangent points joined by an arc; ends of an open polyline, corners next to an arc segment, straight vertices and corners whose arc does not fit (also two neighbouring arcs that would overlap) are left and listed in skipped with the reason. Tapered widths are interpolated. FILLET_NOT_APPLIED when no corner could be rounded",
+    "text_translate": "Writes translations of units read with cad_text_units: units is [{unit, text, source}] where unit is the key, text the new displayed text and source the text it was read as (a unit changed since then fails with TEXT_CHANGED). TEXT stays one line; a paragraph of TEXT lines rewraps across the same lines (lines it no longer needs become empty and are counted). MTEXT, MTEXT attributes, multileaders and table cells keep the formatting that opens their text; a word in its own colour or font inside the text cannot be kept and is reported as formatting_simplified. fit shrink (default) keeps each text in its original frame: the width factor shrinks to min_width_factor (default 0.7), then the height to min_height_ratio (default 0.6) of the original, and what still does not fit is reported as overflow; fit none writes the text as it is. Units with fields or formulas, or on a locked layer (for an attribute, also its block reference's layer), are skipped and listed in skipped. After text in a dynamic block definition changes, its anonymous copies are rebuilt as the block editor does on save (dynamic_blocks_updated)",
+    "text_fit": "Fits existing text into a frame without changing it: TEXT and attributes narrow their width factor down to min_width_factor (default 0.7), then their height down to min_height_ratio (default 0.6), until they are no wider than width; MTEXT wraps at width and, with height, shrinks its text height until it is no taller. Fit and Aligned TEXT fit themselves. handle/target or handles (up to 5000)",
+    "trim": "handle/target is the curve to cut; boundaries are handles or ids; pick_point lies on the part to remove. As TRIM does, only the span between the crossings on either side of the pick point is removed and the curve is split nowhere else; the remaining pieces get new handles. Closed curves need two crossings",
+    "extend": "Extends an open line, arc or 2D polyline (WCS XY) at end start or end to the nearest boundary crossing on its extension",
+    "dimension_angular": "center is the vertex, first/second lie on the two legs, position lies on the dimension arc; text overrides the measured angle (keep <> to show it)",
+    "mleader": "points: 2..20 WCS points from the arrowhead to the landing next to the text; text is MText contents; optional height, style (multileader style name) and text_style",
+    "field_text": "MText with a live field showing property Length, Area, ArcLength, Circumference, Perimeter, Radius or Diameter of object_handle/object_target; precision 0..8 (default 2), factor converts units (0.000001 turns mm² into m²), prefix/suffix are literal text. Fails if the object has no such property",
+    "xref_attach": "Attaches (or with overlay:true overlays) an existing .dwg by absolute path at position in the current space; name defaults to the file name and must be new. Cannot be previewed. Runs outside the edit transaction, so it must be the only operation of its request",
+    "block_import": "Copies block definitions by exact names from another .dwg (absolute path). Existing definitions are kept unless overwrite:true replaces them (their references update). Cannot be previewed. Runs outside the edit transaction, so it must be the only operation of its request",
+    "layer_merge": "mapping {source:target} moves every entity (and attribute) of each source layer in all layouts and, unless include_blocks:false, in block definitions (layer 0 inside blocks is never changed) to its target. create_missing creates absent targets with the source settings; purge (default true) deletes emptied source layers. Locked sources fail",
+    "xdata_set": "Replaces one application's XData on an entity (app is registered if needed); values are {type,value} with type string (<=255 chars, no line breaks), real, distance, scale, int16, int32, point [x,y,z] or handle; empty values remove that application's data. Under 16 KB. cad_entity_get shows xdata. Application names starting with ACAD, ACDB, AEC, ADSK, AUTODESK or ACMAP are refused: AutoCAD keeps dimension overrides and other data there",
+    "xrecord_set": "Stores values (same {type,value} list) under key in dictionary (default CADMCP) of the entity's extension dictionary, or of the drawing's named objects dictionary without handle/target; delete:true removes the key when it holds a data record (other objects are never erased). Dictionary names starting with ACAD, ACDB, AEC, ADSK, AUTODESK or ACMAP belong to AutoCAD and its verticals and are refused. cad_entity_get shows extension_dictionary",
+    "preview": "cad_edit_preview runs the same plan in a transaction that is always rolled back and returns the result, readback, acceptance and review with plan_hash; cad_edit with preview_hash, the same plan and expectations and expected_revision equal to previewed_revision runs exactly that plan. The hash is bound to the drawing and revision and only a preview produces it; any change in between needs a new preview. The preview activates its drawing like cad_edit and may leave the drawing marked modified (document_state_before_preview shows the state before it). Previews cannot include layouts, viewports, images, external references, block import or Civil/Map operations; review helpers cannot run them",
+    "solid_boolean_result": "The result reports volume_before, tool_volume and volume_after; an operation that would leave an empty solid fails with EMPTY_SOLID_RESULT and rolls back",
+    "large_batches": "Batches touching more than 250 entities are not reviewed (quality unverified, REVIEW_SKIPPED); very large readback lists are shortened (entities_truncated) while acceptance still checks all of them",
+    "civil_names": "Civil objects can be named instead of handled: style and label_set (profiles), parts_list (networks), family and size (pipes and structures, within the network's parts list; a size is its catalog size name). cad_vertical_catalog lists styles, label sets, parts lists with families and sizes, and sites",
+    "map_coordinate_system": "code is a CS-MAP catalog code (for example LL84, UTM84-37N) or an EPSG number (2154 or EPSG:2154). The code is checked against the catalog and the drawing extents against the system's useful range; a mismatch fails unless force:true. compatible is null when it could not be checked (non-earth XY-* systems, coordinates the catalog cannot convert, no extents). Without the CS-MAP catalog a code is stored unvalidated and an EPSG number is refused. Assigning a system never moves geometry"
+  },
+  "example": [
+    {
+      "op": "layer",
+      "name": "Сеть",
+      "color_index": 3
+    },
+    {
+      "op": "line",
+      "id": "pipe",
+      "start": [
+        0,
+        0,
+        0
+      ],
+      "end": [
+        100,
+        0,
+        0
+      ],
+      "layer": "Сеть"
+    },
+    {
+      "op": "move",
+      "target": "pipe",
+      "displacement": [
+        0,
+        50,
+        0
+      ]
+    }
+  ]
+}

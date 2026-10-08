@@ -10,21 +10,89 @@ namespace CadMcp.AutoCAD;
 
 internal sealed class Dispatcher(Documents documents) : IDisposable
 {
-    private readonly ConcurrentQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source)> queue = new();
+    private readonly ConcurrentQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source, DateTimeOffset Enqueued)> queue = new();
     private readonly object mutationGate = new();
     private readonly OperationControl control = new();
     private readonly ConcurrentDictionary<string, string> mutationOwners = new();
     private readonly SnapshotStore snapshots = new();
-    private readonly OperationJournal journal = new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "operations", documents.SessionId));
-    private readonly ResultArchive archive = new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "results", documents.SessionId));
+    private readonly OperationJournal journal = new(Wire.DataDirectory("operations", documents.SessionId));
+    private readonly ResultArchive archive = new(Wire.DataDirectory("results", documents.SessionId));
     private readonly RevisionCache<JsonElement> catalogCache = new();
     private readonly RevisionCache<JsonElement> searchCache = new(8);
     private sealed record RenderFrame(string DocumentId, long Revision, int Width, int Height, DateTimeOffset CapturedAt, ImageRegistration? Registration);
     private readonly ConcurrentDictionary<string, RenderFrame> renderFrames = new();
     private readonly ConcurrentQueue<string> renderOrder = new();
-    private sealed record LispJob(string Id, Request Request, Document Document, string Code);
-    private LispJob? lisp;
-    public void Start() => App.Idle += Idle;
+    private sealed record LispJob(string Id, Request Request, Document Document, string Code, IReadOnlyList<LispFinding> Findings)
+    {
+        /// <summary>Set when AutoCAD began evaluating the script; from then on only its own result ends the job.</summary>
+        public volatile bool Started;
+        /// <summary>The script waits for the user's confirmation; nothing has been sent to AutoCAD yet.</summary>
+        public volatile bool AwaitingApproval;
+        /// <summary>Confirmed, and sent to AutoCAD at the next Idle in which its drawing is active and no command runs.</summary>
+        public volatile bool PendingStart;
+        /// <summary>AutoCAD reported the end of the outermost AutoLISP evaluation after the script started.</summary>
+        public volatile bool EvaluationEnded;
+        /// <summary>AutoLISP evaluations under way in the job's drawing; nested ones come in pairs. CAD thread only.</summary>
+        public int LispDepth;
+        public DateTimeOffset ApprovalDeadline;
+        /// <summary>The script must begin before this time, or it fails without having run.</summary>
+        public DateTimeOffset StartBy = Request.Deadline ?? DateTimeOffset.UtcNow.AddSeconds(30);
+        public IDisposable? Approval;
+    }
+    /// <summary>Shows the confirmation for a waiting script; returns a handle that closes it. Null in Core Console.</summary>
+    public Func<LispApprovalRequest, Action<bool, bool>, IDisposable>? ApprovalPresenter { get; set; }
+    private static readonly TimeSpan ApprovalTimeout = TimeSpan.FromMinutes(10);
+    // Keys preview hashes, so cad_edit accepts only a hash this worker produced for the plan.
+    private readonly byte[] previewKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+    // Written on the CAD thread, read by pipe threads for receipts.
+    private volatile LispJob? lisp;
+    /// <summary>Operation id of the agent's script AutoCAD is evaluating; CADMCPLISP refuses to run meanwhile.</summary>
+    internal static volatile string? RunningLispScript;
+    // CAD thread health, written on the CAD thread and read by pipe threads for diagnostics.
+    private IntPtr mainWindow;
+    private bool inIdle;
+    private long lastIdleTicks = DateTime.UtcNow.Ticks, modalSinceTicks;
+    private int modalDepth;
+    private volatile bool quitting;
+    private volatile string? busyReason;
+    public void Start()
+    {
+        App.Idle += Idle; documents.Closing += DocumentClosing;
+        App.EnterModal += EnterModal; App.LeaveModal += LeaveModal; App.BeginQuit += BeginQuit; App.QuitAborted += QuitAborted;
+        // Core Console has no main window; Wake is then a no-op and Idle still runs on its own schedule.
+        try { mainWindow = App.MainWindow?.Handle ?? IntPtr.Zero; } catch (System.Exception) { mainWindow = IntPtr.Zero; }
+    }
+    private void EnterModal(object? sender, EventArgs e) { if (Interlocked.Increment(ref modalDepth) == 1) Interlocked.Exchange(ref modalSinceTicks, DateTime.UtcNow.Ticks); }
+    private void LeaveModal(object? sender, EventArgs e) { if (Interlocked.Decrement(ref modalDepth) <= 0) { Interlocked.Exchange(ref modalDepth, 0); Wake(); } }
+    private void BeginQuit(object? sender, EventArgs e) => quitting = true;
+    private void QuitAborted(object? sender, EventArgs e) => quitting = false;
+    private TimeSpan? ModalFor => Volatile.Read(ref modalDepth) > 0 ? DateTime.UtcNow - new DateTime(Interlocked.Read(ref modalSinceTicks), DateTimeKind.Utc) : null;
+    /// <summary>
+    /// AutoCAD raises Idle only after processing a window message. A request queued by a pipe thread while
+    /// AutoCAD sits idle in the background would otherwise wait for the next mouse move or timer.
+    /// </summary>
+    private void Wake()
+    {
+        if (mainWindow != IntPtr.Zero) NativeMethods.PostMessage(mainWindow, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero);
+    }
+    /// <summary>Why queued work may not run; reported in cad_runtime_status and expiry errors. Safe on any thread.</summary>
+    internal object Health()
+    {
+        var idle = new DateTime(Interlocked.Read(ref lastIdleTicks), DateTimeKind.Utc);
+        var oldest = queue.TryPeek(out var first) ? (DateTimeOffset.UtcNow - first.Enqueued).TotalSeconds : (double?)null;
+        var job = lisp;
+        return new { last_idle_utc = idle, seconds_since_idle = Math.Round((DateTime.UtcNow - idle).TotalSeconds, 1), modal_dialog = ModalFor is { } modal ? new { open = true, seconds = Math.Round(modal.TotalSeconds, 1) } : null,
+            quitting, busy_reason = busyReason, oldest_queued_seconds = oldest is null ? (double?)null : Math.Round(oldest.Value, 1),
+            lisp = job is null ? null : new { operation_id = job.Id, started = job.Started, awaiting_approval = job.AwaitingApproval, waiting_for_idle_drawing = job.PendingStart } };
+    }
+    private string Blocker()
+    {
+        if (ModalFor is { } modal) return "AutoCAD shows a modal dialog (" + Math.Round(modal.TotalSeconds) + " s); ask the user to close it";
+        if (quitting) return "AutoCAD is closing";
+        var idle = DateTime.UtcNow - new DateTime(Interlocked.Read(ref lastIdleTicks), DateTimeKind.Utc);
+        if (busyReason is { } reason) return "the drawing was busy: " + reason;
+        return idle > TimeSpan.FromSeconds(5) ? "the AutoCAD UI thread did not become idle for " + Math.Round(idle.TotalSeconds) + " s" : "the queue was busy";
+    }
     public async Task<Response> Enqueue(Request r, CancellationToken ct)
     {
         // Receipts use no AutoCAD API and remain readable while its UI thread is building geometry.
@@ -32,28 +100,42 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (r.Operation is "cad_cancel" or "cad_runtime_status" or "cad_diagnostics")
         {
             if (r.SessionId != documents.SessionId) throw new CadFault("SESSION_MISMATCH", "Worker session changed");
-            return new(r.RequestId, "completed", r.Operation == "cad_cancel" ? new { cancellation_requested = control.Cancel(r), boundary = "transaction/action boundary; native kernel calls finish first; running AutoLISP requires Esc" }
-                : r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId,r.DocumentId) : new { operations = control.Snapshot(r), queued = queue.Count }, documents.SessionId, r.DocumentId);
+            if (r.Operation == "cad_cancel")
+            {
+                // The flag is set first, so the Idle that Wake raises already sees the cancellation.
+                var requested = control.Cancel(r);
+                Wake();
+                return new(r.RequestId, "completed", new { cancellation_requested = requested, boundary = "transaction/action boundary; native kernel calls finish first; running AutoLISP requires Esc" }, documents.SessionId, r.DocumentId);
+            }
+            return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId,r.DocumentId) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health() }, documents.SessionId, r.DocumentId);
         }
         ct.ThrowIfCancellationRequested();
         var source = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (MutationRecovery.IsMutation(r.Operation))
         {
             string id = EditPlan.RequiredText(r.Data, "operation_id");
-            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
+            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
             lock (mutationGate)
             {
-                // Reading an existing receipt must also work when the queue is full.
+                // Reading an existing receipt must also work when the queue is full, a dialog is open or AutoCAD quits.
                 if (journal.Find(id) is not null) return Replay(r, id, journal.Begin(id, r)!);
+                ThrowIfUnavailable();
                 if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full");
                 if (journal.Begin(id, r) is { } prior) return Replay(r, id, prior);
                 mutationOwners[id] = r.RequestId;
                 // Transport cancellation must not destroy the only receipt of an accepted change.
-                queue.Enqueue((r, control.Accept(id, r), source));
+                queue.Enqueue((r, control.Accept(id, r), source, DateTimeOffset.UtcNow));
             }
         }
-        else { if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full"); queue.Enqueue((r, ct, source)); }
+        else { ThrowIfUnavailable(); if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full"); queue.Enqueue((r, ct, source, DateTimeOffset.UtcNow)); }
+        Wake();
         return await Portable.Await(source.Task, ct).ConfigureAwait(false);
+    }
+    /// <summary>AutoCAD raises no Idle inside a modal dialog; fail now with the reason instead of expiring silently.</summary>
+    private void ThrowIfUnavailable()
+    {
+        if (quitting) throw new CadFault("AUTOCAD_QUITTING", "AutoCAD is closing; no new work is accepted");
+        if (ModalFor is { } modal && modal > TimeSpan.FromSeconds(1)) throw new CadFault("APPLICATION_MODAL", "AutoCAD shows a modal dialog; ask the user to close it, then retry");
     }
     private Response Replay(Request r, string id, OperationJournal.Entry entry) => entry.Result is { } result
         ? result with { RequestId = r.RequestId }
@@ -65,51 +147,66 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (r.Operation == "cad_operation_list")
         {
             DateTimeOffset since = DateTimeOffset.TryParse(r.Data.Text("since"), out var value) ? value : DateTimeOffset.MinValue;
-            var recent = journal.Recent(r.DocumentId ?? "", since, r.Data.Number("limit", 50),r.OwnerId);
+            var unreadable = new List<string>();
+            var recent = journal.Recent(r.DocumentId ?? "", since, r.Data.Number("limit", 50), r.OwnerId, unreadable);
             return new(r.RequestId, "completed", new { operations = recent.Select(p => OperationJournal.Summary(p.Id, p.Entry,
                 p.Entry.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(p.Id) || lisp?.Id == p.Id)),
-                truncated = recent.Count == r.Data.Number("limit", 50) }, documents.SessionId, r.DocumentId);
+                truncated = recent.Count == r.Data.Number("limit", 50),
+                unreadable_receipts = unreadable.Count == 0 ? null : unreadable }, documents.SessionId, r.DocumentId);
         }
         string id = EditPlan.RequiredText(r.Data, "operation_id"); var entry = journal.Find(id);
         if (entry is not null && entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to a different drawing");
         bool active = entry?.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(id) || lisp?.Id == id;
         return new(r.RequestId, "completed", new { operation_id = id, state = entry is null ? "not_found" : active ? entry.State : "unknown",
-            result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
+            phase = control.PhaseOf(id), result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
             retry = "Replay only the original exact request with its operation_id. Unknown/not_found never proves no changes." }, documents.SessionId, r.DocumentId);
     }
     private void Idle(object? sender, EventArgs e)
     {
+        // An operation that pumps messages (plotting, a dialog, document activation) can raise Idle again;
+        // a nested call must never start a second operation inside the first.
+        if (inIdle) return;
+        inIdle = true;
+        try { RunIdle(); }
+        finally { inIdle = false; }
+    }
+    private void RunIdle()
+    {
+        Interlocked.Exchange(ref lastIdleTicks, DateTime.UtcNow.Ticks);
         // All database access occurs here, on the CAD application thread.
+        CheckLisp();
         if (!queue.TryPeek(out var pending))
         {
             var doc=App.DocumentManager.MdiActiveDocument;
-            if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)
-            {
-                var state=documents.Register(doc);
-                if(state.TablesDirty&&!state.HistoryCommand)
-                {
-                    state.TablesDirty=false;state.Recalculating=true;
-                    try{using var locked=doc.LockDocument();using var undo=new UndoGroup(doc);using var tr=doc.Database.TransactionManager.StartTransaction();StructuralAssemblies.RefreshSchedules(doc.Database,tr);TableLinks.Recalculate(doc.Database,tr);tr.Commit();state.TableError=null;}
-                    catch(System.Exception error){state.TableError=error.Message;System.Diagnostics.Trace.WriteLine("Table auto-recalculate: "+error.Message);}
-                    finally{state.Recalculating=false;}
-                }
-            }
+            if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)RecalculateTables(doc);
             return;
         }
         if (pending.Token.IsCancellationRequested || pending.Request.Deadline <= DateTimeOffset.UtcNow)
         {
             queue.TryDequeue(out _);
-            var expired = Response.Fail(pending.Request, pending.Token.IsCancellationRequested ? "CANCELLED" : "DEADLINE_EXPIRED", "Request stopped before execution; no drawing changes were started");
+            var expired = Response.Fail(pending.Request, pending.Token.IsCancellationRequested ? "CANCELLED" : "DEADLINE_EXPIRED",
+                "Request stopped before execution; no drawing changes were started" + (pending.Token.IsCancellationRequested ? "" : ": " + Blocker()));
             if (MutationRecovery.IsMutation(pending.Request.Operation))
             { string id = EditPlan.RequiredText(pending.Request.Data, "operation_id"); expired = journal.Complete(id, expired); mutationOwners.TryRemove(id, out _); control.Complete(id); }
-            pending.Source.TrySetResult(expired); return;
+            pending.Source.TrySetResult(expired);
+            if (!queue.IsEmpty) Wake();
+            return;
         }
         var active = App.DocumentManager.MdiActiveDocument;
-        if (pending.Request.Operation != "cad_operation_status" && active is not null && !active.Editor.IsQuiescent) return;
+        if (active is not null && !active.Editor.IsQuiescent)
+        {
+            string command = "";
+            try { command = active.CommandInProgress; } catch (System.Exception) { }
+            busyReason = "command in progress" + (string.IsNullOrWhiteSpace(command) ? "" : ": " + command) + " in " + System.IO.Path.GetFileName(active.Name);
+            return;
+        }
+        busyReason = null;
         if (!queue.TryDequeue(out var job)) return;
         Response response;
         var originalDocument=App.DocumentManager.MdiActiveDocument;
-        bool activate=MutationRecovery.IsMutation(job.Request.Operation)||job.Request.Operation is "cad_vertical_catalog" or "cad_vertical_get" or "cad_vertical_capabilities";
+        bool activate=CadOperations.ActivatesDocument(job.Request.Operation);
+        // A script this request queued runs in the drawing it activated; any other request gives the tab back.
+        var lispBefore=lisp;
         try
         {
             if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
@@ -117,7 +214,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
         catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
-        finally { if(activate && lisp is null && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
+        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
         if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
         {
             string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
@@ -125,6 +222,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             mutationOwners.TryRemove(id, out _); control.Complete(id);
         }
         job.Source.TrySetResult(response);
+        // The next queued request needs another Idle, which an otherwise idle AutoCAD would not raise soon.
+        if (!queue.IsEmpty) Wake();
     }
     private Response Execute(Request r, CancellationToken ct)
     {
@@ -132,8 +231,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId);
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
-        bool readOnly = r.Operation is "cad_context" or "cad_review" or "cad_solid_get" or "cad_assembly_get" or "cad_table_dependencies" or "cad_release_check" or "cad_vertical_capabilities" or "cad_verify" or "cad_context" or "cad_catalog" or "cad_render" or "cad_image_register" or "cad_image_point" or "cad_vertical_catalog" or "cad_vertical_get" or "cad_snapshot" or
-            "cad_query" or "cad_search" or "cad_result_get" or "cad_entity_get" or "cad_table_get";
+        bool readOnly = CadOperations.ReadOnly.Contains(r.Operation);
         var doc = documents.Active(r, checkRevision: !readOnly, allowInactive: readOnly); var state = documents.Register(doc);
         using var reading = readOnly ? documents.ReadScope(doc) : null;
         using var locked = doc.LockDocument();
@@ -155,17 +253,35 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         editor_context_available=isActive,
                         view = view is null?(object)new{available=false,reason="inactive_document_editor"}:new {available=true,width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),
-                        capabilities = new[] { "cad_cancel", "cad_runtime_status", "cad_diagnostics", "cad_review", "cad_solid_get", "cad_assembly_get", "cad_table_dependencies", "cad_release_check", "cad_verify", "cad_operation_list", "cad_context", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get", "cad_table_get", "cad_focus", "cad_render", "cad_image_register", "cad_image_point", "cad_catalog", "cad_vertical_catalog", "cad_vertical_get", "cad_edit", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status" },
-                        editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id },
+                        capabilities = CadOperations.WorkerOperations,
+                        editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id,
+                            lisp_policy = LispPolicy.Name(CadSettings.EffectiveLispPolicy()), lisp_policy_owner = "user (AutoCAD command CADMCPLISP)" },
                         cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
                             table_dependency_error = state.TableError, ignored_read_side_effect_events = state.ReadSideEffectEvents },
                         limitations = new[] { "preview_render_unverified", "Civil3D_Map3D_SPDS_special_geometry_partial", "native_edits_current_space_only" } };
                 break;
             case "cad_review":
-                ObjectId[] reviewIds;
+                ObjectId[]? reviewIds=null;
                 if(r.Data.Text("handles_json") is {} reviewJson){using var parsed=JsonDocument.Parse(reviewJson);reviewIds=parsed.RootElement.EnumerateArray().Select(h=>NativeTables.Resolve(doc.Database,h.GetString()!)).ToArray();}
-                else reviewIds=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
+                if(r.Data.Text("options_json") is {} reviewOptionsJson){data=ReviewOptions.Run(doc.Database,tr,reviewOptionsJson,reviewIds,ct);break;}
+                reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
+            case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
+            case "cad_text_units": data = TextUnits.Read(doc.Database, tr, r.Data, ct); break;
+            case "cad_properties": data = ObjectInspection.Properties(doc.Database, tr, r.Data, ct); break;
+            case "cad_proxies": data = ObjectInspection.Proxies(doc.Database, tr, r.Data, ct); break;
+            case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40), DraftingPlan.Integer(r.Data, "layer_limit", 1, 5000, 100)); break;
+            case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
+            case "cad_changes": data = DrawingInsight.Changes(state, tr, r.Data); break;
+            case "cad_edit_preview":
+                var previewPlan = EditPlan.RequiredText(r.Data, "operations_json");
+                var previewOperations = EditPlan.Parse(previewPlan);
+                var stateBeforePreview = DrawingReview.DocumentState(doc);
+                data = new { plan_hash = EditPlan.Hash(previewPlan, r.Data.Text("expectations_json"), state.Id, state.Revision, previewKey), previewed_revision = state.Revision,
+                    document_state_before_preview = stateBeforePreview,
+                    apply = "cad_edit with the same operations_json and expectations_json, preview_hash and expected_revision runs exactly this plan",
+                    result = Edits.Execute(doc, previewOperations, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), preview: true) };
+                break;
             case "cad_solid_get":
                 data=SolidModeling.Inspect(tr.GetObject(NativeTables.Resolve(doc.Database,r.Data.Text("handle")!),OpenMode.ForRead) as Solid3d ?? throw new CadFault("INVALID_SOLID","Solid3d required"));break;
             case "cad_assembly_get":
@@ -375,13 +491,15 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return prior.Result is { } result ? result with { RequestId = r.RequestId, Data = new { replayed = true, result = result.Data } }
                 : new(r.RequestId, "queued", new { operation_id = id, state = prior.State, replayed = true }, documents.SessionId, state.Id, state.Revision);
         }
-        if (lisp is not null) throw new CadFault("BUSY_LISP", "An AutoLISP operation is queued/running; read its status before another mutation");
+        if (lisp is { } pending) throw new CadFault("BUSY_LISP", pending.AwaitingApproval
+            ? "AutoLISP operation " + pending.Id + " waits for the user's confirmation in AutoCAD; no other change runs until the user confirms or declines it or it is withdrawn with cad_cancel"
+            : "An AutoLISP operation is queued/running; read its status before another mutation");
         documents.Active(r);
         JsonElement[]? operations = null;
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
-        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); }
+        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
         else if (r.Operation == "cad_export")
         {
             exportFormat = EditPlan.RequiredText(r.Data, "format");
@@ -394,13 +512,23 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             publishFolder = EditPlan.RequiredText(r.Data, "output_folder");
             publishLayouts = EditPlan.RequiredText(r.Data, "layouts_json");
         }
-        else
+        IReadOnlyList<LispFinding> lispFindings = [];
+        string lispDecision = "run";
+        if (r.Operation == "cad_lisp")
         {
             code = EditPlan.RequiredText(r.Data, "code");
             if (code.Length > 65536) throw new CadFault("LISP_TOO_LARGE", "AutoLISP code limit is 65536 characters");
+            LispScript.ValidateBody(code);
+            lispFindings = LispPolicy.Scan(code);
+            LispPolicy.EnsureRunnable(lispFindings);
+            // The policy belongs to the user (CADMCPLISP); an agent cannot change it.
+            lispDecision = LispPolicy.Decide(CadSettings.EffectiveLispPolicy(), lispFindings);
+            if (lispDecision == "deny") throw new CadFault("LISP_DISABLED", "The user disabled AutoLISP for CAD MCP (command CADMCPLISP). Use native cad_edit operations or ask the user");
+            if (lispDecision == "ask" && ApprovalPresenter is null) throw new CadFault("LISP_APPROVAL_UNAVAILABLE", "AutoLISP needs the user's confirmation, which is unavailable here; set CAD_MCP_LISP_POLICY=allow for unattended runs");
         }
         bool mapOperation=operations?.Any(p=>p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true)==true;
         if(mapOperation && operations!.Length!=1)throw new CadFault("MAP_SINGLE_OPERATION","Map API operations must run singly with a checkpoint");
+        bool outsideTransaction=operations?.Any(p=>ModifyPlan.OutsideTransaction.Contains(p.Text("op")!))==true;
         journal.Begin(id, r);
         try
         {
@@ -412,34 +540,89 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             WorkSafety.Start(documents.SessionId, r, checkpoint);
             if (code is not null)
             {
-                lisp = new(id, r, doc, code);
-                doc.CommandCancelled += LispInterrupted;
-                doc.CommandFailed += LispInterrupted;
-                doc.SendStringToExecute(LispScript.Wrap(id), false, false, false);
-                return new(r.RequestId, "queued", new { operation_id = id, state = "queued", requires_poll = "cad_operation_status", rollback = "not_atomic", cancellation = "Esc in AutoCAD; queued scripts are not cancelled by stopping the model" }, documents.SessionId, state.Id, state.Revision);
+                var job = new LispJob(id, r, doc, code, lispFindings);
+                lisp = job;
+                var findings = lispFindings.Count == 0 ? null : lispFindings;
+                if (lispDecision == "ask")
+                {
+                    job.AwaitingApproval = true; job.ApprovalDeadline = DateTimeOffset.UtcNow + ApprovalTimeout;
+                    control.Phase(id, "awaiting_user_approval");
+                    job.Approval = ApprovalPresenter!(new(id, System.IO.Path.GetFileName(doc.Name), code, lispFindings),
+                        (approved, remember) => ApprovalDecided(job, approved, remember));
+                    return new(r.RequestId, "queued", new { operation_id = id, state = "queued", approval = "waiting_for_user_confirmation_in_AutoCAD",
+                        approval_timeout_minutes = ApprovalTimeout.TotalMinutes, findings, requires_poll = "cad_operation_status", rollback = "not_atomic",
+                        cancellation = "The user can decline; cad_cancel withdraws the request before it runs" }, documents.SessionId, state.Id, state.Revision);
+                }
+                StartLisp(job);
+                return new(r.RequestId, "queued", new { operation_id = id, state = "queued", findings, requires_poll = "cad_operation_status", rollback = "not_atomic", cancellation = "Esc in AutoCAD; queued scripts are not cancelled by stopping the model" }, documents.SessionId, state.Id, state.Revision);
             }
             journal.Running(id); control.Phase(id, "running");
+            state.Author = id;
             object data;
-            if(operations?.Any(p=>p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true)==true)
+            if(mapOperation)
             {
-                if(operations.Length!=1)throw new CadFault("MAP_SINGLE_OPERATION","Map API operations must run singly; their transaction semantics differ from native DWG edits");
-                using var undo=new UndoGroup(doc);data=new {transaction="map_api_not_atomic",result=VerticalEditing.Map(doc.Database,operations[0]),checkpoint};
+                using var undo=new UndoGroup(doc);data=new {transaction="map_api_not_atomic",result=VerticalEditing.Map(doc.Database,operations![0]),checkpoint};
             }
             else data = exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
                 : publishFolder is not null ? Exports.Publish(doc, publishFolder, publishLayouts!, ct)
                 : Edits.Execute(doc, operations!, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), phase => WorkSafety.Phase(documents.SessionId, id, phase));
-            WorkSafety.Phase(documents.SessionId, id, "completed");
+            // A native edit has already refreshed every generated schedule and linked table in its own transaction.
+            if (operations is not null && !mapOperation) state.TakeTableChanges();
+            WorkSafety.Phase(documents.SessionId, id, "completed", final: true);
+            state.Author = null;
             string status = publishFolder is not null && Wire.Element(data).Text("status") == "partial" ? "partial" : "completed";
             var response = new Response(r.RequestId, status, new { operation_id = id, result = data, checkpoint, document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
             return journal.Complete(id, response);
         }
         catch (System.Exception error)
         {
-            if (lisp?.Id == id) { doc.CommandCancelled -= LispInterrupted; doc.CommandFailed -= LispInterrupted; lisp = null; }
+            if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
+            if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
-            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
+            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
+    }
+    private void StartLisp(LispJob job)
+    {
+        job.Document.CommandCancelled += LispInterrupted;
+        job.Document.CommandFailed += LispInterrupted;
+        job.Document.LispWillStart += LispEvaluationStarting;
+        job.Document.LispEnded += LispEvaluationEnded;
+        job.Document.LispCancelled += LispEvaluationEnded;
+        job.Document.SendStringToExecute(LispScript.Wrap(job.Id), false, false, false);
+    }
+    private void LispEvaluationStarting(object? sender, LispWillStartEventArgs e)
+    {
+        if (lisp is { } job && ReferenceEquals(sender, job.Document)) job.LispDepth++;
+    }
+    /// <summary>
+    /// The wrapper reports its result before its evaluation ends, so a started job that is still open afterwards
+    /// lost its report (an error escaped the wrapper). CheckLisp ends it once the drawing is idle again.
+    /// </summary>
+    private void LispEvaluationEnded(object? sender, EventArgs e)
+    {
+        if (lisp is { } job && ReferenceEquals(sender, job.Document) && --job.LispDepth <= 0 && job.Started) job.EvaluationEnded = true;
+    }
+    /// <summary>The user's answer, on the CAD thread. A late answer for a finished job is ignored.</summary>
+    private void ApprovalDecided(LispJob job, bool approved, bool remember)
+    {
+        if (!ReferenceEquals(lisp, job) || !job.AwaitingApproval) return;
+        job.AwaitingApproval = false; job.Approval = null;
+        if (!approved) { FinishLisp(job.Id, false, "The user declined this AutoLISP operation; nothing ran", started: false, code: "LISP_DENIED"); return; }
+        if (remember) CadSettings.RelaxForSession();
+        // The window does not block AutoCAD: the user may have edited the drawing the script was written for.
+        if (job.Document.IsDisposed || documents.Register(job.Document).Revision != job.Request.ExpectedRevision)
+        {
+            FinishLisp(job.Id, false, "The drawing changed while the script waited for confirmation; nothing ran. Read the drawing again and resubmit", started: false, code: "REVISION_CONFLICT");
+            return;
+        }
+        control.Phase(job.Id, "queued");
+        // Sent from Idle, not from the button: the user may be in the middle of a command, whose prompt would
+        // otherwise receive the script text.
+        job.StartBy = DateTimeOffset.UtcNow.AddSeconds(30);
+        job.PendingStart = true;
+        Wake();
     }
     public string? BeginLisp(string id)
     {
@@ -447,34 +630,126 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         try
         {
             if(control.Cancelled(id))throw new CadFault("CANCELLED","Queued AutoLISP cancelled before execution");
-            if (job.Request.Deadline <= DateTimeOffset.UtcNow) throw new CadFault("DEADLINE_EXPIRED", "LISP did not start before the request deadline");
+            if (job.AwaitingApproval) throw new CadFault("LISP_NOT_APPROVED", "The script started before the user confirmed it");
+            if (job.StartBy <= DateTimeOffset.UtcNow) throw new CadFault("DEADLINE_EXPIRED", "LISP did not start before the request deadline");
             if (!ReferenceEquals(documents.Active(job.Request), job.Document)) throw new CadFault("DOCUMENT_MISMATCH", "Drawing changed before LISP execution");
             journal.Running(id);
+            job.Started = true;
+            RunningLispScript = id;
+            documents.Register(job.Document).Author = id;
             return "(progn\n" + job.Code + "\n)";
         }
-        catch (System.Exception error) { FinishLisp(id, false, error.Message, started: false); return null; }
+        catch (System.Exception error) { FinishLisp(id, false, error.Message, started: false, code: (error as CadFault)?.Code); return null; }
     }
-    public void FinishLisp(string id, bool success, string text, bool started = true)
+    public void FinishLisp(string id, bool success, string text, bool started = true, string? code = null)
     {
         if (lisp is not { } job || job.Id != id) return;
+        try
+        {
+        job.AwaitingApproval = false;
+        try { job.Approval?.Dispose(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: closing AutoLISP confirmation: " + error.Message); }
+        job.Approval = null;
         bool sameDocument = !job.Document.IsDisposed && ReferenceEquals(Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument, job.Document);
         var revision = job.Document.IsDisposed ? (long?)null : documents.Register(job.Document).Revision;
         var response = new Response(job.Request.RequestId, success && sameDocument ? "completed" : "failed",
             new { operation_id = id, return_value = text.Substring(0, Math.Min(text.Length, 16384)), truncated = text.Length > 16384, execution_started = started,
                 partial_changes_possible = started && (!success || !sameDocument), rollback = "not_atomic", verification = "read affected entities with cad_entity_get or cad_snapshot", undo = "UNDO command group; script may override grouping" },
             documents.SessionId, job.Request.DocumentId, revision,
-            success && sameDocument ? null : new(!started && control.Cancelled(id)?"CANCELLED":"LISP_FAILED", sameDocument ? text.Substring(0, Math.Min(text.Length, 16384)) : "LISP changed or closed the active document; reconcile drawings"));
-        job.Document.CommandCancelled -= LispInterrupted; job.Document.CommandFailed -= LispInterrupted;
-        journal.Complete(id, response); mutationOwners.TryRemove(id, out _); control.Complete(id); WorkSafety.Phase(documents.SessionId, id, success ? "completed" : "failed"); lisp = null;
+            success && sameDocument ? null : new(code ?? (!started && control.Cancelled(id)?"CANCELLED":"LISP_FAILED"), sameDocument || !started ? text.Substring(0, Math.Min(text.Length, 16384)) : "LISP changed or closed the active document; reconcile drawings"));
+        Unsubscribe(job.Document);
+        if (!job.Document.IsDisposed && documents.Register(job.Document) is { } lispState && lispState.Author == id) lispState.Author = null;
+        journal.Complete(id, response); mutationOwners.TryRemove(id, out _); control.Complete(id); WorkSafety.Phase(documents.SessionId, id, success ? "completed" : "failed", final: true);
+        }
+        // Cleared last, so status readers see the job as active until its receipt is written, and cleared
+        // even after a failure, so a broken callback cannot block every later mutation.
+        finally { if (ReferenceEquals(lisp, job)) lisp = null; if (RunningLispScript == id) RunningLispScript = null; }
+    }
+    private void Unsubscribe(Document doc)
+    {
+        if (doc.IsDisposed) return;
+        doc.CommandCancelled -= LispInterrupted; doc.CommandFailed -= LispInterrupted;
+        doc.LispWillStart -= LispEvaluationStarting; doc.LispEnded -= LispEvaluationEnded; doc.LispCancelled -= LispEvaluationEnded;
     }
     private void LispInterrupted(object? sender, CommandEventArgs e)
     {
-        if (lisp is { } job && ReferenceEquals(sender, job.Document))
-            FinishLisp(job.Id, false, "CAD command cancelled or failed: " + e.GlobalCommandName, journal.Find(job.Id)?.State == "running");
+        // Once the script runs, commands it calls may fail or be cancelled inside its own error handling;
+        // the script still reports its result through cadmcpfinish. Only a job that has not started ends here.
+        if (lisp is { Started: false } job && ReferenceEquals(sender, job.Document))
+            FinishLisp(job.Id, false, "CAD command cancelled or failed before AutoLISP started: " + e.GlobalCommandName, started: false);
+    }
+    /// <summary>
+    /// A queued script may never start: its drawing closed, or the command line was cancelled or busy. A started
+    /// script cannot report when its drawing closes. Either way the job would block every later mutation.
+    /// </summary>
+    private void CheckLisp()
+    {
+        if (lisp is not { } job) return;
+        if (job.Document.IsDisposed)
+            FinishLisp(job.Id, false, "The drawing closed before the AutoLISP operation reported its result; reconcile the drawing", job.Started);
+        else if (!job.Started && control.Cancelled(job.Id))
+            FinishLisp(job.Id, false, "Queued AutoLISP cancelled before execution", started: false);
+        else if (job.AwaitingApproval && DateTimeOffset.UtcNow > job.ApprovalDeadline)
+            FinishLisp(job.Id, false, "The user did not confirm the AutoLISP operation in time; nothing ran", started: false, code: "LISP_APPROVAL_TIMEOUT");
+        else if (job.PendingStart && DateTimeOffset.UtcNow <= job.StartBy)
+        {
+            if (!ReferenceEquals(App.DocumentManager.MdiActiveDocument, job.Document) || !job.Document.Editor.IsQuiescent) return;
+            job.PendingStart = false;
+            try { StartLisp(job); }
+            catch (System.Exception error) { Unsubscribe(job.Document); FinishLisp(job.Id, false, error.Message, started: false); }
+        }
+        else if (job.PendingStart)
+            FinishLisp(job.Id, false, "The confirmed AutoLISP operation could not start: its drawing was not active or AutoCAD was busy with a command; nothing ran", started: false, code: "DEADLINE_EXPIRED");
+        else if (!job.Started && !job.AwaitingApproval && DateTimeOffset.UtcNow > job.StartBy + TimeSpan.FromSeconds(10))
+            FinishLisp(job.Id, false, "AutoLISP did not start before the request deadline", started: false);
+        else if (job.Started && job.EvaluationEnded && job.Document.Editor.IsQuiescent)
+            FinishLisp(job.Id, false, "AutoLISP ended without reporting its result (an error outside the script's own error handling); reconcile the drawing", started: true);
+    }
+    private void DocumentClosing(Document doc)
+    {
+        try
+        {
+            if (lisp is { } job && ReferenceEquals(job.Document, doc))
+                FinishLisp(job.Id, false, "The drawing was closed before the AutoLISP operation reported its result; reconcile the drawing", job.Started);
+        }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: closing drawing with AutoLISP job: " + error.Message); }
+    }
+    /// <summary>
+    /// Keep generated schedules and linked tables current after the user edits their sources by hand.
+    /// Runs only when a changed table or block reference takes part in them, so drawings without such
+    /// tables, and unrelated edits, never get an extra write or undo step.
+    /// </summary>
+    private void RecalculateTables(Document doc)
+    {
+        var state = documents.Register(doc);
+        if (!state.TablesDirty || state.HistoryCommand) return;
+        var changed = state.TakeTableChanges();
+        state.Recalculating = true;
+        try
+        {
+            using var locked = doc.LockDocument();
+            HashSet<long> managed;
+            using (documents.ReadScope(doc))
+            using (var check = doc.Database.TransactionManager.StartOpenCloseTransaction())
+            {
+                managed = TableLinks.LinkedTableHandles(doc.Database, check);
+                managed.UnionWith(StructuralAssemblies.ScheduleHandles(doc.Database, check));
+            }
+            if (managed.Count == 0 || changed is not null && !changed.Overlaps(managed)) return;
+            using var undo = new UndoGroup(doc);
+            using var tr = doc.Database.TransactionManager.StartTransaction();
+            state.Author = "table_recalculation";
+            var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr);
+            TableLinks.Recalculate(doc.Database, tr);
+            tr.Commit();
+            state.TableError = warnings.Count == 0 ? null : string.Join("; ", warnings);
+        }
+        catch (System.Exception error) { state.TableError = error.Message; System.Diagnostics.Trace.WriteLine("Table auto-recalculate: " + error.Message); }
+        finally { state.Recalculating = false; if (state.Author == "table_recalculation") state.Author = null; }
     }
     public void Dispose()
     {
-        App.Idle -= Idle; control.Dispose();
+        App.Idle -= Idle; documents.Closing -= DocumentClosing; control.Dispose();
+        App.EnterModal -= EnterModal; App.LeaveModal -= LeaveModal; App.BeginQuit -= BeginQuit; App.QuitAborted -= QuitAborted;
         if (lisp is { } script) FinishLisp(script.Id, false, "Worker stopped; reconcile any changes before retrying");
         while (queue.TryDequeue(out var job))
         {
@@ -482,5 +757,33 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (MutationRecovery.IsMutation(job.Request.Operation)) journal.Complete(EditPlan.RequiredText(job.Request.Data, "operation_id"), response);
             job.Source.TrySetResult(response);
         }
+    }
+}
+
+internal static class NativeMethods
+{
+    internal const uint WM_NULL = 0;
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    internal static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+}
+
+/// <summary>AutoLISP callbacks of the wrapper script. An exception here must neither reach AutoCAD nor leave a job pending.</summary>
+internal static class LispCallbacks
+{
+    public static string? Begin(Dispatcher? dispatcher, ResultBuffer? args)
+    {
+        try { return dispatcher is not null && args?.AsArray() is [{ Value: string id }, ..] ? dispatcher.BeginLisp(id) : null; }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpbegin: " + error.Message); return null; }
+    }
+    public static int Finish(Dispatcher? dispatcher, ResultBuffer? args)
+    {
+        try
+        {
+            if (dispatcher is not null && args?.AsArray() is [{ Value: string id }, { Value: var status }, { Value: var text }])
+                dispatcher.FinishLisp(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
+        }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpfinish: " + error.Message); }
+        return 0;
     }
 }

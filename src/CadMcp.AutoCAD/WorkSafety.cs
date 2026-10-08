@@ -9,9 +9,10 @@ namespace CadMcp.AutoCAD;
 internal static class WorkSafety
 {
     private static readonly object Sync = new();
-    private static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CadMcp", "recovery");
+    private static readonly string Root = Wire.DataDirectory("recovery");
     internal static bool Required(Request request, JsonElement[]? operations) => request.Operation == "cad_lisp" || operations is { Length: >= 25 }
-        || operations?.Any(p => p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true || p.Text("op") is "erase" or "solid_boolean" or "solid_shell" or "assembly_update" || p.Text("action") == "delete") == true;
+        || operations?.Any(p => p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true || p.Text("op") is "erase" or "solid_boolean" or "solid_shell" or "assembly_update"
+            or "text_replace" or "layer_merge" or "explode" or "trim" or "join" or "block_import" || p.Text("action") == "delete") == true;
     internal static object Checkpoint(Document doc, string session, string document, string operation)
     {
         string directory = Path.Combine(Root, session, Portable.Hash(System.Text.Encoding.UTF8.GetBytes(document)));
@@ -33,33 +34,46 @@ internal static class WorkSafety
         }
         catch (System.Exception e) { throw new CadFault("CHECKPOINT_FAILED", "Required DWG checkpoint failed; drawing was not changed: " + e.Message); }
     }
+    // The record this process wrote last, so per-action progress does not re-read and parse the file.
+    private static Dictionary<string, JsonElement>? last;
+    private static string? lastSession;
     internal static void Start(string session, Request request, object? checkpoint)
     {
         lock (Sync)
         {
             Directory.CreateDirectory(Path.Combine(Root, session));
-            Save(session, Wire.Element(new { session_id = session, document_id = request.DocumentId, operation_id = request.Data.Text("operation_id"),
+            var record = Wire.Element(new { session_id = session, document_id = request.DocumentId, operation_id = request.Data.Text("operation_id"),
                 operation = request.Operation, owner_id = request.OwnerId, started_at = DateTimeOffset.UtcNow,
-                plugin_version = typeof(WorkSafety).Assembly.GetName().Version?.ToString(), process_id = Environment.ProcessId, checkpoint, phase = "accepted" }));
+                plugin_version = typeof(WorkSafety).Assembly.GetName().Version?.ToString(), process_id = Environment.ProcessId, checkpoint, phase = "accepted" });
+            Save(session, record.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone()), durable: true);
         }
     }
-    internal static void Phase(string session, string operation, string phase)
+    /// <summary>
+    /// Record progress. Intermediate phases are written without forcing them to disk: they survive a CAD crash,
+    /// and only an operating system failure could lose them. The final phase is flushed.
+    /// </summary>
+    internal static void Phase(string session, string operation, string phase, bool final = false)
     {
         try { lock (Sync)
         {
             string path = Path.Combine(Root, session, "last-operation.json");
-            if (!File.Exists(path)) return;
-            var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path), Wire.Json)!;
-            if (data.GetValueOrDefault("operation_id").GetString() != operation) return;
+            var data = lastSession == session ? last : null;
+            if (data is null)
+            {
+                if (!File.Exists(path)) return;
+                data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path), Wire.Json)!;
+            }
+            if (data.GetValueOrDefault("operation_id").ValueKind != JsonValueKind.String || data["operation_id"].GetString() != operation) return;
             data["phase"] = Wire.Element(phase); data["last_signal_at"] = Wire.Element(DateTimeOffset.UtcNow);
-            Save(session, Wire.Element(data));
+            Save(session, data, final);
         } } catch(System.Exception e) when(e is IOException or UnauthorizedAccessException or JsonException){System.Diagnostics.Trace.WriteLine("Operation diagnostic: "+e.Message);}
     }
-    private static void Save(string session, JsonElement value)
+    private static void Save(string session, Dictionary<string, JsonElement> value, bool durable)
     {
         string path = Path.Combine(Root, session, "last-operation.json");
-        using (var stream = new FileStream(path + ".tmp", FileMode.Create)) { JsonSerializer.Serialize(stream, value, Wire.Json); stream.Flush(true); }
+        using (var stream = new FileStream(path + ".tmp", FileMode.Create)) { JsonSerializer.Serialize(stream, value, Wire.Json); stream.Flush(durable); }
         Portable.ReplaceFile(path + ".tmp", path);
+        last = value; lastSession = session;
     }
     internal static object Diagnostics(string session,string? document=null)
     {

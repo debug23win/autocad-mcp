@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: AutoCAD 2025 reference assemblies (compile only)
+        shell: pwsh
+        run: |
+          $references = ./scripts/autocad-references.ps1 -Destination "$env:RUNNER_TEMP/autocad-2025"
+          "AUTOCAD_DIR=$references" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Restore (locked)
+        shell: pwsh
+        run: |
+          foreach ($project in Get-Content .github/ci-projects.txt) {
+            dotnet restore $project --locked-mode
+            if ($LASTEXITCODE -ne 0) { throw "Restore failed: $project" }
+          }
+
+      - name: Build (warnings are errors)
+        shell: pwsh
+        run: |
+          foreach ($project in Get-Content .github/ci-projects.txt) {
+            dotnet build $project -c Release --no-restore -warnaserror "-p:AutoCADDir=$env:AUTOCAD_DIR"
+            if ($LASTEXITCODE -ne 0) { throw "Build failed: $project" }
+          }
+
+      - name: Test
+        shell: pwsh
+        run: dotnet test tests/CadMcp.Tests/CadMcp.Tests.csproj -c Release --no-build --logger "trx;LogFileName=CadMcp.Tests.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: ignore

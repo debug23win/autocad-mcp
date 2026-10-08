@@ -1,0 +1,237 @@
+{
+  "tasks": [
+    {
+      "id": "rectangle-on-layer",
+      "prompt": "Создай слой «Стены» и начерти на нём замкнутый прямоугольник 6000 × 4000 с левым нижним углом в точке 0,0. Единицы чертежа — миллиметры.",
+      "allowed_layers": [
+        "Стены"
+      ],
+      "checks": [
+        {
+          "evidence": "takeoff",
+          "path": "areas[layer=Стены].count",
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "areas[layer=Стены].area",
+          "op": "approx",
+          "expected": 24000000,
+          "tolerance": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=Стены].length",
+          "op": "approx",
+          "expected": 20000,
+          "tolerance": 0.01
+        }
+      ],
+      "initial_evidence": {
+        "takeoff": {
+          "areas": [],
+          "lengths": []
+        },
+        "changes": {
+          "changes": []
+        }
+      }
+    },
+    {
+      "id": "replace-diameter",
+      "prompt": "Во всех текстах чертежа замени диаметр Ø108 на Ø114. Больше ничего не меняй.",
+      "fixture": "Три надписи с Ø108 (одна записана как %%c108, одна — многострочный текст с форматированием) на слое «Подписи».",
+      "allowed_layers": [
+        "Подписи"
+      ],
+      "evidence_queries": [
+        {
+          "name": "old",
+          "operation": "cad_search",
+          "data": {
+            "options_json": "{\"scope\":\"all\",\"text\":\"Ø108\",\"limit\":500}"
+          }
+        },
+        {
+          "name": "new",
+          "operation": "cad_search",
+          "data": {
+            "options_json": "{\"scope\":\"all\",\"text\":\"Ø114\",\"limit\":500}"
+          }
+        }
+      ],
+      "checks": [
+        {
+          "evidence": "old",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 0
+        },
+        {
+          "evidence": "new",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 3
+        }
+      ],
+      "initial_evidence": {
+        "old": {
+          "result": {
+            "entities": [
+              {},
+              {},
+              {}
+            ]
+          }
+        },
+        "new": {
+          "result": {
+            "entities": []
+          }
+        },
+        "changes": {
+          "changes": []
+        }
+      }
+    },
+    {
+      "id": "count-wells",
+      "prompt": "Сколько колодцев (блок «Колодец») на чертеже? Ничего не меняй.",
+      "fixture": "12 вставок блока «Колодец», из них 4 — динамические.",
+      "checks": [
+        {
+          "evidence": "final_text",
+          "path": "",
+          "op": "contains",
+          "expected": "12"
+        },
+        {
+          "evidence": "changes",
+          "path": "changes",
+          "op": "count",
+          "expected": 0
+        }
+      ],
+      "initial_evidence": {
+        "changes": {
+          "changes": []
+        }
+      }
+    },
+    {
+      "id": "missing-inputs",
+      "prompt": "Начерти лестницу.",
+      "missing_inputs": true,
+      "checks": [
+        {
+          "evidence": "asked_user",
+          "path": "",
+          "op": "equals",
+          "expected": true
+        },
+        {
+          "evidence": "changes",
+          "path": "changes",
+          "op": "count",
+          "expected": 0
+        }
+      ],
+      "initial_evidence": {
+        "changes": {
+          "changes": []
+        }
+      }
+    },
+    {
+      "id": "fillet-corner",
+      "prompt": "Скругли угол между двумя линиями слоя «Контур» радиусом 500.",
+      "fixture": "Две линии длиной 10000, сходящиеся под прямым углом в точке 0,0, на слое «Контур».",
+      "allowed_layers": [
+        "Контур"
+      ],
+      "checks": [
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=Контур].by_type.ARC.count",
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=Контур].by_type.ARC.length",
+          "op": "approx",
+          "expected": 785.398163,
+          "tolerance": 0.001
+        },
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=Контур].by_type.LINE.length",
+          "op": "approx",
+          "expected": 19000,
+          "tolerance": 0.001
+        }
+      ],
+      "initial_evidence": {
+        "takeoff": {
+          "lengths": [
+            {
+              "layer": "Контур",
+              "count": 2,
+              "length": 20000,
+              "by_type": {
+                "LINE": {
+                  "count": 2,
+                  "length": 20000
+                }
+              }
+            }
+          ]
+        },
+        "changes": {
+          "changes": []
+        }
+      }
+    },
+    {
+      "id": "move-layer-objects",
+      "prompt": "Перенеси все объекты слоя «Мебель» на слой «Оборудование».",
+      "fixture": "15 объектов на слое «Мебель» и 7 на слое «Оборудование».",
+      "allowed_layers": [
+        "Мебель",
+        "Оборудование"
+      ],
+      "checks": [
+        {
+          "evidence": "outline",
+          "path": "layers[name=Оборудование].entities",
+          "op": "equals",
+          "expected": 22
+        },
+        {
+          "evidence": "outline",
+          "path": "layers[name=Мебель].entities",
+          "op": "zero_or_absent",
+          "expected": 0
+        }
+      ],
+      "initial_evidence": {
+        "outline": {
+          "layers": [
+            {
+              "name": "Мебель",
+              "entities": 15
+            },
+            {
+              "name": "Оборудование",
+              "entities": 7
+            }
+          ]
+        },
+        "changes": {
+          "changes": []
+        }
+      }
+    }
+  ]
+}
