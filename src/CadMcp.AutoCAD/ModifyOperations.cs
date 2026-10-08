@@ -27,6 +27,7 @@ internal static class ModifyOperations
         "join" => Join(db, tr, op, aliases),
         "array_rect" or "array_polar" => ArrayCopies(db, tr, op, aliases, ct),
         "fillet" or "chamfer" => Corner(db, tr, op, aliases),
+        "polyline_fillet" => RoundPolyline(db, tr, op, aliases),
         "trim" => Trim(db, tr, op, aliases),
         "extend" => Extend(db, tr, op, aliases),
         "dimension_angular" => AngularDimension(db, tr, op),
@@ -499,6 +500,47 @@ internal static class ModifyOperations
             }
         }
         return new(ObjectId.Null, created, new { kind, copies = created.Count, handles = created.Take(500).Select(H).ToArray(), handles_truncated = created.Count > 500, associative = false });
+    }
+
+    /// <summary>Rounds corners of a lightweight polyline in place, as FILLET's Polyline option; the polyline keeps its handle.</summary>
+    private static Outcome RoundPolyline(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases)
+    {
+        if (Edits.Editable(db, tr, Edits.Resolve(db, tr, op, aliases), true) is not Polyline polyline)
+            throw new CadFault("INVALID_POLYLINE", "polyline_fillet rounds a lightweight polyline (LWPOLYLINE); convert an old-style 2D polyline with CONVERTPOLY, or use fillet for two lines");
+        int count = polyline.NumberOfVertices;
+        var vertices = new PolylineVertex[count];
+        double extent = 0;
+        for (int i = 0; i < count; i++)
+        {
+            var point = polyline.GetPoint2dAt(i);
+            vertices[i] = new(point.X, point.Y, polyline.GetBulgeAt(i), polyline.GetStartWidthAt(i), polyline.GetEndWidthAt(i));
+            extent = Math.Max(extent, Math.Max(Math.Abs(point.X), Math.Abs(point.Y)));
+        }
+        int[]? at = op.TryGetProperty("vertices", out var list) ? list.EnumerateArray().Select(v => v.GetInt32()).ToArray() : null;
+        double radius = N(op, "radius");
+        var result = PolylineFillet.Apply(vertices, polyline.Closed, radius, at, Math.Max(1e-9, extent * 1e-12));
+        if (result.Filleted.Count == 0)
+            throw new CadFault("FILLET_NOT_APPLIED", "No corner could be rounded: " + (result.Skipped.Count == 0 ? "the polyline has no corner between two straight segments"
+                : string.Join("; ", result.Skipped.Take(10).Select(s => "vertex " + s.Vertex + ": " + s.Reason))));
+        // The polyline is rewritten in place: existing vertices take the new values, the rest are added or removed.
+        for (int i = 0; i < result.Vertices.Count; i++)
+        {
+            var v = result.Vertices[i];
+            if (i < count)
+            {
+                polyline.SetPointAt(i, new Point2d(v.X, v.Y));
+                polyline.SetBulgeAt(i, v.Bulge);
+                polyline.SetStartWidthAt(i, v.StartWidth);
+                polyline.SetEndWidthAt(i, v.EndWidth);
+            }
+            else polyline.AddVertexAt(i, new Point2d(v.X, v.Y), v.Bulge, v.StartWidth, v.EndWidth);
+        }
+        for (int i = count - 1; i >= result.Vertices.Count; i--) polyline.RemoveVertexAt(i);
+        return new(polyline.ObjectId, [polyline.ObjectId], new
+        {
+            handle = H(polyline.ObjectId), radius, vertices_before = count, vertices_after = polyline.NumberOfVertices, length = polyline.Length,
+            filleted = result.Filleted, skipped = result.Skipped.Count == 0 ? null : result.Skipped.Take(200).Select(s => new { vertex = s.Vertex, reason = s.Reason }).ToArray()
+        });
     }
 
     /// <summary>Fillet (radius 0 makes a sharp corner) or chamfer of two lines in one WCS XY plane.</summary>

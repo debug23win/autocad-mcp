@@ -28,9 +28,10 @@ public sealed class ModifyPlanTests
              {"op":"layer_merge","mapping":{"Старый":"Сеть","Tmp":"0"},"create_missing":true,"purge":false},
              {"op":"xdata_set","target":"a","app":"CADMCP_TEST","values":[{"type":"string","value":"труба"},{"type":"int16","value":3},{"type":"point","value":[1,2,3]}]},
              {"op":"xrecord_set","key":"settings","values":[{"type":"real","value":1.5}]},
-             {"op":"xrecord_set","handle":"5E","dictionary":"Мой","key":"k","delete":true}]
+             {"op":"xrecord_set","handle":"5E","dictionary":"Мой","key":"k","delete":true},
+             {"op":"polyline_fillet","handle":"6F","radius":2.5,"vertices":[1,3]}]
             """);
-        Assert.Equal(19, plan.Length);
+        Assert.Equal(20, plan.Length);
         foreach (var kind in ModifyPlan.Fields.Keys.Except(["xref_attach", "block_import"]))
             Assert.Contains(plan, op => op.Text("op") == kind);
     }
@@ -51,6 +52,12 @@ public sealed class ModifyPlanTests
     [InlineData("""[{"op":"fillet","handle":"1F","radius":1}]""", "INVALID_TARGET")]
     [InlineData("""[{"op":"fillet","handle":"1F","other_handle":"20","radius":-1}]""", "INVALID_PARAMETER")]
     [InlineData("""[{"op":"chamfer","handle":"1F","other_handle":"20","distance":0}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"polyline_fillet","handle":"1F"}]""", "MISSING_FIELD")]
+    [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":0}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":1,"vertices":[1,1]}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":1,"vertices":[-1]}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":1,"vertices":[]}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"polyline_fillet","radius":1}]""", "INVALID_TARGET")]
     [InlineData("""[{"op":"trim","handle":"1F","boundaries":["20"]}]""", "MISSING_FIELD")]
     [InlineData("""[{"op":"extend","handle":"1F","boundaries":["20"],"end":"middle"}]""", "INVALID_PARAMETER")]
     [InlineData("""[{"op":"mleader","points":[[0,0]],"text":"x"}]""", "INVALID_POINTS")]

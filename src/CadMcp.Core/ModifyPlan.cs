@@ -19,6 +19,7 @@ public static class ModifyPlan
         ["array_polar"] = "items center count angle_deg rotate_items",
         ["fillet"] = "handle target other_handle other_target radius layer color_index",
         ["chamfer"] = "handle target other_handle other_target distance other_distance layer color_index",
+        ["polyline_fillet"] = "handle target radius vertices",
         ["trim"] = "handle target boundaries pick_point",
         ["extend"] = "handle target boundaries end",
         ["dimension_angular"] = "center first second position text style layer color_index layout",
@@ -106,6 +107,13 @@ public static class ModifyPlan
                 case "height": case "factor": case "scale": case "rotation_deg":
                     EditPlan.Numeric(op, p.Name); break;
                 case "rows": case "columns": DraftingPlan.Integer(op, p.Name, 1, 100); break;
+                case "vertices":
+                    if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 10000) throw new CadFault("INVALID_PARAMETER", "vertices must list 1..10000 vertex indices");
+                    var indices = new HashSet<int>();
+                    foreach (var index in v.EnumerateArray())
+                        if (index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out int vertex) || vertex < 0 || !indices.Add(vertex))
+                            throw new CadFault("INVALID_PARAMETER", "vertices are distinct indices from 0");
+                    break;
                 case "count": DraftingPlan.Integer(op, p.Name, 2, 500); break;
                 case "precision": DraftingPlan.Integer(op, p.Name, 0, 8); break;
                 case "max_changes": DraftingPlan.Integer(op, p.Name, 1, 5000); break;
@@ -179,6 +187,10 @@ public static class ModifyPlan
             case "chamfer":
                 One("handle", "target"); One("other_handle", "other_target"); Require("distance");
                 if (EditPlan.Numeric(op, "distance") <= 0 || EditPlan.Numeric(op, "other_distance", 1) <= 0) throw new CadFault("INVALID_PARAMETER", "Chamfer distances must be positive");
+                break;
+            case "polyline_fillet":
+                One("handle", "target"); Require("radius");
+                if (EditPlan.Numeric(op, "radius") <= 0) throw new CadFault("INVALID_PARAMETER", "radius must be positive");
                 break;
             case "trim": One("handle", "target"); Require("boundaries", "pick_point"); break;
             case "extend": One("handle", "target"); Require("boundaries", "end"); break;
