@@ -38,10 +38,13 @@ internal sealed class ProviderLines(TextReader reader, int maximumChars = Provid
         bool overflow = false;
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
             if (start == end)
             {
                 start = 0;
                 end = await reader.ReadAsync(chunk.AsMemory(), ct);
+                // Killing a cancelled CLI can complete its pending read as EOF instead of a cancelled task.
+                ct.ThrowIfCancellationRequested();
                 if (end == 0)
                 {
                     if (overflow) { Note("Skipped an oversized provider line"); return null; }

@@ -132,6 +132,25 @@ public sealed class ProviderTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(4), "Stop hung waiting for stdout");
     }
 
+    [Fact]
+    public async Task Cancelled_process_EOF_is_cancellation_instead_of_a_provider_failure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var lines = new ProviderLines(new CancelledEofReader(cancellation));
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lines.ReadAsync(cancellation.Token));
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+    }
+
+    private sealed class CancelledEofReader(CancellationTokenSource cancellation) : TextReader
+    {
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken ct = default)
+        {
+            // Simulate the real stdout race: process termination wins the read, returning EOF after cancellation.
+            cancellation.Cancel();
+            return ValueTask.FromResult(0);
+        }
+    }
+
     private static async Task<(List<ChatEvent> Events, InputReceipt? Receipt)> Steer(IChatProvider provider, string prompt, TimeSpan limit)
     {
         using var timeout = new CancellationTokenSource(limit);
