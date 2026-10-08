@@ -19,7 +19,7 @@ public static class CadSubagentPolicy
         try
         {
             File.WriteAllText(temp,content,new UTF8Encoding(false));
-            // Replacing can briefly fail while a reader has the file open.
+            // Windows refuses to replace a file while a reader has it open; reads are brief, so retry.
             for (int attempt = 1; ; attempt++)
             {
                 try { File.Move(temp,path,true); return; }

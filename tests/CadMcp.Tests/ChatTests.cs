@@ -222,16 +222,23 @@ public sealed class SubagentPolicyTests
     }
 
     [Fact]
-    public void Primary_thread_binding_is_replaced_atomically()
+    public async Task Primary_thread_binding_is_replaced_atomically()
     {
         var options = new ProviderOptions("unused", "unused", Path.GetTempPath(), OwnerId: Guid.NewGuid().ToString("N"), CadSessionId: "s", CadDocumentId: "d");
         string path = CadSubagentPolicy.PrimaryThreadFile(options);
         try
         {
             CadSubagentPolicy.BindPrimary(options, "first");
-            // The MCP host opens the file this way while the chat may replace it.
-            using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                CadSubagentPolicy.BindPrimary(options, "second");
+            // The MCP host reads the file this way on every call while the chat may replace it. The read sees a whole
+            // thread id; Windows refuses to replace a file while it is open, so the chat retries until the read is over.
+            Task binding;
+            using (var reader = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)))
+            {
+                binding = Task.Run(() => CadSubagentPolicy.BindPrimary(options, "second"));
+                await Task.Delay(100);
+                Assert.Equal("first", await reader.ReadToEndAsync());
+            }
+            await binding.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal("second", File.ReadAllText(path));
             Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(path)!, Path.GetFileName(path) + ".*.tmp"));
         }

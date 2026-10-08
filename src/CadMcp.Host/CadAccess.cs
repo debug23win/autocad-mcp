@@ -15,7 +15,8 @@ internal static class CadAccess
             restricted=true;
             try
             {
-                // Share delete/write access, so the chat can atomically replace the file while it is read.
+                // Share delete/write access: the chat replaces the file whole. Windows refuses that replace while a read
+                // is open, so the read stays brief and the chat retries.
                 using var reader=new StreamReader(new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete));
                 string root=reader.ReadToEnd().Trim();
                 restricted=string.IsNullOrEmpty(root)||metadata?["threadId"]?.GetValue<string>()!=root;
