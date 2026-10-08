@@ -20,6 +20,8 @@ public static class ModifyPlan
         ["fillet"] = "handle target other_handle other_target radius layer color_index",
         ["chamfer"] = "handle target other_handle other_target distance other_distance layer color_index",
         ["polyline_fillet"] = "handle target radius vertices",
+        ["text_translate"] = "units fit min_width_factor min_height_ratio",
+        ["text_fit"] = "handle target handles width height min_width_factor min_height_ratio",
         ["trim"] = "handle target boundaries pick_point",
         ["extend"] = "handle target boundaries end",
         ["dimension_angular"] = "center first second position text style layer color_index layout",
@@ -107,6 +109,31 @@ public static class ModifyPlan
                 case "height": case "factor": case "scale": case "rotation_deg":
                     EditPlan.Numeric(op, p.Name); break;
                 case "rows": case "columns": DraftingPlan.Integer(op, p.Name, 1, 100); break;
+                case "units":
+                    if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 2000) throw new CadFault("INVALID_PARAMETER", "units must hold 1..2000 {unit, text, source} objects");
+                    var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var objects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var unit in v.EnumerateArray())
+                    {
+                        if (unit.ValueKind != JsonValueKind.Object || unit.EnumerateObject().Any(f => f.Name is not ("unit" or "text" or "source")))
+                            throw new CadFault("INVALID_PARAMETER", "Each unit is {unit, text, source}");
+                        string key = unit.TryGetProperty("unit", out var keyValue) && keyValue.ValueKind == JsonValueKind.String ? keyValue.GetString()! : throw new CadFault("INVALID_UNIT", "Each unit needs its unit key");
+                        var (unitHandles, row, column) = TextTranslation.ParseUnit(key);
+                        if (!keys.Add(key)) throw new CadFault("INVALID_UNIT", "A unit appears twice: " + key);
+                        // A text written by two units would keep only the last translation; table cells share their table.
+                        if (row < 0 && unitHandles.Any(h => !objects.Add(h))) throw new CadFault("INVALID_UNIT", "Two units name the same text: " + key);
+                        if (!unit.TryGetProperty("text", out var translated)) throw new CadFault("MISSING_FIELD", "text_translate: text of " + key);
+                        Text(translated, "text", 0, 5000);
+                        if (unit.TryGetProperty("source", out var source)) Text(source, "source", 0, 5000);
+                    }
+                    break;
+                case "fit": if (v.GetString() is not ("shrink" or "none")) throw new CadFault("INVALID_PARAMETER", "fit must be shrink or none"); break;
+                case "min_width_factor": case "min_height_ratio":
+                    if (EditPlan.Numeric(op, p.Name) is < 0.3 or > 1) throw new CadFault("INVALID_PARAMETER", p.Name + " must be between 0.3 and 1");
+                    break;
+                case "width":
+                    if (EditPlan.Numeric(op, p.Name) <= 0) throw new CadFault("INVALID_PARAMETER", "width must be positive");
+                    break;
                 case "vertices":
                     if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 10000) throw new CadFault("INVALID_PARAMETER", "vertices must list 1..10000 vertex indices");
                     var indices = new HashSet<int>();
@@ -187,6 +214,13 @@ public static class ModifyPlan
             case "chamfer":
                 One("handle", "target"); One("other_handle", "other_target"); Require("distance");
                 if (EditPlan.Numeric(op, "distance") <= 0 || EditPlan.Numeric(op, "other_distance", 1) <= 0) throw new CadFault("INVALID_PARAMETER", "Chamfer distances must be positive");
+                break;
+            case "text_translate": Require("units"); break;
+            case "text_fit":
+                if (Has("handles")) { if (Has("handle") || Has("target")) throw new CadFault("INVALID_TARGET", "text_fit: use handles or handle/target, not both"); }
+                else One("handle", "target");
+                Require("width");
+                if (Has("height") && EditPlan.Numeric(op, "height") <= 0) throw new CadFault("INVALID_PARAMETER", "height must be positive");
                 break;
             case "polyline_fillet":
                 One("handle", "target"); Require("radius");

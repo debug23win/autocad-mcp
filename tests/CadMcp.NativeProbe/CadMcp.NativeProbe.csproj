@@ -9,6 +9,7 @@
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingReview.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/QualityChecks.cs" Link="QualityChecks.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/ModifyOperations.cs" Link="ModifyOperations.cs" />
+    <Compile Include="../../src/CadMcp.AutoCAD/TextUnits.cs" Link="TextUnits.cs" />
     <Compile Include="../../src/CadMcp.AutoCAD/DrawingInsight.cs" Link="DrawingInsight.cs" />
     <Using Include="System.IO" />
     <!-- Compile production executors into an isolated test assembly so an installed preview can coexist. -->

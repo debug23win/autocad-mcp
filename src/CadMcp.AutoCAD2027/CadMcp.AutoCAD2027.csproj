@@ -5,7 +5,7 @@
     <Compile Include="../CadMcp.AutoCAD/WorkSafety.cs;../CadMcp.AutoCAD/TableLinks.cs;../CadMcp.AutoCAD/DrawingQuality.cs;../CadMcp.AutoCAD/SolidModeling.cs;../CadMcp.AutoCAD/StructuralAssemblies.cs;../CadMcp.AutoCAD/StructuralSolids.cs;../CadMcp.AutoCAD/VerticalEditing.cs" />
     <Compile Include="../CadMcp.AutoCAD/NativeTables.cs;../CadMcp.AutoCAD/SpdsDrafting.cs" />
     <Compile Include="../CadMcp.AutoCAD/DrawingReview.cs" />
-    <Compile Include="../CadMcp.AutoCAD/LispApproval.cs;../CadMcp.AutoCAD/QualityChecks.cs;../CadMcp.AutoCAD/ModifyOperations.cs;../CadMcp.AutoCAD/DrawingInsight.cs" />
+    <Compile Include="../CadMcp.AutoCAD/LispApproval.cs;../CadMcp.AutoCAD/QualityChecks.cs;../CadMcp.AutoCAD/ModifyOperations.cs;../CadMcp.AutoCAD/TextUnits.cs;../CadMcp.AutoCAD/DrawingInsight.cs" />
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
     <PackageReference Include="AutoCAD.NET" Version="26.0.0" PrivateAssets="all" ExcludeAssets="runtime" />
     <Compile Include="../CadMcp.AutoCAD/Documents.cs;../CadMcp.AutoCAD/Reader.cs;../CadMcp.AutoCAD/Edits.cs;../CadMcp.AutoCAD/Sheets.cs;../CadMcp.AutoCAD/RasterImages.cs;../CadMcp.AutoCAD/Exports.cs;../CadMcp.AutoCAD/PdfRepair.cs;../CadMcp.AutoCAD/Catalog.cs;../CadMcp.AutoCAD/Verticals.cs;../CadMcp.AutoCAD/Dispatcher.cs;../CadMcp.AutoCAD/DrawingSearch.cs;../CadMcp.AutoCAD/UndoGroup.cs;../CadMcp.AutoCAD/GlobalUsings.cs" />

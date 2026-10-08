@@ -217,7 +217,8 @@ public static class CadText
         return (result.ToString(), count);
     }
 
-    private static string EscapeMText(string text) => text.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
+    /// <summary>Plain text made safe inside MText contents: backslashes and braces would start formatting codes.</summary>
+    public static string EscapeMText(string text) => text.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
 
     /// <summary>For each position 0..length, whether it lies between characters rather than inside a control code.</summary>
     private static bool[] CodeBoundaries(string text)

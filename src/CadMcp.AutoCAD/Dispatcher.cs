@@ -267,6 +267,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
             case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
+            case "cad_text_units": data = TextUnits.Read(doc.Database, tr, r.Data, ct); break;
             case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40), DraftingPlan.Integer(r.Data, "layer_limit", 1, 5000, 100)); break;
             case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
             case "cad_changes": data = DrawingInsight.Changes(state, tr, r.Data); break;

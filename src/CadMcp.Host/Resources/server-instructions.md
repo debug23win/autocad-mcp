@@ -8,7 +8,8 @@ Orientation
 Editing
 - Read cad_edit_help first. Coordinates are WCS drawing units; input angles are degrees, readback angles radians. Never assume millimetres or change INSUNITS implicitly.
 - When the user refers to selected objects, state the selection count from cad_context before editing them.
-- Preview bulk or destructive plans (text_replace, layer_merge, explode, trim, large batches) with cad_edit_preview, then run cad_edit with the same plan and its preview_hash.
+- Preview bulk or destructive plans (text_replace, text_translate, layer_merge, explode, trim, large batches) with cad_edit_preview, then run cad_edit with the same plan and its preview_hash.
+- To translate or rewrite drawing text, read units with cad_text_units, translate each unit's text whole (a paragraph unit is one sentence across lines), and write them with text_translate, giving the text you read as source; report units that overflow their frame.
 - Put measurable requirements into expectations_json; a failed enforced check rolls the whole edit back.
 - Verify each write by a different mechanism than the edit response: cad_verify, cad_entity_get, cad_takeoff or a render.
 - Give every mutation a unique operation_id. After a timeout read cad_operation_status; never retry an unknown mutation with a new id.

@@ -29,9 +29,11 @@ public sealed class ModifyPlanTests
              {"op":"xdata_set","target":"a","app":"CADMCP_TEST","values":[{"type":"string","value":"труба"},{"type":"int16","value":3},{"type":"point","value":[1,2,3]}]},
              {"op":"xrecord_set","key":"settings","values":[{"type":"real","value":1.5}]},
              {"op":"xrecord_set","handle":"5E","dictionary":"Мой","key":"k","delete":true},
-             {"op":"polyline_fillet","handle":"6F","radius":2.5,"vertices":[1,3]}]
+             {"op":"polyline_fillet","handle":"6F","radius":2.5,"vertices":[1,3]},
+             {"op":"text_translate","units":[{"unit":"1A","text":"Plan","source":"План"},{"unit":"2B+2C","text":"Two lines"},{"unit":"3D@1,2","text":"Cell"}],"fit":"shrink","min_width_factor":0.75},
+             {"op":"text_fit","handles":["1A","2B"],"width":40,"height":10,"min_height_ratio":0.5}]
             """);
-        Assert.Equal(20, plan.Length);
+        Assert.Equal(22, plan.Length);
         foreach (var kind in ModifyPlan.Fields.Keys.Except(["xref_attach", "block_import"]))
             Assert.Contains(plan, op => op.Text("op") == kind);
     }
@@ -58,6 +60,19 @@ public sealed class ModifyPlanTests
     [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":1,"vertices":[-1]}]""", "INVALID_PARAMETER")]
     [InlineData("""[{"op":"polyline_fillet","handle":"1F","radius":1,"vertices":[]}]""", "INVALID_PARAMETER")]
     [InlineData("""[{"op":"polyline_fillet","radius":1}]""", "INVALID_TARGET")]
+    [InlineData("""[{"op":"text_translate"}]""", "MISSING_FIELD")]
+    [InlineData("""[{"op":"text_translate","units":[]}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"zz","text":"x"}]}]""", "INVALID_UNIT")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A","text":"x"},{"unit":"1a","text":"y"}]}]""", "INVALID_UNIT")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A"}]}]""", "MISSING_FIELD")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A+1B","text":"x"},{"unit":"1B","text":"y"}]}]""", "INVALID_UNIT")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A","text":"x","style":"y"}]}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A","text":"x"}],"fit":"grow"}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"text_translate","units":[{"unit":"1A","text":"x"}],"min_width_factor":0.1}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"text_fit","handle":"1A"}]""", "MISSING_FIELD")]
+    [InlineData("""[{"op":"text_fit","handle":"1A","width":0}]""", "INVALID_PARAMETER")]
+    [InlineData("""[{"op":"text_fit","handle":"1A","handles":["2B"],"width":10}]""", "INVALID_TARGET")]
+    [InlineData("""[{"op":"text_fit","width":10}]""", "INVALID_TARGET")]
     [InlineData("""[{"op":"trim","handle":"1F","boundaries":["20"]}]""", "MISSING_FIELD")]
     [InlineData("""[{"op":"extend","handle":"1F","boundaries":["20"],"end":"middle"}]""", "INVALID_PARAMETER")]
     [InlineData("""[{"op":"mleader","points":[[0,0]],"text":"x"}]""", "INVALID_POINTS")]

@@ -28,6 +28,8 @@ internal static class ModifyOperations
         "array_rect" or "array_polar" => ArrayCopies(db, tr, op, aliases, ct),
         "fillet" or "chamfer" => Corner(db, tr, op, aliases),
         "polyline_fillet" => RoundPolyline(db, tr, op, aliases),
+        "text_translate" => TextUnits.Translate(db, tr, op, ct),
+        "text_fit" => TextUnits.Fit(db, tr, op, aliases, ct),
         "trim" => Trim(db, tr, op, aliases),
         "extend" => Extend(db, tr, op, aliases),
         "dimension_angular" => AngularDimension(db, tr, op),

@@ -24,7 +24,7 @@ public sealed class McpHostTests
         var list = await host.RequestAsync("tools/list", new { });
         var tools = list.GetProperty("tools").EnumerateArray().ToArray();
         var names = tools.Select(t => t.GetProperty("name").GetString()!).ToArray();
-        Assert.Equal(43, names.Length);
+        Assert.Equal(44, names.Length);
         // The benchmark's invented-tool rule must know exactly the tools the server offers.
         Assert.Equal(names.Order(StringComparer.Ordinal), AgentEvaluation.KnownTools.Order(StringComparer.Ordinal));
         foreach (var expected in new[] { "cad_steel_catalog", "cad_search", "cad_result_get", "cad_edit", "cad_edit_preview", "cad_takeoff", "cad_outline", "cad_file_inspect", "cad_changes", "cad_export", "cad_publish", "cad_lisp", "cad_operation_status", "cad_render", "cad_image_register",
