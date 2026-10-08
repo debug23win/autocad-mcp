@@ -1,6 +1,6 @@
 # CAD MCP — AutoCAD, Map 3D и Civil 3D 2025–2027
 
-Версия 0.10.1-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
+Версия 0.11.0-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
 
 Изменения каждой версии и результаты проверки релизов — в [CHANGELOG.md](CHANGELOG.md); порядок проверки — в [docs/validation.md](docs/validation.md).
 
