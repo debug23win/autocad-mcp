@@ -1,4 +1,5 @@
-param([string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025', [string]$OutputDirectory)
+param([string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025', [string]$OutputDirectory,
+    [switch]$TextRegressionOnly, [string]$DynamicTextFixture)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (!$OutputDirectory) { $OutputDirectory = Join-Path ([IO.Path]::GetTempPath()) ('cmc-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
@@ -12,6 +13,9 @@ $wrapper = $core.GetType('CadMcp.Core.LispScript').GetMethod('Wrap').Invoke($nul
 # Core Console does not pump SendStringToExecute between startup-script lines.
 # Execute the same production wrapper explicitly; GUI queue delivery is tested separately.
 @(('(setvar "TRUSTEDPATHS" "' + $trusted + '")'),'_NETLOAD',$probe,'CADMCPCOREPROBE','CADMCPCORELISP',$wrapper,'CADMCPCORELISPVERIFY','_.QUIT','_Yes') | Set-Content -LiteralPath $script -Encoding ascii
+if ($TextRegressionOnly) {
+    @(('(setvar "TRUSTEDPATHS" "' + $trusted + '")'),'_NETLOAD',$probe,'CADMCPTEXTREGRESSION','_.QUIT','_Yes') | Set-Content -LiteralPath $script -Encoding ascii
+}
 $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $AutoCADDir 'accoreconsole.exe'))
 $start.UseShellExecute = $false; $start.CreateNoWindow = $true
 $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -20,6 +24,7 @@ $start.WorkingDirectory = $OutputDirectory
 foreach ($argument in @('/isolate', ('cadmcp-' + [guid]::NewGuid().ToString('N')), (Join-Path $OutputDirectory 'profile'), '/s', $script)) { $start.ArgumentList.Add($argument) }
 $result = Join-Path $OutputDirectory 'result.json'
 $start.Environment['CADMCP_PROBE_OUTPUT'] = $result
+if ($DynamicTextFixture) { $start.Environment['CADMCP_DYNAMIC_TEXT_FIXTURE'] = (Resolve-Path -LiteralPath $DynamicTextFixture).Path }
 # The probe runs cad_lisp unattended; the default policy would wait for a confirmation nobody gives.
 $start.Environment['CAD_MCP_LISP_POLICY'] = 'allow'
 $process = [Diagnostics.Process]::Start($start)
@@ -32,6 +37,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'artifacts') | Ou
 Copy-Item -LiteralPath $result -Destination (Join-Path $repoRoot 'artifacts/core-probe-latest.json')
 $report
 if ($report.failure) { throw $report.failure }
+if ($TextRegressionOnly) { return }
 if (!(Test-Path -LiteralPath ($result + '.lisp'))) { throw 'Core Console did not return the LISP result' }
 $lisp = Get-Content -LiteralPath ($result + '.lisp') -Raw | ConvertFrom-Json
 Copy-Item -LiteralPath ($result + '.lisp') -Destination (Join-Path $repoRoot 'artifacts/core-lisp-latest.json')

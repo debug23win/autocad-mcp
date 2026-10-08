@@ -9,6 +9,6 @@
          win-x64 restore agree and both pass in locked mode. -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <Deterministic>true</Deterministic>
-    <Version>0.11.0-preview</Version>
+    <Version>0.11.1-preview</Version>
   </PropertyGroup>
 </Project>

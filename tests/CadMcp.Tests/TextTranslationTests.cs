@@ -5,6 +5,29 @@ namespace CadMcp.Tests;
 public sealed class TextTranslationTests
 {
     [Fact]
+    public void Paragraphs_stay_in_their_own_space_and_elevation()
+    {
+        // Interleaving baselines used to connect unrelated model, sheet and block-definition texts.
+        var lines = new[]
+        {
+            new TextLine(0, 10, 0, 2.5, 40, "Standard", "Text", "model", 0),
+            new TextLine(0, 6.5, 0, 2.5, 40, "Standard", "Text", "sheet1", 0),
+            new TextLine(0, 3, 0, 2.5, 40, "Standard", "Text", "block", 0),
+            new TextLine(0, 10, 0, 2.5, 40, "Standard", "Text", "model", 100),
+            new TextLine(0, 6.5, 0, 2.5, 40, "Standard", "Text", "model", 100),
+            new TextLine(0, 3, 0, 2.5, 40, "Standard", "Text", "sheet2", 0)
+        };
+        var groups = TextTranslation.Paragraphs(lines).Select(g => string.Join(",", g)).ToHashSet();
+        Assert.Equal(5, groups.Count);
+        Assert.Contains("0", groups);
+        Assert.Contains("1", groups);
+        Assert.Contains("2", groups);
+        Assert.Contains("3,4", groups);
+        Assert.Contains("5", groups);
+        Assert.Equal(lines.Length, TextTranslation.Paragraphs(lines).Sum(g => g.Length));
+    }
+
+    [Fact]
     public void Unit_keys_name_texts_cells_and_paragraphs()
     {
         Assert.Equal("1F;-1;-1", Normalize(TextTranslation.ParseUnit("1F")));

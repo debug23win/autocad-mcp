@@ -34,6 +34,14 @@ AutoCAD, настоящие CLI и модели в этих тестах не з
 - `tests/CadMcp.ChatPanelProbe` — панель чата WPF без AutoCAD.
 - [Контрольный список живой проверки](live-checklist.md).
 
+Для регрессий перевода и замены текста 0.11.1 после сборки `tests/CadMcp.CoreProbe`:
+
+```powershell
+./scripts/test-autocad-core.ps1 -TextRegressionOnly -DynamicTextFixture 'C:\Program Files\Autodesk\AutoCAD 2025\Sample\ru-RU\Dynamic Blocks\Annotation - Metric.dwg'
+```
+
+Это отдельный скрытый Core Console с временным DWG и профилем. Штатный пример AutoCAD читается без записи и клонируется в тестовый чертёж. Для другой локализации укажите путь к локальному примеру с динамическими блоками. Отсутствие такого примера считается невыполненной проверкой, а не успехом. Список проверок и ошибка сохраняются в `result.json` каталога пробы; успешный результат копируется в `artifacts/core-probe-latest.json`.
+
 ## Проверки с настоящими CLI
 
 Добровольные и по подписке; используют записывающий CAD-фикстур, чертежи не меняются. После сборки Release из корня репозитория:

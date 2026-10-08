@@ -4,8 +4,8 @@ using System.Text.RegularExpressions;
 
 namespace CadMcp.Core;
 
-/// <summary>A single-line text for grouping into paragraphs: the start of its baseline, rotation in radians, height and measured width.</summary>
-public readonly record struct TextLine(double X, double Y, double Rotation, double Height, double Width, string Style, string Layer);
+/// <summary>A single-line text for grouping into paragraphs: baseline, rotation, height, measured width, owning space or block definition, and WCS elevation.</summary>
+public readonly record struct TextLine(double X, double Y, double Rotation, double Height, double Width, string Style, string Layer, string Owner = "", double Z = 0);
 
 /// <summary>Lines of a text after fitting, with the width factor and height scale that make them fit; Overflow when even the limits do not.</summary>
 public sealed record TextFit(string[] Lines, double WidthFactor, double HeightScale, bool Overflow);
@@ -140,7 +140,7 @@ public static class TextTranslation
     }
 
     /// <summary>
-    /// Groups single-line texts stacked as one paragraph: same rotation, style, layer and height, consecutive baselines
+    /// Groups single-line texts stacked as one paragraph: same owner, elevation, rotation, style, layer and height, consecutive baselines
     /// 0.8–2.5 heights apart with even spacing, and left edges, centres or right edges in line. Each group lists the
     /// lines from top to bottom; a line on its own is a group of one.
     /// </summary>
@@ -153,8 +153,8 @@ public static class TextTranslation
         // Lines that can share a paragraph: style, layer and rotation (to a tenth of a degree) alike. Each bucket is measured
         // in the frame of its own rotation, so distant coordinates do not turn a small angle into a large offset.
         static long Tenths(double r) { double degrees = r * 180 / Math.PI % 360; if (degrees < 0) degrees += 360; return (long)Math.Round(degrees * 10) % 3600; }
-        var buckets = Enumerable.Range(0, n).Where(i => lines[i].Height > 0 && double.IsFinite(lines[i].X) && double.IsFinite(lines[i].Y) && double.IsFinite(lines[i].Rotation))
-            .GroupBy(i => (Style: lines[i].Style.ToUpperInvariant(), Layer: lines[i].Layer.ToUpperInvariant(), Angle: Tenths(lines[i].Rotation)));
+        var buckets = Enumerable.Range(0, n).Where(i => lines[i].Height > 0 && double.IsFinite(lines[i].X) && double.IsFinite(lines[i].Y) && double.IsFinite(lines[i].Z) && double.IsFinite(lines[i].Rotation))
+            .GroupBy(i => (lines[i].Owner, lines[i].Z, Style: lines[i].Style.ToUpperInvariant(), Layer: lines[i].Layer.ToUpperInvariant(), Angle: Tenths(lines[i].Rotation)));
         foreach (var bucket in buckets)
         {
             double r = lines[bucket.First()].Rotation, cos = Math.Cos(r), sin = Math.Sin(r);

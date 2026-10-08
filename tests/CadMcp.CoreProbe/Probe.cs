@@ -11,6 +11,28 @@ using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 namespace CadMcp.CoreProbe;
 public static class Probe
 {
+    [CommandMethod("CADMCPTEXTREGRESSION")]
+    public static void TextRegression()
+    {
+        var output = Environment.GetEnvironmentVariable("CADMCP_PROBE_OUTPUT");
+        if (string.IsNullOrWhiteSpace(output)) return;
+        var checks = new List<string>();
+        string? failure = null;
+        try
+        {
+            var doc = App.DocumentManager.MdiActiveDocument ?? throw new InvalidOperationException("No active drawing");
+            void Assert(bool passed, string description)
+            {
+                if (!passed) throw new InvalidOperationException(description);
+                checks.Add(description);
+            }
+            TextProbe.Check(doc, Assert);
+            TextProbe.CheckRegression(doc, Assert, Environment.GetEnvironmentVariable("CADMCP_DYNAMIC_TEXT_FIXTURE"));
+        }
+        catch (System.Exception error) { failure = error.ToString(); }
+        File.WriteAllText(output, JsonSerializer.Serialize(new { checks, failure }));
+    }
+
     private static Documents? lispDocuments;
     private static Dispatcher? lispDispatcher;
     private static string? lispDocumentId;

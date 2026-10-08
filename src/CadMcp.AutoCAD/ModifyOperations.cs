@@ -83,6 +83,7 @@ internal static class ModifyOperations
         int maxChanges = DraftingPlan.Integer(op, "max_changes", 1, 5000, 500);
         var touched = new List<ObjectId>();
         var changes = new List<object>();
+        var definitions = new HashSet<ObjectId>();
         var skipped = new SortedDictionary<string, int>(StringComparer.Ordinal);
         int replacements = 0, formatted = 0;
         bool truncated = false;
@@ -164,7 +165,11 @@ internal static class ModifyOperations
                     }
                     break;
             }
-            if (changed) touched.Add(entity.ObjectId);
+            if (changed)
+            {
+                touched.Add(entity.ObjectId);
+                definitions.Add(entity.OwnerId);
+            }
         }
 
         string scope;
@@ -214,10 +219,12 @@ internal static class ModifyOperations
                 if (truncated) break;
             }
         }
+        var (updated, notUpdated) = TextUnits.UpdateDynamicBlocks(tr, definitions);
         return new(ObjectId.Null, touched, new
         {
             find, replace, scope, replacements, changed_objects = touched.Count, changes, changes_truncated = changes.Count < touched.Count,
             skipped = skipped.Count == 0 ? null : skipped, formatted_matches_left = formatted == 0 ? (int?)null : formatted,
+            dynamic_blocks_updated = updated, dynamic_blocks_not_updated = notUpdated,
             truncated, note = truncated ? "max_changes reached; run again to continue" : null
         });
     }

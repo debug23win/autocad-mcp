@@ -13,6 +13,114 @@ namespace CadMcp.CoreProbe;
 /// </summary>
 internal static class TextProbe
 {
+    internal static void CheckRegression(Document doc, Action<bool, string> assert, string? dynamicFixture)
+    {
+        var db = doc.Database;
+        JsonElement Edit(object plan) => Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(plan)), default));
+        string[] handles;
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            var blocks = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForWrite);
+            var model = (BlockTableRecord)tr.GetObject(blocks[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+            var paper = (BlockTableRecord)tr.GetObject(blocks[BlockTableRecord.PaperSpace], OpenMode.ForWrite);
+            BlockTableRecord Definition(string name)
+            {
+                var block = new BlockTableRecord { Name = name };
+                blocks.Add(block); tr.AddNewlyCreatedDBObject(block, true); return block;
+            }
+            var a = Definition("CADMCP_PARAGRAPH_A");
+            var b = Definition("CADMCP_PARAGRAPH_B");
+            BlockTableRecord[] owners = [model, paper, a, b, model, model];
+            handles = owners.Select((owner, i) =>
+            {
+                var text = new DBText { Position = new Point3d(10000, 100 - i * 3.5, i >= 4 ? 100 : 0),
+                    TextString = "Line " + i, Height = 2.5, TextStyleId = db.Textstyle };
+                owner.AppendEntity(text); tr.AddNewlyCreatedDBObject(text, true); return text.Handle.ToString();
+            }).ToArray();
+            tr.Commit();
+        }
+        using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+        {
+            var read = Wire.Element(TextUnits.Read(db, tr, Wire.Element(new { scope = "all", include = "text,block_definitions" }), default));
+            var units = read.GetProperty("units").EnumerateArray().Select(u => u.Text("unit")!).Where(u => u.Split('+').Any(handles.Contains)).ToHashSet();
+            assert(units.SetEquals(new[] { handles[0], handles[1], handles[2], handles[3], handles[4] + "+" + handles[5] }),
+                "scope all keeps model, paper, block definitions and different Z separate while grouping valid stacked lines");
+        }
+        foreach (var invalid in new[] { handles[0] + "+" + handles[1], handles[2] + "+" + handles[3], handles[0] + "+" + handles[4] })
+        {
+            bool rejected = false;
+            try { Edit(new object[] { new { op = "text_translate", units = new[] { new { unit = invalid, text = "Must not be written" } } } }); }
+            catch (CadFault error) when (error.Code == "INVALID_UNIT") { rejected = true; }
+            assert(rejected, "Legacy cross-space or cross-elevation paragraph is rejected: " + invalid);
+        }
+        using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+            assert(handles.Select((h, i) => ((DBText)tr.GetObject(NativeTables.Resolve(db, h), OpenMode.ForRead)).TextString == "Line " + i).All(v => v),
+                "Rejected paragraph translations leave every original TEXT unchanged");
+
+        if (string.IsNullOrWhiteSpace(dynamicFixture)) throw new InvalidOperationException("A local dynamic-block DWG fixture is required for this regression check");
+        // An installed sample is read only and cloned into the disposable test drawing; no Autodesk DWG is redistributed.
+        using var source = new Database(false, true);
+        source.ReadDwgFile(dynamicFixture, FileOpenMode.OpenForReadAndAllShare, true, null);
+        ObjectId sourceBlock;
+        using (var tr = source.TransactionManager.StartOpenCloseTransaction())
+            sourceBlock = ((BlockTable)tr.GetObject(source.BlockTableId, OpenMode.ForRead)).Cast<ObjectId>()
+                .First(id => tr.GetObject(id, OpenMode.ForRead) is BlockTableRecord { IsDynamicBlock: true, IsAnonymous: false, IsLayout: false });
+        var mapping = new IdMapping();
+        source.WblockCloneObjects(new ObjectIdCollection(new[] { sourceBlock }), db.BlockTableId, mapping, DuplicateRecordCloning.Ignore, false);
+        var definitionId = mapping[sourceBlock].Value;
+        ObjectId[] references;
+        string blockName;
+        const string oldText = "CADMCP_DYNAMIC_OLD", newText = "CADMCP_DYNAMIC_NEW";
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            var definition = (BlockTableRecord)tr.GetObject(definitionId, OpenMode.ForWrite);
+            blockName = definition.Name;
+            var text = new DBText { Position = Point3d.Origin, Height = 2.5, TextString = oldText, TextStyleId = db.Textstyle };
+            definition.AppendEntity(text); tr.AddNewlyCreatedDBObject(text, true);
+            definition.UpdateAnonymousBlocks();
+            var model = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+            references = Enumerable.Range(0, 2).Select(i =>
+            {
+                var reference = new BlockReference(new Point3d(12000 + i * 500, 0, 0), definitionId);
+                model.AppendEntity(reference); tr.AddNewlyCreatedDBObject(reference, true); return reference.ObjectId;
+            }).ToArray();
+            var changed = (BlockReference)tr.GetObject(references[1], OpenMode.ForWrite);
+            foreach (DynamicBlockReferenceProperty property in changed.DynamicBlockReferencePropertyCollection)
+            {
+                if (property.ReadOnly) continue;
+                object? value = property.GetAllowedValues().FirstOrDefault(v => !Equals(v, property.Value));
+                if (value is null && property.Value is double number) value = number + Math.Max(10, Math.Abs(number) * 0.1);
+                if (value is null) continue;
+                property.Value = value;
+                if (changed.BlockTableRecord != definitionId) break;
+            }
+            assert(changed.BlockTableRecord != definitionId, "Dynamic fixture produces a modified anonymous block reference");
+            tr.Commit();
+        }
+        string[] State()
+        {
+            using var tr = db.TransactionManager.StartOpenCloseTransaction();
+            return references.Select(id => string.Join(";", ((BlockReference)tr.GetObject(id, OpenMode.ForRead)).DynamicBlockReferencePropertyCollection
+                .Cast<DynamicBlockReferenceProperty>().Select(p => p.PropertyName + "=" + Convert.ToString(p.Value, System.Globalization.CultureInfo.InvariantCulture)))).ToArray();
+        }
+        var before = State();
+        var result = Edit(new object[] { new { op = "text_replace", find = oldText, replace = newText, include = new[] { "text", "block_definitions" } } });
+        var detail = result.GetProperty("results")[0].GetProperty("detail");
+        assert(detail.GetProperty("dynamic_blocks_updated").EnumerateArray().Any(v => v.GetString() == blockName)
+            && (!detail.TryGetProperty("dynamic_blocks_not_updated", out var failed) || failed.ValueKind == JsonValueKind.Null), "text_replace reports the rebuilt dynamic definition");
+        using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+        {
+            foreach (var id in references)
+            {
+                var reference = (BlockReference)tr.GetObject(id, OpenMode.ForRead);
+                var displayed = ((BlockTableRecord)tr.GetObject(reference.BlockTableRecord, OpenMode.ForRead)).Cast<ObjectId>()
+                    .Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<DBText>().Select(t => t.TextString).ToArray();
+                assert(displayed.Contains(newText) && !displayed.Contains(oldText), "Native dynamic insert displays the replaced text: " + reference.Handle);
+            }
+        }
+        assert(before.SequenceEqual(State()), "Dynamic reference parameter values are preserved after replacing definition text");
+    }
+
     internal static void Check(Document doc, Action<bool, string> assert)
     {
         var db = doc.Database;

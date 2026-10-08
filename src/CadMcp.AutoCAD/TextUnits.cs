@@ -190,7 +190,8 @@ internal static class TextUnits
         }
 
         // Stacked TEXT lines of one paragraph become one unit, keyed by their handles from top to bottom.
-        var lines = single.Select(t => new TextLine(t.Position.X, t.Position.Y, t.Rotation, t.Height, measure.Width(t.TextStyleId, t.Height, t.Oblique, t.TextString) * t.WidthFactor, t.TextStyleName, t.Layer)).ToArray();
+        var lines = single.Select(t => new TextLine(t.Position.X, t.Position.Y, t.Rotation, t.Height, measure.Width(t.TextStyleId, t.Height, t.Oblique, t.TextString) * t.WidthFactor, t.TextStyleName, t.Layer,
+            H(t.OwnerId), t.Position.Z)).ToArray();
         foreach (var paragraph in TextTranslation.Paragraphs(lines))
         {
             var texts = paragraph.Select(i => single[i]).ToArray();
@@ -297,7 +298,7 @@ internal static class TextUnits
     /// A dynamic block shows its references through anonymous copies of the definition; after its text changes they are
     /// rebuilt, as saving the block editor does. Names of the blocks that could not be rebuilt are reported.
     /// </summary>
-    private static (string[]? Updated, string[]? NotUpdated) UpdateDynamicBlocks(Transaction tr, IEnumerable<ObjectId> owners)
+    internal static (string[]? Updated, string[]? NotUpdated) UpdateDynamicBlocks(Transaction tr, IEnumerable<ObjectId> owners)
     {
         var updated = new List<string>();
         var failed = new List<string>();
@@ -338,6 +339,9 @@ internal static class TextUnits
     private static object Lines(DBText[] texts, string text, bool fit, double minWidth, double minHeight, Measure measure, Database db, ref int overflow)
     {
         var first = texts[0];
+        // Also reject old or manually assembled unit keys that cross spaces; source text alone cannot prove a paragraph.
+        if (texts.Length > 1 && texts.Any(t => t.OwnerId != first.OwnerId || t.Position.Z != first.Position.Z || !Flat(t)))
+            throw new CadFault("INVALID_UNIT", "Paragraph lines must belong to the same space or block definition and WCS elevation; read cad_text_units again");
         double height = first.Height, factor = first.WidthFactor;
         double Natural(string displayed) => measure.Width(first.TextStyleId, height, first.Oblique, TextTranslation.ForText(displayed));
         // The frame is the widest original line; Fit and Aligned texts fit themselves between their points.
