@@ -15,6 +15,8 @@
 | phamduybill2005-creator/CH-M-I-M-AGENT (MIT), U-C4N | Методика оценки агентов: скрытый результат, вердикт по реальному DWG, жёсткие провалы, «пустой» прогон (AgentEvaluation.cs, benchmarks/) |
 | tkcHiunguyen, HorizunGroup, Sacred-G/Civil3D-mcp | Идея «просмотр → токен → применение» (cad_edit_preview, preview_hash) |
 | JardiMargalefAgusti | Идея регистрации MCP в Claude Desktop и Claude Code из установщика (ClientRegistration.cs) |
+| [aiminnovations/adn-mcp-autocad](https://github.com/aiminnovations/adn-mcp-autocad) (MIT, © Autodesk) | Подход к чтению палитры «Свойства» через `ObjectPropertyManagerProperties.GetProperties` (ObjectInspection.cs, код написан заново; COM-указатель освобождается через `Marshal.Release`, вектор категорий освобождается в потоке AutoCAD) |
+| autocad-tarch-mcp | Идея: чтение прокси-объектов через расчленение их графики в памяти (ObjectInspection.cs) |
 | bimwright/dwg-mcp (Apache-2.0) | Идеи перевода текста: объединение строк одного абзаца перед переводом и подгонка перевода в исходную рамку (TextTranslation.cs, TextUnits.cs; код написан заново, со своими правилами) |
 
 ## Дополнение версии 0.2.0

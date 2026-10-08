@@ -268,6 +268,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
             case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
             case "cad_text_units": data = TextUnits.Read(doc.Database, tr, r.Data, ct); break;
+            case "cad_properties": data = ObjectInspection.Properties(doc.Database, tr, r.Data, ct); break;
+            case "cad_proxies": data = ObjectInspection.Proxies(doc.Database, tr, r.Data, ct); break;
             case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40), DraftingPlan.Integer(r.Data, "layer_limit", 1, 5000, 100)); break;
             case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
             case "cad_changes": data = DrawingInsight.Changes(state, tr, r.Data); break;

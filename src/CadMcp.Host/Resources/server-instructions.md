@@ -4,6 +4,7 @@ Orientation
 - Start with cad_sessions and cad_context; use the returned document_id and revision. If the user may have edited by hand since your last call, read cad_changes since that revision.
 - cad_outline summarizes a drawing in one call, cad_takeoff gives lengths, areas and block counts, cad_search pages through entities, cad_file_inspect reads a DWG that is not open. Prefer them to images.
 - Images cost context: render only when the view matters, crop with handles_json or bounds_json, keep the size small and pass attach=false when the saved file path is enough.
+- For custom, vertical (Civil 3D, Map 3D, SPDS) and proxy objects that cad_entity_get reads only partly, read the Properties palette with cad_properties; cad_proxies lists objects whose application is not loaded. Proxies cannot be edited without their object enabler.
 
 Editing
 - Read cad_edit_help first. Coordinates are WCS drawing units; input angles are degrees, readback angles radians. Never assume millimetres or change INSUNITS implicitly.

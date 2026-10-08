@@ -17,7 +17,7 @@ public static class CadOperations
         "cad_catalog", "cad_snapshot", "cad_query", "cad_search", "cad_result_get", "cad_entity_get",
         "cad_table_get", "cad_table_dependencies", "cad_review", "cad_release_check", "cad_solid_get", "cad_assembly_get",
         "cad_verify", "cad_render", "cad_image_register", "cad_image_point", "cad_edit_preview",
-        "cad_takeoff", "cad_outline", "cad_file_inspect", "cad_changes", "cad_text_units",
+        "cad_takeoff", "cad_outline", "cad_file_inspect", "cad_changes", "cad_text_units", "cad_properties", "cad_proxies",
         "cad_vertical_capabilities", "cad_vertical_catalog", "cad_vertical_get"
     };
 
