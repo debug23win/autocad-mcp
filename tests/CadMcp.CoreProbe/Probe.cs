@@ -398,6 +398,7 @@ public static class Probe
                     { checks.Add("Civil TIN creation is explicitly unavailable outside Civil 3D"); }
                 }
             }
+            TextProbe.Check(doc, Assert);
         }
         catch (System.Exception error) { failure = error.ToString(); }
         File.WriteAllText(output, JsonSerializer.Serialize(new { checks, failure }, new JsonSerializerOptions { WriteIndented = true }));

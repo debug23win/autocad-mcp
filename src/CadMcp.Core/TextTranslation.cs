@@ -17,7 +17,10 @@ public sealed record TextFit(string[] Lines, double WidthFactor, double HeightSc
 /// </summary>
 public static class TextTranslation
 {
-    private static readonly Regex HandlePattern = new("^[0-9A-Fa-f]{1,16}$", RegexOptions.CultureInvariant);
+    private static readonly Regex HandlePattern = new(@"^[0-9A-Fa-f]{1,16}\z", RegexOptions.CultureInvariant);
+
+    /// <summary>A handle as one spelling: upper case, without leading zeros, so "01f" and "1F" name the same object.</summary>
+    private static string Canonical(string handle) { string trimmed = handle.TrimStart('0'); return (trimmed.Length == 0 ? "0" : trimmed).ToUpperInvariant(); }
 
     /// <summary>
     /// A unit key: a handle (TEXT, MTEXT, attribute, multileader), handle@row,column (table cell), or handles joined by "+"
@@ -33,12 +36,20 @@ public static class TextTranslation
             if (!HandlePattern.IsMatch(key[..at]) || parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int row)
                 || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int column))
                 throw new CadFault("INVALID_UNIT", "A table cell unit is handle@row,column: " + key);
-            return ([key[..at]], row, column);
+            return ([Canonical(key[..at])], row, column);
         }
         var handles = key.Split('+');
-        if (handles.Length > 200 || handles.Any(h => !HandlePattern.IsMatch(h)) || handles.Distinct(StringComparer.OrdinalIgnoreCase).Count() != handles.Length)
-            throw new CadFault("INVALID_UNIT", "A unit is a handle or up to 200 distinct handles joined by +: " + key);
-        return (handles, -1, -1);
+        if (handles.Length > 200 || handles.Any(h => !HandlePattern.IsMatch(h))) throw new CadFault("INVALID_UNIT", "A unit is a handle or up to 200 handles joined by +: " + key);
+        var canonical = handles.Select(Canonical).ToArray();
+        if (canonical.Distinct(StringComparer.Ordinal).Count() != canonical.Length) throw new CadFault("INVALID_UNIT", "A unit names one text twice: " + key);
+        return (canonical, -1, -1);
+    }
+
+    /// <summary>The one spelling of a unit key, for telling whether two keys name the same unit.</summary>
+    public static string CanonicalUnit(string key)
+    {
+        var (handles, row, column) = ParseUnit(key);
+        return row >= 0 ? CellUnit(handles[0], row, column) : string.Join("+", handles);
     }
 
     public static string CellUnit(string handle, int row, int column) => handle + "@" + row.ToString(CultureInfo.InvariantCulture) + "," + column.ToString(CultureInfo.InvariantCulture);
@@ -49,8 +60,17 @@ public static class TextTranslation
     public static string ForText(string text)
     {
         string line = string.Join(" ", text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()));
-        return line.Contains("%%", StringComparison.Ordinal) ? line.Replace("%", "%%%") : line;
+        if (line.Contains("%%", StringComparison.Ordinal)) line = line.Replace("%", "%%%");
+        // TEXT reads \U+XXXX and \M+NXXXX as characters: a backslash typed before them is written as its own code.
+        return UnicodeCodeAhead.Replace(line, @"\U+005C");
     }
+
+    private static readonly Regex UnicodeCodeAhead = new(@"\\(?=[Uu]\+[0-9A-Fa-f]{4}|[Mm]\+[0-9A-Fa-f]{5})", RegexOptions.CultureInvariant);
+
+    // Codes that format MText; the other backslash sequences (\U+, \M+, \\, \{, \}, \~, \S stacks) show characters, and
+    // \P, \N and \X break lines.
+    private static bool Formatting(string segment) => segment is "{" or "}" ||
+        segment.Length > 1 && segment[0] == '\\' && segment[1] is 'f' or 'F' or 'C' or 'c' or 'H' or 'Q' or 'T' or 'W' or 'A' or 'p' or 'L' or 'l' or 'O' or 'o' or 'K' or 'k';
 
     /// <summary>
     /// MText contents with new displayed text: the formatting that opens the contents (font, height, colour, alignment) is
@@ -60,21 +80,51 @@ public static class TextTranslation
     public static string ForMText(string contents, string text, out bool simplified)
     {
         var segments = CadText.MTextSegments(contents ?? "").ToList();
-        int first = segments.FindIndex(s => s.IsText && s.Segment.Trim().Length > 0);
-        var leading = first < 0 ? segments.Where(s => !s.IsText).Select(s => s.Segment).ToList() : segments.Take(first).Where(s => !s.IsText).Select(s => s.Segment).ToList();
-        // Paragraph breaks before the text carry no formatting of their own.
-        leading.RemoveAll(s => s is "\\P" or "\\N" or "\\X");
+        bool Shown(int i) => segments[i].IsText ? segments[i].Segment.Trim().Length > 0 : !Formatting(segments[i].Segment) && segments[i].Segment is not ("\\P" or "\\N" or "\\X");
+        int first = -1, last = -1;
+        for (int i = 0; i < segments.Count; i++) if (Shown(i)) { if (first < 0) first = i; last = i; }
+        // Each brace's partner, so a group that closes before the last character can be told from one that holds it all.
+        var partner = Enumerable.Repeat(-1, segments.Count).ToArray();
+        var braces = new Stack<int>();
+        for (int i = 0; i < segments.Count; i++)
+        {
+            if (segments[i].IsText) continue;
+            if (segments[i].Segment == "{") braces.Push(i);
+            else if (segments[i].Segment == "}" && braces.Count > 0) { int open = braces.Pop(); partner[open] = i; partner[i] = open; }
+        }
+        // The opening formatting kept for the whole text: codes before the first character that are outside any group or in
+        // groups still open after the last character. A group closing earlier formatted only part of the text.
+        var leading = new StringBuilder();
+        var kept = new Stack<bool>();
         int depth = 0;
-        foreach (var token in leading) depth += token == "{" ? 1 : token == "}" ? -1 : 0;
-        if (depth < 0) { leading.RemoveAll(t => t == "}"); depth = leading.Count(t => t == "{"); }
-        simplified = first >= 0 && segments.Skip(first).Any(s => !s.IsText && s.Segment is not ("\\P" or "\\N" or "}" or "{"))
-            || first >= 0 && segments.Skip(first).Count(s => s.Segment == "{") > 0;
-        string body = CadText.EscapeMText(text.Replace("\r\n", "\n").Replace('\r', '\n'));
+        bool dropped = false;
+        for (int i = 0; i < (first < 0 ? segments.Count : first); i++)
+        {
+            var (segment, isText) = segments[i];
+            if (isText) continue;
+            if (segment == "{")
+            {
+                bool keep = (partner[i] < 0 || partner[i] > last) && (kept.Count == 0 || kept.Peek());
+                kept.Push(keep);
+                if (keep) { leading.Append('{'); depth++; } else dropped = true;
+            }
+            else if (segment == "}")
+            {
+                if (partner[i] < 0 || kept.Count == 0) continue;
+                if (kept.Pop()) { leading.Append('}'); depth--; }
+            }
+            else if (Formatting(segment))
+            {
+                if (kept.Count == 0 || kept.Peek()) leading.Append(segment); else dropped = true;
+            }
+        }
+        simplified = dropped || first >= 0 && Enumerable.Range(first + 1, Math.Max(0, last - first)).Any(i => !segments[i].IsText && Formatting(segments[i].Segment));
+        string body = CadText.EscapeMText((text ?? "").Replace("\r\n", "\n").Replace('\r', '\n'));
         if (body.Contains("%%", StringComparison.Ordinal)) body = body.Replace("%", "%%%");
-        return string.Concat(leading) + body.Replace("\n", "\\P") + new string('}', depth);
+        return leading + body.Replace("\n", "\\P") + new string('}', Math.Max(0, depth));
     }
 
-    private static readonly Regex AbsoluteHeight = new(@"\\H(?<value>[0-9]+(?:\.[0-9]+)?)(?<relative>x?);", RegexOptions.CultureInvariant);
+    private static readonly Regex AbsoluteHeight = new(@"\\H(?<value>[0-9]*\.?[0-9]+)(?<relative>[xX]?);", RegexOptions.CultureInvariant);
 
     /// <summary>MText contents with every absolute \H height scaled; relative heights (\H0.8x;) follow the text height.</summary>
     public static string ScaleHeights(string contents, double factor)
@@ -84,7 +134,7 @@ public static class TextTranslation
         {
             if (isText) { result.Append(segment); continue; }
             result.Append(AbsoluteHeight.Replace(segment, m => m.Groups["relative"].Value.Length > 0 ? m.Value
-                : "\\H" + (double.Parse(m.Groups["value"].Value, CultureInfo.InvariantCulture) * factor).ToString("0.######", CultureInfo.InvariantCulture) + ";"));
+                : "\\H" + (double.Parse(m.Groups["value"].Value, CultureInfo.InvariantCulture) * factor).ToString("0.###############", CultureInfo.InvariantCulture) + ";"));
         }
         return result.ToString();
     }
@@ -123,15 +173,16 @@ public static class TextTranslation
                     int b = sorted[m];
                     double gap = v[a] - v[b];
                     if (hasPrevious[b] || gap < 0.8 * h || gap >= bestGap || Math.Abs(lines[a].Height - lines[b].Height) > 0.05 * Math.Max(lines[a].Height, lines[b].Height)) continue;
-                    // Left edges, centres or right edges in line (0, 1, 2).
+                    // The edges in line, as a mask: left 1, centre 2, right 4. A paragraph keeps an edge shared by all its lines.
                     double tolerance = 0.6 * Math.Max(lines[a].Height, lines[b].Height);
-                    int alignment = Math.Abs(u[a] - u[b]) <= tolerance ? 0
-                        : Math.Abs(u[a] + lines[a].Width / 2 - u[b] - lines[b].Width / 2) <= tolerance ? 1
-                        : Math.Abs(u[a] + lines[a].Width - u[b] - lines[b].Width) <= tolerance ? 2 : -1;
-                    if (alignment < 0) continue;
-                    // A paragraph keeps one alignment and an even line spacing.
-                    if (hasPrevious[a] && (alignment != mode[a] || Math.Abs(gap - spacing[a]) > 0.25 * spacing[a])) continue;
-                    best = b; bestGap = gap; bestMode = alignment;
+                    int edges = (Math.Abs(u[a] - u[b]) <= tolerance ? 1 : 0)
+                        | (Math.Abs(u[a] + lines[a].Width / 2 - u[b] - lines[b].Width / 2) <= tolerance ? 2 : 0)
+                        | (Math.Abs(u[a] + lines[a].Width - u[b] - lines[b].Width) <= tolerance ? 4 : 0);
+                    if (hasPrevious[a]) edges &= mode[a];
+                    if (edges == 0) continue;
+                    // A paragraph keeps an even line spacing.
+                    if (hasPrevious[a] && Math.Abs(gap - spacing[a]) > 0.25 * spacing[a]) continue;
+                    best = b; bestGap = gap; bestMode = edges;
                 }
                 if (best < 0) continue;
                 next[a] = best; hasPrevious[best] = true; mode[best] = bestMode; spacing[best] = bestGap;
@@ -156,6 +207,7 @@ public static class TextTranslation
     public static TextFit FitLines(string text, int lineCount, double frameWidth, double widthFactor, double minWidthFactor, double minHeightRatio, Func<string, double> measure)
     {
         if (lineCount < 1) throw new ArgumentOutOfRangeException(nameof(lineCount));
+        text = Merged(text, lineCount);
         if (!(frameWidth > 0) || !(widthFactor > 0)) return new(Pad(Wrap(text, lineCount, double.MaxValue, measure, force: true)!, lineCount), widthFactor, 1, false);
         double floor = Math.Min(minWidthFactor, widthFactor);
         string[]? At(double factor, double scale) => Wrap(text, lineCount, frameWidth / (factor * scale), measure);
@@ -173,7 +225,27 @@ public static class TextTranslation
             for (int i = 0; i < 40 && high - low > 1e-4; i++) { double mid = (low + high) / 2; if (At(floor, mid) is null) high = mid; else low = mid; }
             return new(Pad(At(floor, low)!, lineCount), floor, low, false);
         }
-        return new(Pad(Wrap(text, lineCount, frameWidth / (floor * minHeightRatio), measure, force: true)!, lineCount), floor, minHeightRatio, true);
+        // The words do not wrap into the lines: the last line takes the rest. Shrink only as far as the widest line needs,
+        // and report overflow only when it does not fit even at the limits.
+        var forced = Wrap(text, lineCount, frameWidth / (floor * minHeightRatio), measure, force: true)!;
+        double widest = forced.Max(line => measure(line)), product = widest > 0 ? frameWidth / widest : double.MaxValue;
+        if (product >= widthFactor) return new(Pad(forced, lineCount), widthFactor, 1, false);
+        if (product >= floor) return new(Pad(forced, lineCount), product, 1, false);
+        if (product >= floor * minHeightRatio) return new(Pad(forced, lineCount), floor, product / floor, false);
+        return new(Pad(forced, lineCount), floor, minHeightRatio, true);
+    }
+
+    /// <summary>
+    /// Text with at most lineCount explicit lines: the line breaks beyond them become spaces. Blank lines at the end carry
+    /// no text and take no line.
+    /// </summary>
+    private static string Merged(string? text, int lineCount)
+    {
+        var all = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        int count = all.Length;
+        while (count > 1 && string.IsNullOrWhiteSpace(all[count - 1])) count--;
+        var lines = all.Take(count).ToArray();
+        return lines.Length <= lineCount ? string.Join("\n", lines) : string.Join("\n", lines.Take(lineCount - 1).Append(string.Join(" ", lines.Skip(lineCount - 1))));
     }
 
     private static string[] Pad(string[] lines, int count) => lines.Length >= count ? lines : lines.Concat(Enumerable.Repeat("", count - lines.Length)).ToArray();
@@ -186,28 +258,33 @@ public static class TextTranslation
     {
         var lines = new List<string>();
         var current = new StringBuilder();
-        bool tooWide = false;
+        bool tooWide = false, pendingSpace = false;
+        double limit = width * (1 + 1e-9);
+        // With force, the last line takes every remaining word; its line breaks become spaces.
+        bool Last() => force && lines.Count >= lineCount - 1;
         foreach (var (token, spaced, breaks) in Tokens(text))
         {
-            if (breaks) { lines.Add(current.ToString()); current.Clear(); continue; }
-            string candidate = current.Length == 0 ? token : current + (spaced ? " " : "") + token;
-            if (current.Length == 0 || measure(candidate) <= width * (1 + 1e-9))
+            if (breaks)
             {
-                if (current.Length == 0 && measure(token) > width * (1 + 1e-9)) tooWide = true;
+                if (Last()) { pendingSpace = current.Length > 0; continue; }
+                lines.Add(current.ToString()); current.Clear(); pendingSpace = false;
+                continue;
+            }
+            string candidate = current.Length == 0 ? token : current + (spaced || pendingSpace ? " " : "") + token;
+            pendingSpace = false;
+            double measured = measure(candidate);
+            if (current.Length == 0 || Last() || measured <= limit)
+            {
+                if (measured > limit) tooWide = true;
                 current.Clear().Append(candidate);
                 continue;
             }
             lines.Add(current.ToString());
             current.Clear().Append(token);
-            if (measure(token) > width * (1 + 1e-9)) tooWide = true;
+            if (measure(token) > limit) tooWide = true;
         }
         lines.Add(current.ToString());
-        if (!tooWide && lines.Count <= lineCount) return lines.ToArray();
-        if (!force) return null;
-        if (lines.Count <= lineCount) return lines.ToArray();
-        var kept = lines.Take(lineCount - 1).ToList();
-        kept.Add(string.Join(" ", lines.Skip(lineCount - 1).Where(l => l.Length > 0)));
-        return kept.ToArray();
+        return !tooWide && lines.Count <= lineCount || force ? lines.ToArray() : null;
     }
 
     private static IEnumerable<(string Token, bool Spaced, bool Breaks)> Tokens(string text)
@@ -217,23 +294,27 @@ public static class TextTranslation
         {
             if (l > 0) yield return ("", false, true);
             bool spaced = false;
-            foreach (var word in lines[l].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            var run = new StringBuilder();
+            foreach (char c in lines[l])
             {
-                // Ideographs break between characters; a run of other characters stays one word.
-                var run = new StringBuilder();
-                foreach (char c in word)
+                // Spaces separate words; a no-break space joins them.
+                if (char.IsWhiteSpace(c) && c is not ('\u00A0' or '\u202F' or '\u2007'))
                 {
-                    if (Wide(c))
-                    {
-                        if (run.Length > 0) { yield return (run.ToString(), spaced, false); spaced = false; run.Clear(); }
-                        yield return (c.ToString(), spaced, false);
-                        spaced = false;
-                    }
-                    else run.Append(c);
+                    if (run.Length > 0) { yield return (run.ToString(), spaced, false); run.Clear(); }
+                    spaced = true;
+                    continue;
                 }
-                if (run.Length > 0) yield return (run.ToString(), spaced, false);
-                spaced = true;
+                // Ideographs break between characters; a run of other characters stays one word.
+                if (Wide(c))
+                {
+                    if (run.Length > 0) { yield return (run.ToString(), spaced, false); run.Clear(); spaced = false; }
+                    yield return (c.ToString(), spaced, false);
+                    spaced = false;
+                    continue;
+                }
+                run.Append(c);
             }
+            if (run.Length > 0) yield return (run.ToString(), spaced, false);
         }
     }
 

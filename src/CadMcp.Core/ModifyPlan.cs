@@ -111,7 +111,7 @@ public static class ModifyPlan
                 case "rows": case "columns": DraftingPlan.Integer(op, p.Name, 1, 100); break;
                 case "units":
                     if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is < 1 or > 2000) throw new CadFault("INVALID_PARAMETER", "units must hold 1..2000 {unit, text, source} objects");
-                    var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var keys = new HashSet<string>(StringComparer.Ordinal);
                     var objects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var unit in v.EnumerateArray())
                     {
@@ -119,7 +119,7 @@ public static class ModifyPlan
                             throw new CadFault("INVALID_PARAMETER", "Each unit is {unit, text, source}");
                         string key = unit.TryGetProperty("unit", out var keyValue) && keyValue.ValueKind == JsonValueKind.String ? keyValue.GetString()! : throw new CadFault("INVALID_UNIT", "Each unit needs its unit key");
                         var (unitHandles, row, column) = TextTranslation.ParseUnit(key);
-                        if (!keys.Add(key)) throw new CadFault("INVALID_UNIT", "A unit appears twice: " + key);
+                        if (!keys.Add(TextTranslation.CanonicalUnit(key))) throw new CadFault("INVALID_UNIT", "A unit appears twice: " + key);
                         // A text written by two units would keep only the last translation; table cells share their table.
                         if (row < 0 && unitHandles.Any(h => !objects.Add(h))) throw new CadFault("INVALID_UNIT", "Two units name the same text: " + key);
                         if (!unit.TryGetProperty("text", out var translated)) throw new CadFault("MISSING_FIELD", "text_translate: text of " + key);
@@ -127,7 +127,7 @@ public static class ModifyPlan
                         if (unit.TryGetProperty("source", out var source)) Text(source, "source", 0, 5000);
                     }
                     break;
-                case "fit": if (v.GetString() is not ("shrink" or "none")) throw new CadFault("INVALID_PARAMETER", "fit must be shrink or none"); break;
+                case "fit": if (v.ValueKind != JsonValueKind.String || v.GetString() is not ("shrink" or "none")) throw new CadFault("INVALID_PARAMETER", "fit must be shrink or none"); break;
                 case "min_width_factor": case "min_height_ratio":
                     if (EditPlan.Numeric(op, p.Name) is < 0.3 or > 1) throw new CadFault("INVALID_PARAMETER", p.Name + " must be between 0.3 and 1");
                     break;
@@ -154,9 +154,9 @@ public static class ModifyPlan
                 case "text": Text(v, p.Name, 0, 5000); break;
                 case "prefix": case "suffix": Text(v, p.Name, 0, 200); break;
                 case "scope":
-                    if (v.GetString() is not ("current" or "model" or "layout" or "all")) throw new CadFault("INVALID_PARAMETER", "scope must be current, model, layout or all");
+                    if (v.ValueKind != JsonValueKind.String || v.GetString() is not ("current" or "model" or "layout" or "all")) throw new CadFault("INVALID_PARAMETER", "scope must be current, model, layout or all");
                     break;
-                case "end": if (v.GetString() is not ("start" or "end")) throw new CadFault("INVALID_PARAMETER", "end must be start or end"); break;
+                case "end": if (v.ValueKind != JsonValueKind.String || v.GetString() is not ("start" or "end")) throw new CadFault("INVALID_PARAMETER", "end must be start or end"); break;
                 case "path":
                     var path = Text(v, p.Name, 1, 1024);
                     if (!Path.IsPathFullyQualified(path) || !path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase)) throw new CadFault("INVALID_PATH", "path must be an absolute .dwg file path");

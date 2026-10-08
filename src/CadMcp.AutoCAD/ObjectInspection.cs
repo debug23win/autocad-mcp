@@ -67,23 +67,27 @@ internal static class ObjectInspection
             int categoryCount = vector.Count();
             for (int c = 0; c < categoryCount && !truncated; c++)
             {
-                if (vector.Item(c) is not CategoryCollectable category) continue;
+                // Every wrapper is released here, on AutoCAD's thread, rather than by the garbage collector's finalizer.
+                using var item = vector.Item(c);
+                if (item is not CategoryCollectable category) continue;
                 var properties = new List<object>();
-                var items = category.Properties;
+                using var items = category.Properties;
                 int itemCount = items?.Count() ?? 0;
                 for (int p = 0; p < itemCount; p++)
                 {
                     if (count >= limit) { truncated = true; break; }
+                    object? value = null;
                     try
                     {
-                        if (items!.Item(p) is not PropertyCollectable property) continue;
-                        object? value = null;
+                        using var entry = items!.Item(p);
+                        if (entry is not PropertyCollectable property) continue;
                         if (!property.GetValue(unknown, ref value)) continue;
                         if (Plain(value) is not { } plain) continue;
                         properties.Add(new { name = property.Name, value = plain });
                         count++;
                     }
                     catch (System.Exception) { }
+                    finally { ReleaseCom(value); }
                 }
                 if (properties.Count > 0) categories.Add(new { category = category.Name, properties });
             }
@@ -93,6 +97,19 @@ internal static class ObjectInspection
         finally { if (unknown != IntPtr.Zero) Marshal.Release(unknown); }
 #endif
     }
+
+#if !CORE_CONSOLE
+    /// <summary>Releases the reference a palette value holds on COM objects, itself or in its array, once.</summary>
+    private static void ReleaseCom(object? value)
+    {
+        try
+        {
+            if (value is Array array) { foreach (var item in array) if (item is not null && Marshal.IsComObject(item)) Marshal.ReleaseComObject(item); }
+            else if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+        }
+        catch (System.Exception) { }
+    }
+#endif
 
     /// <summary>A palette value as JSON can carry it; COM objects (colours, sub-objects) are left out.</summary>
     private static object? Plain(object? value, int depth = 0) => value switch
@@ -141,6 +158,7 @@ internal static class ObjectInspection
         var entityClass = RXObject.GetClass(typeof(ProxyEntity));
         var objectClass = RXObject.GetClass(typeof(ProxyObject));
         var groups = new Dictionary<(string, string, string, string), Group>();
+        var owners = new Dictionary<ObjectId, string>();
         long scanned = 0, last = db.Handseed.Value, limit = 20_000_000;
         bool truncated = last - 1 > limit;
         for (long value = 1; value < Math.Min(last, limit + 1); value++)
@@ -160,7 +178,8 @@ internal static class ObjectInspection
             if (!groups.TryGetValue(key, out var group)) groups[key] = group = new() { Kind = key.Item1, ClassName = className, DxfName = dxfName, Application = application };
             group.Count++;
             group.Flags = group.Flags < 0 ? flags : group.Flags & flags;
-            string owner = Owner(tr, obj.OwnerId);
+            // Owners repeat: each is opened once.
+            if (!owners.TryGetValue(obj.OwnerId, out var owner)) owners[obj.OwnerId] = owner = Owner(tr, obj.OwnerId);
             group.Owners[owner] = group.Owners.GetValueOrDefault(owner) + 1;
             if (graphics.Length > 0) group.Graphics[graphics] = group.Graphics.GetValueOrDefault(graphics) + 1;
             if (group.Samples.Count < samples) group.Samples.Add(H(id));
@@ -176,8 +195,10 @@ internal static class ObjectInspection
                 common_flags = Proxy(g.ClassName, g.DxfName, g.Application, Math.Max(0, g.Flags), g.Kind == "entity"), sample_handles = g.Samples
             }).ToArray(),
             handles_scanned = scanned, truncated = truncated ? true : (bool?)null,
-            note = ordered.Length == 0 ? "No proxy objects: every object's application is loaded"
+            note = ordered.Length == 0
+                ? truncated ? "No proxy objects among the first " + limit + " handles; the drawing has more handles, which were not scanned" : "No proxy objects: every object's application is loaded"
                 : "Proxies stand for objects of applications that are not loaded; install their object enabler to edit them. common_flags lists the operations every proxy of the group allows"
+                    + (truncated ? ". Only the first " + limit + " handles were scanned" : "")
         };
     }
 

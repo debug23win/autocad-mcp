@@ -17,14 +17,18 @@ public sealed record PolylineFilletSkip(int Vertex, string Reason);
 /// </summary>
 public static class PolylineFillet
 {
+    // A bulge is a ratio, not a length: a segment is straight below this, whatever the drawing's coordinates.
+    private const double Straight = 1e-9;
+
     public static PolylineFilletResult Apply(IReadOnlyList<PolylineVertex> vertices, bool closed, double radius, IReadOnlyCollection<int>? at = null, double tolerance = 1e-9)
     {
         if (!double.IsFinite(radius) || radius <= 0) throw new CadFault("INVALID_PARAMETER", "radius must be positive");
         int n = vertices.Count;
         if (n < 2) throw new CadFault("INVALID_POLYLINE", "The polyline has fewer than two vertices");
-        if (vertices.Any(v => !double.IsFinite(v.X) || !double.IsFinite(v.Y) || !double.IsFinite(v.Bulge))) throw new CadFault("INVALID_POLYLINE", "The polyline has a vertex that is not a finite number");
+        if (vertices.Any(v => !double.IsFinite(v.X) || !double.IsFinite(v.Y) || !double.IsFinite(v.Bulge) || !double.IsFinite(v.StartWidth) || !double.IsFinite(v.EndWidth)))
+            throw new CadFault("INVALID_POLYLINE", "The polyline has a vertex that is not a finite number");
         var requested = (at ?? Enumerable.Range(0, n).ToArray()).Distinct().Order().ToArray();
-        if (requested.FirstOrDefault(i => i < 0 || i >= n, -1) is int outside and >= 0)
+        foreach (int outside in requested.Where(i => i < 0 || i >= n).Take(1))
             throw new CadFault("INVALID_VERTEX", "vertex " + outside + " is outside the polyline's 0.." + (n - 1));
         bool explicitList = at is not null;
 
@@ -35,23 +39,26 @@ public static class PolylineFillet
         var skipped = new List<PolylineFilletSkip>();
         int Previous(int i) => i > 0 ? i - 1 : closed ? n - 1 : -1;
         int Next(int i) => i < n - 1 ? i + 1 : closed ? 0 : -1;
-        double Length(int from) { var a = vertices[from]; var b = vertices[Next(from)]; return Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y)); }
+        double Length(int from) { var a = vertices[from]; var b = vertices[Next(from)]; return double.Hypot(b.X - a.X, b.Y - a.Y); }
         foreach (int i in requested)
         {
             int p = Previous(i), q = Next(i);
             string? reason = null;
             if (p < 0 || q < 0) reason = "end of an open polyline";
-            else if (Math.Abs(vertices[p].Bulge) > tolerance || Math.Abs(vertices[i].Bulge) > tolerance) reason = "next to an arc segment";
+            else if (Math.Abs(vertices[p].Bulge) > Straight || Math.Abs(vertices[i].Bulge) > Straight) reason = "next to an arc segment";
             else if (n == 2) reason = "no corner";
             else
             {
                 double l1 = Length(p), l2 = Length(i);
-                if (l1 <= tolerance || l2 <= tolerance) reason = "next to a segment of zero length";
+                if (!double.IsFinite(l1) || !double.IsFinite(l2)) reason = "a segment is too long to measure";
+                else if (l1 <= tolerance || l2 <= tolerance) reason = "next to a segment of zero length";
                 else
                 {
                     var b = vertices[i];
                     double u1x = (vertices[p].X - b.X) / l1, u1y = (vertices[p].Y - b.Y) / l1, u2x = (vertices[q].X - b.X) / l2, u2y = (vertices[q].Y - b.Y) / l2;
-                    double theta = Math.Acos(Math.Clamp(u1x * u2x + u1y * u2y, -1, 1));
+                    // The corner angle from both its sine and cosine stays exact for very sharp corners too.
+                    double cross = u1x * u2y - u1y * u2x;
+                    double theta = Math.Atan2(Math.Abs(cross), u1x * u2x + u1y * u2y);
                     if (Math.PI - theta < 1e-9) reason = "no corner: the segments are collinear";
                     else if (theta < 1e-9) reason = "the segments double back";
                     else
@@ -59,7 +66,7 @@ public static class PolylineFillet
                         tangent[i] = radius / Math.Tan(theta / 2);
                         corner[i] = theta;
                         // Left turn (counter-clockwise arc) for a positive cross product of the incoming and outgoing directions.
-                        turn[i] = Math.Sign(-u1x * u2y + u1y * u2x);
+                        turn[i] = -Math.Sign(cross);
                         if (tangent[i] > Math.Min(l1, l2) + tolerance) { reason = "the arc does not fit: a segment is shorter than " + Format(tangent[i]); tangent[i] = 0; }
                     }
                 }
@@ -123,7 +130,7 @@ public static class PolylineFillet
             int next = i + 1 < vertices.Count ? i + 1 : closed ? 0 : -1;
             if (next < 0 || next == i) continue;
             var v = vertices[i]; var w = vertices[next];
-            if (Math.Abs(v.Bulge) <= tolerance && Math.Abs(v.X - w.X) <= tolerance && Math.Abs(v.Y - w.Y) <= tolerance) vertices.RemoveAt(i);
+            if (Math.Abs(v.Bulge) <= Straight && Math.Abs(v.X - w.X) <= tolerance && Math.Abs(v.Y - w.Y) <= tolerance) vertices.RemoveAt(i);
         }
         return vertices;
     }

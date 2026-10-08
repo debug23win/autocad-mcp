@@ -10,8 +10,12 @@ public sealed class TextTranslationTests
         Assert.Equal("1F;-1;-1", Normalize(TextTranslation.ParseUnit("1F")));
         Assert.Equal("2A;3;4", Normalize(TextTranslation.ParseUnit("2A@3,4")));
         Assert.Equal("1F,20,21;-1;-1", Normalize(TextTranslation.ParseUnit("1F+20+21")));
+        // One spelling per object: leading zeros and letter case do not make another unit.
+        Assert.Equal("1F;-1;-1", Normalize(TextTranslation.ParseUnit("01f")));
+        Assert.Equal("2A@3,4", TextTranslation.CanonicalUnit("02a@03,4"));
+        Assert.Equal("1F+20", TextTranslation.CanonicalUnit("1f+020"));
         Assert.Equal("2A@3,4", TextTranslation.CellUnit("2A", 3, 4));
-        foreach (var bad in new[] { "", " ", "zz", "1F@x,1", "1F@1", "1F+1f", "1F++20", string.Join("+", Enumerable.Range(1, 201).Select(i => i.ToString("X"))) })
+        foreach (var bad in new[] { "", " ", "zz", "1F@x,1", "1F@1", "1F+1f", "1F+01F", "1F++20", "1F\n", "1F@1,2\n", string.Join("+", Enumerable.Range(1, 201).Select(i => i.ToString("X"))) })
             Assert.Equal("INVALID_UNIT", Assert.Throws<CadFault>(() => TextTranslation.ParseUnit(bad)).Code);
         static string Normalize((string[] Handles, int Row, int Column) unit) => string.Join(",", unit.Handles) + ";" + unit.Row + ";" + unit.Column;
     }
@@ -20,6 +24,7 @@ public sealed class TextTranslationTests
     [InlineData("Plan\nof floor", "Plan of floor")]
     [InlineData("Slope 50%", "Slope 50%")]
     [InlineData("100%% wide", "100%%%%%% wide")]
+    [InlineData("Code \\U+0041 stays", "Code \\U+005CU+0041 stays")]
     public void Text_takes_one_line_without_accidental_codes(string text, string stored)
     {
         Assert.Equal(stored, TextTranslation.ForText(text));
@@ -29,7 +34,17 @@ public sealed class TextTranslationTests
     [Theory]
     [InlineData("{\\fArial|b1;\\C1;Hello world}", "Привет мир", "{\\fArial|b1;\\C1;Привет мир}", false)]
     [InlineData("\\A1;Line one\\PLine two", "Строка 1\nСтрока 2", "\\A1;Строка 1\\PСтрока 2", false)]
-    [InlineData("{\\C1;red} and {\\C3;green}", "красный и зелёный", "{\\C1;красный и зелёный}", true)]
+    [InlineData("{\\C1;red} and {\\C3;green}", "красный и зелёный", "красный и зелёный", true)]
+    // Character codes are text, not formatting: they are replaced, never kept in front of the translation.
+    [InlineData("\\U+220520", "∅20 мм", "∅20 мм", false)]
+    [InlineData("\\U+0412\\U+0445\\U+043E\\U+0434", "Entrance", "Entrance", false)]
+    [InlineData("\\A1;\\S1/2; inch", "1/2 дюйма", "\\A1;1/2 дюйма", false)]
+    [InlineData("A\\~B", "Б", "Б", false)]
+    // A group that closes before the end formatted only part of the text: it is not spread over the whole translation.
+    [InlineData("{\\C1;Note:} see sheet 2", "Примечание: см. лист 2", "Примечание: см. лист 2", true)]
+    [InlineData("{\\LUnder}lined", "Подчёркнуто", "Подчёркнуто", true)]
+    [InlineData("}{NEW", "Новый", "{Новый}", false)]
+    [InlineData("{\\fArial|b0;Text}", "a\\U+0041{b}%%c", "{\\fArial|b0;a\\\\U+0041\\{b\\}%%%%%%c}", false)]
     [InlineData("Plain", "a{b}\\c", "a\\{b\\}\\\\c", false)]
     [InlineData("", "Новый", "Новый", false)]
     [InlineData("\\PTop", "Верх", "Верх", false)]
@@ -37,7 +52,7 @@ public sealed class TextTranslationTests
     {
         Assert.Equal(expected, TextTranslation.ForMText(contents, text, out bool lost));
         Assert.Equal(simplified, lost);
-        Assert.Equal(text.Replace("\n", "\n"), CadText.Normalize(expected, true));
+        Assert.Equal(text, CadText.Normalize(expected, true));
     }
 
     [Fact]
@@ -45,6 +60,9 @@ public sealed class TextTranslationTests
     {
         Assert.Equal("{\\H1.25;Text \\H0.8x;small}", TextTranslation.ScaleHeights("{\\H2.5;Text \\H0.8x;small}", 0.5));
         Assert.Equal("No codes", TextTranslation.ScaleHeights("No codes", 0.5));
+        Assert.Equal("\\H0.25;x", TextTranslation.ScaleHeights("\\H.5;x", 0.5));
+        Assert.Equal("\\H2.5X;x", TextTranslation.ScaleHeights("\\H2.5X;x", 0.5));
+        Assert.Equal("\\H0.0000003;x", TextTranslation.ScaleHeights("\\H0.000001;x", 0.3));
     }
 
     [Fact]
@@ -58,7 +76,9 @@ public sealed class TextTranslationTests
             Line(0, 20, 30, height: 5),                                  // 4: a heading in a larger height
             Line(-5, -10, 50), Line(5, -13.5, 30),                       // 5..6: centred lines
             Line(0, 50, 30), Line(0, 46.5, 30), Line(0, 41, 30),         // 7..9: the third spacing differs, so 9 stands alone
-            Line(0, 70, 30, layer: "Other"), Line(0, 66.5, 30)           // 10..11: different layers
+            Line(0, 70, 30, layer: "Other"), Line(0, 66.5, 30),          // 10..11: different layers
+            Line(200, 10, 40), Line(205, 6.5, 30), Line(205.5, 3, 29),   // 12..14: centred, the first pair also left in line
+            Line(300, 10, 40), Line(310, 6.5, 30), Line(310.5, 3, 29.5)  // 15..17: right-aligned
         };
         // A rotated paragraph far from the origin.
         double r = Math.PI / 2;
@@ -73,7 +93,9 @@ public sealed class TextTranslationTests
         Assert.Contains("9", groups);
         Assert.Contains("10", groups);
         Assert.Contains("11", groups);
-        Assert.Contains("12,13", groups);
+        Assert.Contains("18,19", groups);
+        Assert.Contains("12,13,14", groups);
+        Assert.Contains("15,16,17", groups);
         Assert.Equal(lines.Count, TextTranslation.Paragraphs(lines).Sum(g => g.Length));
     }
 
@@ -105,10 +127,21 @@ public sealed class TextTranslationTests
         Assert.Equal(new[] { "short", "", "" }, TextTranslation.FitLines("short", 3, 10, 1, 0.7, 0.6, Measure).Lines);
         // Ideographs wrap between characters, without spaces.
         Assert.Equal(new[] { "漢字漢", "字漢字" }, TextTranslation.FitLines("漢字漢字漢字", 2, 3, 1, 0.7, 0.6, Measure).Lines);
-        // An explicit break needs a line of its own; with one line the text overflows onto it.
+        // Line breaks beyond the lines a text has become spaces before fitting, so they do not shrink it.
         var broken = TextTranslation.FitLines("a\nb", 1, 10, 1, 0.7, 0.6, Measure);
-        Assert.True(broken.Overflow);
+        Assert.False(broken.Overflow);
         Assert.Equal(new[] { "a b" }, broken.Lines);
+        Assert.Equal((1.0, 1.0), (broken.WidthFactor, broken.HeightScale));
+        // A trailing line break does not count as a line: the words still fit without shrinking.
+        var trailing = TextTranslation.FitLines("word Ø20\n", 2, 4, 1, 0.7, 0.6, Measure);
+        Assert.Equal(new[] { "word", "Ø20" }, trailing.Lines);
+        Assert.Equal((1.0, 1.0, false), (trailing.WidthFactor, trailing.HeightScale, trailing.Overflow));
+        // A forced wrap keeps ideographs together and words apart as they were written.
+        Assert.Equal(new[] { "漢字漢字漢字" }, TextTranslation.FitLines("漢字漢字漢字", 1, 2, 1, 0.7, 0.6, Measure).Lines);
+        Assert.Equal(new[] { "漢字", "漢字漢字漢字" }, TextTranslation.Wrap("漢字漢字漢字漢字", 2, 2, Measure, force: true));
+        Assert.Equal(new[] { "one", "two three" }, TextTranslation.Wrap("one two three", 2, 3, Measure, force: true));
+        // A no-break space joins its words.
+        Assert.Equal(new[] { "a\u00A0b", "c" }, TextTranslation.FitLines("a\u00A0b c", 2, 3, 1, 0.7, 0.6, Measure).Lines);
         Assert.Equal(new[] { "a", "b" }, TextTranslation.FitLines("a\nb", 2, 10, 1, 0.7, 0.6, Measure).Lines);
     }
 }

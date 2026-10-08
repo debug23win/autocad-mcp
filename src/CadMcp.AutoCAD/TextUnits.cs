@@ -27,16 +27,23 @@ internal static class TextUnits
             var key = (styleId, height, oblique, stored);
             if (widths.TryGetValue(key, out double cached)) return cached;
             double width;
-            try
+            if (!styles.TryGetValue((styleId, height, oblique), out var style))
             {
-                if (!styles.TryGetValue((styleId, height, oblique), out var style))
+                style = new GiTextStyle();
+                try
                 {
-                    style = new GiTextStyle();
                     style.FromTextStyleTableRecord(styleId);
                     style.TextSize = height; style.XScale = 1; style.ObliquingAngle = oblique;
-                    styles[(styleId, height, oblique)] = style;
                 }
-                var box = style!.ExtentsBox(stored, false, !string.IsNullOrEmpty(style.BigFontFileName), null);
+                catch (System.Exception) { style.Dispose(); style = null; }
+                // A style that cannot be loaded is remembered as such and estimated, not loaded again for every string.
+                styles[(styleId, height, oblique)] = style;
+            }
+            try
+            {
+                if (style is null) throw new InvalidOperationException();
+                // Not raw: %%c, %%d, %%p and %%nnn are measured as the characters they show.
+                var box = style.ExtentsBox(stored, false, false, null);
                 width = Math.Max(0, box.MaxPoint.X - box.MinPoint.X);
             }
             catch (System.Exception)
@@ -77,29 +84,38 @@ internal static class TextUnits
         }
         bool group = data.TryGetProperty("group_lines", out var groupValue) ? groupValue.ValueKind != JsonValueKind.False : true;
         int offset = DraftingPlan.Integer(data, "offset", 0, 1_000_000, 0), limit = DraftingPlan.Integer(data, "limit", 1, 2000, 500);
-        bool Locked(Entity e) => ((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked;
+        var lockedLayers = new Dictionary<ObjectId, bool>();
+        bool LayerLocked(Entity e)
+        {
+            if (!lockedLayers.TryGetValue(e.LayerId, out bool locked)) lockedLayers[e.LayerId] = locked = ((LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead)).IsLocked;
+            return locked;
+        }
+        // An attribute is written with the block reference that holds it: either layer locked keeps it as it is.
+        bool Locked(Entity e, Entity? holder = null) => LayerLocked(e) || holder is not null && LayerLocked(holder);
         bool OnLayer(Entity e) => layers is null || layers.Any(pattern => CadText.Like(e.Layer, pattern));
 
         using var measure = new Measure();
         var units = new List<Unit>();
         var single = new List<DBText>();
-        var skipped = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        void AddText(DBText text, string kind)
+        var tablesCut = new List<string>();
+        void AddText(DBText text, string kind, Entity? holder = null)
         {
             string raw = text.TextString ?? "";
             if (CadText.Normalize(raw).Trim().Length == 0) return;
             if (kind == "text" && group && !text.HasFields && Flat(text) && !SelfFitting(text)) { single.Add(text); return; }
             units.Add(new(H(text.ObjectId), kind, CadText.Normalize(raw), text.Layer, Point(text.Position), new { width = Round(measure.Width(text.TextStyleId, text.Height, text.Oblique, raw) * text.WidthFactor), height = Round(text.Height) },
                 Height: Round(text.Height), WidthFactor: Round(text.WidthFactor), RotationDeg: Round(text.Rotation * 180 / Math.PI), Style: text.TextStyleName,
-                Tag: text is AttributeReference a ? a.Tag : null, Fields: text.HasFields, Locked: Locked(text)));
+                Tag: text is AttributeReference a ? a.Tag : null, Fields: text.HasFields, Locked: Locked(text, holder)));
         }
-        void MTextUnit(Entity owner, MText mtext, string kind, string? tag = null)
+        // owner holds the text: a multileader or an attribute keeps its fields itself, not in the copy of its MText.
+        void MTextUnit(Entity owner, MText mtext, string kind, string? tag = null, Entity? holder = null)
         {
             string displayed = CadText.Normalize(mtext.Contents, true);
             if (displayed.Trim().Length == 0) return;
             units.Add(new(H(owner.ObjectId), kind, displayed, owner.Layer, Point(mtext.Location),
                 new { width = Round(mtext.ActualWidth), height = Round(mtext.ActualHeight), column_width = Round(mtext.Width) },
-                Height: Round(mtext.TextHeight), RotationDeg: Round(mtext.Rotation * 180 / Math.PI), Style: mtext.TextStyleName, Tag: tag, Fields: mtext.HasFields, Locked: Locked(owner)));
+                Height: Round(mtext.TextHeight), RotationDeg: Round(mtext.Rotation * 180 / Math.PI), Style: mtext.TextStyleName, Tag: tag, Fields: owner.HasFields || mtext.HasFields,
+                Locked: Locked(owner, holder)));
         }
         void Visit(Entity entity, bool inDefinition)
         {
@@ -114,6 +130,7 @@ internal static class TextUnits
                     using (content) MTextUnit(leader, content, "mleader");
                     break;
                 case Table table when !inDefinition && include.Contains("tables"):
+                    if (table.Rows.Count > 500 || table.Columns.Count > 50) tablesCut.Add(H(table.ObjectId));
                     var merges = NativeTables.MergedRanges(table);
                     for (int r = 0; r < Math.Min(table.Rows.Count, 500); r++)
                         for (int c = 0; c < Math.Min(table.Columns.Count, 50); c++)
@@ -132,8 +149,8 @@ internal static class TextUnits
                     foreach (ObjectId id in reference.AttributeCollection)
                     {
                         if (id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not AttributeReference attribute || attribute.Invisible) continue;
-                        if (attribute.IsMTextAttribute) { using var content = attribute.MTextAttribute; MTextUnit(attribute, content, "attribute_mtext", attribute.Tag); }
-                        else AddText(attribute, "attribute");
+                        if (attribute.IsMTextAttribute) { using var content = attribute.MTextAttribute; MTextUnit(attribute, content, "attribute_mtext", attribute.Tag, reference); }
+                        else AddText(attribute, "attribute", reference);
                     }
                     break;
             }
@@ -179,8 +196,10 @@ internal static class TextUnits
             var texts = paragraph.Select(i => single[i]).ToArray();
             var first = texts[0];
             var shown = texts.Select(t => CadText.Normalize(t.TextString)).ToArray();
+            // The lines stack across their direction: the frame height is measured perpendicular to the rotation.
+            double across = Math.Abs((texts[^1].Position - first.Position).DotProduct(new Vector3d(-Math.Sin(first.Rotation), Math.Cos(first.Rotation), 0)));
             units.Add(new(string.Join("+", texts.Select(t => H(t.ObjectId))), texts.Length == 1 ? "text" : "paragraph", string.Join(" ", shown.Select(s => s.Trim())), first.Layer, Point(first.Position),
-                new { width = Round(paragraph.Max(i => lines[i].Width)), height = Round(Math.Abs(first.Position.Y - texts[^1].Position.Y) + first.Height), lines = texts.Length },
+                new { width = Round(paragraph.Max(i => lines[i].Width)), height = Round(across + first.Height), lines = texts.Length },
                 texts.Length == 1 ? null : shown, Round(first.Height), Round(first.WidthFactor), Round(first.Rotation * 180 / Math.PI), first.TextStyleName, Locked: Locked(first)));
         }
 
@@ -195,6 +214,7 @@ internal static class TextUnits
                 rotation_deg = u.RotationDeg, position = u.Position, frame = u.Frame, fields = u.Fields ? true : (bool?)null, locked = u.Locked ? true : (bool?)null
             }).ToArray(),
             widths_estimated = measure.Estimated ? true : (bool?)null,
+            tables_truncated = tablesCut.Count == 0 ? null : new { handles = tablesCut.Take(20).ToArray(), count = tablesCut.Count, note = "Only the first 500 rows and 50 columns of these tables are listed" },
             usage = "Translate each unit's text and apply with cad_edit text_translate {unit, text, source}; units with fields or on locked layers are not written"
         };
     }
@@ -219,6 +239,7 @@ internal static class TextUnits
         var touched = new List<ObjectId>();
         var results = new List<object>();
         var skipped = new List<object>();
+        var definitions = new HashSet<ObjectId>();
         int overflow = 0, simplified = 0, written = 0;
         foreach (var item in op.GetProperty("units").EnumerateArray())
         {
@@ -236,6 +257,11 @@ internal static class TextUnits
                 skipped.Add(new { unit = key, reason = "field or formula" });
                 continue;
             }
+            if (objects.OfType<Entity>().Any(entity => OnLockedLayer(tr, entity)))
+            {
+                skipped.Add(new { unit = key, reason = "locked_layer" });
+                continue;
+            }
             foreach (var entity in objects.OfType<Entity>()) Unlocked(tr, entity);
             object detail = objects switch
             {
@@ -249,18 +275,49 @@ internal static class TextUnits
                 _ => throw new CadFault("INVALID_UNIT", key + " is not a text, multiline text, attribute, multileader, table cell or paragraph of texts")
             };
             touched.AddRange(objects.Select(o => o is AttributeReference a ? a.OwnerId : o.ObjectId));
+            definitions.UnionWith(objects.Where(o => o is not AttributeReference).Select(o => o.OwnerId));
             written++;
             if (results.Count < 200) results.Add(new { unit = key, before = Clip(current), after = Clip(text), detail });
         }
+        var (updated, notUpdated) = UpdateDynamicBlocks(tr, definitions);
         return new(ObjectId.Null, touched.Distinct().ToArray(), new
         {
             translated = written, units = results, units_truncated = results.Count < written,
             skipped = skipped.Count == 0 ? null : skipped, overflow_units = overflow == 0 ? (int?)null : overflow,
-            formatting_simplified = simplified == 0 ? (int?)null : simplified, widths_estimated = measure.Estimated ? true : (bool?)null
+            formatting_simplified = simplified == 0 ? (int?)null : simplified, widths_estimated = measure.Estimated ? true : (bool?)null,
+            dynamic_blocks_updated = updated, dynamic_blocks_not_updated = notUpdated
         });
     }
 
-    private static bool HasFields(Entity entity) => entity switch { DBText t => t.HasFields, MText m => m.HasFields, _ => false };
+    private static bool LayerLocked(Transaction tr, Entity entity) => ((LayerTableRecord)tr.GetObject(entity.LayerId, OpenMode.ForRead)).IsLocked;
+    private static bool OnLockedLayer(Transaction tr, Entity entity) =>
+        LayerLocked(tr, entity) || entity is AttributeReference && tr.GetObject(entity.OwnerId, OpenMode.ForRead) is Entity reference && LayerLocked(tr, reference);
+
+    /// <summary>
+    /// A dynamic block shows its references through anonymous copies of the definition; after its text changes they are
+    /// rebuilt, as saving the block editor does. Names of the blocks that could not be rebuilt are reported.
+    /// </summary>
+    private static (string[]? Updated, string[]? NotUpdated) UpdateDynamicBlocks(Transaction tr, IEnumerable<ObjectId> owners)
+    {
+        var updated = new List<string>();
+        var failed = new List<string>();
+        foreach (var id in owners)
+        {
+            if (id.IsNull || tr.GetObject(id, OpenMode.ForRead) is not BlockTableRecord { IsLayout: false, IsDynamicBlock: true } block) continue;
+            try
+            {
+                if (!block.IsWriteEnabled) block.UpgradeOpen();
+                block.UpdateAnonymousBlocks();
+                updated.Add(block.Name);
+            }
+            catch (Autodesk.AutoCAD.Runtime.Exception e) { failed.Add(block.Name + ": " + e.ErrorStatus); }
+        }
+        return (updated.Count == 0 ? null : updated.ToArray(), failed.Count == 0 ? null : failed.ToArray());
+    }
+
+    // Fields live on the object that shows them (the multileader, the attribute); the copy of a multileader's MText is checked as well.
+    private static bool HasFields(Entity entity) => entity.HasFields || entity is MLeader { ContentType: ContentType.MTextContent } leader && LeaderMTextHasFields(leader);
+    private static bool LeaderMTextHasFields(MLeader leader) { if (leader.MText is not { } content) return false; using (content) return content.HasFields; }
     private static string Collapse(string text) => string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
     private static string Clip(string text) => text.Length <= 300 ? text : text[..300] + "…";
 
@@ -344,8 +401,8 @@ internal static class TextUnits
         attribute.UpgradeOpen();
         using var content = attribute.MTextAttribute;
         var detail = WriteMText(content, attribute, text, fit, minHeight, ref overflow, ref simplified);
+        // Set back as a whole; UpdateMTextAttribute here would rebuild it from the old single-line text and height.
         attribute.MTextAttribute = content;
-        attribute.UpdateMTextAttribute();
         return detail;
     }
 
@@ -364,7 +421,10 @@ internal static class TextUnits
 
     private static object Cell(Table table, int row, int column, string text, ref int simplified)
     {
-        table.UpgradeOpen();
+        foreach (var m in NativeTables.MergedRanges(table))
+            if (row >= m.TopRow && row <= m.BottomRow && column >= m.LeftColumn && column <= m.RightColumn && (m.TopRow != row || m.LeftColumn != column))
+                throw new CadFault("INVALID_UNIT", "Cell " + row + "," + column + " is hidden in a merged range; its text is in cell " + m.TopRow + "," + m.LeftColumn);
+        if (!table.IsWriteEnabled) table.UpgradeOpen();
         table.Cells[row, column].TextString = TextTranslation.ForMText(table.Cells[row, column].TextString ?? "", text, out bool lost);
         if (lost) simplified++;
         return new { kind = "table_cell", formatting_simplified = lost ? true : (bool?)null, fit = "not_applied: the row grows to its text" };
@@ -395,7 +455,6 @@ internal static class TextUnits
                     {
                         results.Add(new { handle = H(id), detail = Column(content, width, height, minHeight, ref overflow) });
                         attribute.MTextAttribute = content;
-                        attribute.UpdateMTextAttribute();
                     }
                     break;
                 case DBText text:
@@ -417,8 +476,13 @@ internal static class TextUnits
                 default: throw new CadFault("INVALID_TEXT_FIT", "text_fit takes TEXT, MTEXT and attributes: " + H(id));
             }
         }
+        var (updated, notUpdated) = UpdateDynamicBlocks(tr, ids.Select(id => tr.GetObject(id, OpenMode.ForRead)).Where(o => o is not AttributeReference).Select(o => o.OwnerId).Distinct());
         return new(ids.Length == 1 ? ids[0] : ObjectId.Null, ids.Select(id => tr.GetObject(id, OpenMode.ForRead) is AttributeReference a ? a.OwnerId : id).Distinct().ToArray(),
-            new { fitted = results.Count, results, overflow_texts = overflow == 0 ? (int?)null : overflow, widths_estimated = measure.Estimated ? true : (bool?)null });
+            new
+            {
+                fitted = results.Count, results, overflow_texts = overflow == 0 ? (int?)null : overflow, widths_estimated = measure.Estimated ? true : (bool?)null,
+                dynamic_blocks_updated = updated, dynamic_blocks_not_updated = notUpdated
+            });
     }
 
     private static object Column(MText mtext, double width, double? height, double minHeight, ref int overflow)

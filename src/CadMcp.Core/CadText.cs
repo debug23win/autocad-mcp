@@ -14,7 +14,10 @@ public static class CadText
 {
     public const char Diameter = 'Ø', Degree = '°', PlusMinus = '±';
 
-    /// <summary>Displayed text. With <paramref name="mtext"/>, MText formatting codes are removed as well.</summary>
+    /// <summary>
+    /// Displayed text. With <paramref name="mtext"/>, MText formatting codes are removed as well; there \U+ codes are decoded
+    /// with the other codes, so an escaped backslash before "U+0041" stays a backslash.
+    /// </summary>
     public static string Normalize(string? text, bool mtext = false)
     {
         if (string.IsNullOrEmpty(text)) return "";
@@ -34,7 +37,7 @@ public static class CadText
                 if (char.IsAsciiDigit(code) && i + 4 < value.Length && char.IsAsciiDigit(value[i + 3]) && char.IsAsciiDigit(value[i + 4]))
                 { result.Append((char)int.Parse(value.AsSpan(i + 2, 3), CultureInfo.InvariantCulture)); i += 4; continue; }
             }
-            if (c == '\\' && i + 6 < value.Length && (value[i + 1] is 'U' or 'u') && value[i + 2] == '+' &&
+            if (!mtext && c == '\\' && i + 6 < value.Length && (value[i + 1] is 'U' or 'u') && value[i + 2] == '+' &&
                 int.TryParse(value.AsSpan(i + 3, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int unicode))
             { result.Append((char)unicode); i += 6; continue; }
             result.Append(c);
@@ -59,6 +62,9 @@ public static class CadText
                 case '~': result.Append(' '); break;
                 case '\\' or '{' or '}': result.Append(code); break;
                 case 'L' or 'l' or 'O' or 'o' or 'K' or 'k': break;
+                case 'U' or 'u' when i + 5 < contents.Length && contents[i + 1] == '+' &&
+                    int.TryParse(contents.AsSpan(i + 2, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int unicode):
+                    result.Append((char)unicode); i += 5; break;
                 case 'U' or 'u': result.Append('\\').Append(code); break;
                 // \M+nXXXX: a double-byte character of an Asian code page.
                 case 'M' or 'm' when i + 6 < contents.Length && contents[i + 1] == '+': result.Append('\uFFFD'); i += 6; break;

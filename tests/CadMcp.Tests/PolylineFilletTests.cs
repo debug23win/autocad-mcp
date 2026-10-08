@@ -107,13 +107,33 @@ public sealed class PolylineFilletTests
     }
 
     [Fact]
+    public void Far_coordinates_keep_arcs_and_measure_lengths_safely()
+    {
+        // Millimetres on a national grid: a slight arc next to a corner is still an arc, whatever the length tolerance.
+        double x = 3e9;
+        var survey = new[] { new PolylineVertex(x, 0, 0.002), new PolylineVertex(x + 10000, 0), new PolylineVertex(x + 10000, 5000) };
+        var near = PolylineFillet.Apply(survey, closed: false, radius: 10, tolerance: x * 1e-12);
+        Assert.Empty(near.Filleted);
+        Assert.Equal("next to an arc segment", Assert.Single(near.Skipped).Reason);
+        // Coordinates whose squares overflow still give exact lengths; spans beyond double range are skipped, not thrown.
+        var huge = PolylineFillet.Apply(Path(0, 0, 1e155, 0, 1e155, 1e155), closed: false, radius: 1e154);
+        Assert.Equal([1], huge.Filleted);
+        Assert.All(huge.Vertices, v => Assert.True(double.IsFinite(v.X) && double.IsFinite(v.Y) && double.IsFinite(v.Bulge) && double.IsFinite(v.StartWidth)));
+        var beyond = PolylineFillet.Apply(Path(-1e308, 0, 1e308, 0, 1e308, 1e308), closed: false, radius: 1);
+        Assert.Contains("too long", Assert.Single(beyond.Skipped).Reason);
+    }
+
+    [Fact]
     public void Invalid_input_is_refused()
     {
         var l = Path(0, 0, 10, 0, 10, 10);
         Assert.Equal("INVALID_PARAMETER", Assert.Throws<CadFault>(() => PolylineFillet.Apply(l, false, 0)).Code);
         Assert.Equal("INVALID_PARAMETER", Assert.Throws<CadFault>(() => PolylineFillet.Apply(l, false, double.NaN)).Code);
         Assert.Equal("INVALID_VERTEX", Assert.Throws<CadFault>(() => PolylineFillet.Apply(l, false, 1, at: [3])).Code);
+        Assert.Equal("INVALID_VERTEX", Assert.Throws<CadFault>(() => PolylineFillet.Apply(l, true, 1, at: [-1])).Code);
+        Assert.Equal("INVALID_VERTEX", Assert.Throws<CadFault>(() => PolylineFillet.Apply(l, false, 1, at: [-5])).Code);
         Assert.Equal("INVALID_POLYLINE", Assert.Throws<CadFault>(() => PolylineFillet.Apply([new PolylineVertex(0, 0)], false, 1)).Code);
+        Assert.Equal("INVALID_POLYLINE", Assert.Throws<CadFault>(() => PolylineFillet.Apply([new PolylineVertex(0, 0, 0, double.NaN), new PolylineVertex(10, 0), new PolylineVertex(10, 10)], false, 1)).Code);
     }
 
     [Fact]
