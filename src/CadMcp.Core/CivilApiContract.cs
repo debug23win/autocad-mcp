@@ -72,25 +72,36 @@ public static class CivilApiContract
         "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SectionStyleCollection SectionStyles {get;}",
         "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P StructureRuleSetStyleCollection StructureRuleSetStyles {get;}",
         "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P StructureStyleCollection StructureStyles {get;}",
-        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SurfaceStyleCollection SurfaceStyles {get;}"
+        "Autodesk.Civil.DatabaseServices.Styles.StylesRoot|P SurfaceStyleCollection SurfaceStyles {get;}",
+        // Read fail-closed before an edit: a data shortcut reference is refused.
+        "Autodesk.Civil.DatabaseServices.Entity|P Boolean IsReferenceObject {get;}",
+        // The active drawing's Civil document, with a fallback by database.
+        "Autodesk.Civil.ApplicationServices.CivilApplication|P static CivilDocument ActiveDocument {get;}",
+        // Part size names from the size data record.
+        "Autodesk.Civil.DatabaseServices.Styles.PartSize|P PartDataRecord SizeDataRecord {get;set;}",
+        "Autodesk.Civil.DatabaseServices.PartDataRecord|M PartDataField GetDataFieldBy(String)",
+        "Autodesk.Civil.DatabaseServices.PartDataRecord|M PartDataField[] GetAllDataFields()",
+        "Autodesk.Civil.DatabaseServices.PartDataField|P Object Value {get;set;}",
+        // Pipe and structure properties civil_set accepts or the reader shows.
+        "Autodesk.Civil.DatabaseServices.Pipe|P Point3d StartPoint {get;set;}",
+        "Autodesk.Civil.DatabaseServices.Pipe|P Point3d EndPoint {get;set;}",
+        "Autodesk.Civil.DatabaseServices.Pipe|P Double InnerDiameterOrWidth {get;}",
+        "Autodesk.Civil.DatabaseServices.Pipe|P Double InnerHeight {get;}",
+        "Autodesk.Civil.DatabaseServices.Structure|P Double RimElevation {get;set;}",
+        "Autodesk.Civil.DatabaseServices.Structure|P Double SumpElevation {get;set;}",
+        // Surface statistics.
+        "Autodesk.Civil.DatabaseServices.GeneralSurfaceProperties|P Double MaximumElevation {get;}",
+        "Autodesk.Civil.DatabaseServices.GeneralSurfaceProperties|P Double MinimumElevation {get;}",
+        "Autodesk.Civil.DatabaseServices.GeneralSurfaceProperties|P Int32 NumberOfPoints {get;}",
+        "Autodesk.Civil.DatabaseServices.TinSurfaceProperties|P Int32 NumberOfTriangles {get;}"
     ];
 
     /// <summary>
-    /// Names the Civil code uses that the published dumps cannot confirm, with the reason each is safe. A test requires
+    /// Names the Civil code uses on any Civil object, so no one type's dump confirms them, with the reason each is safe. A test requires
     /// every member name in the Civil code paths to be in <see cref="Members"/> or here, so a typo cannot pass silently.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> Unchecked = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["IsReferenceObject"] = "declared on the Civil entity base class, outside the dumps; read fail-closed (an unreadable value refuses the edit)",
-        ["ActiveDocument"] = "CivilApplication.ActiveDocument, outside the dumps; used only for the active drawing, with a fallback by database",
-        ["SizeDataRecord"] = "part size data record, outside the dumps; read fail-soft (the size handle is listed when its name cannot be read)",
-        ["GetDataFieldBy"] = "part size data record, outside the dumps; read fail-soft",
-        ["GetAllDataFields"] = "part size data record, outside the dumps; read fail-soft",
-        ["Value"] = "part size data field, outside the dumps; read fail-soft",
-        ["StartPoint"] = "pipe property accepted by civil_set; pipes are outside the dumps and an unknown property is refused by the vendor setter",
-        ["EndPoint"] = "pipe property accepted by civil_set; as StartPoint",
-        ["RimElevation"] = "structure property accepted by civil_set and read when present",
-        ["SumpElevation"] = "structure property accepted by civil_set and read when present",
         ["StyleId"] = "style id accepted by civil_set on any Civil object; checked by the vendor setter",
         ["AlignmentName"] = "display property read when present and skipped otherwise",
         ["ProfileName"] = "display property read when present and skipped otherwise",
@@ -98,12 +109,6 @@ public static class CivilApiContract
         ["StartStation"] = "display property read when present and skipped otherwise",
         ["EndStation"] = "display property read when present and skipped otherwise",
         ["Elevation"] = "display property read when present and skipped otherwise",
-        ["Area"] = "display property read when present and skipped otherwise",
-        ["InnerDiameterOrWidth"] = "display property read when present and skipped otherwise",
-        ["InnerHeight"] = "display property read when present and skipped otherwise",
-        ["MaximumElevation"] = "surface statistics value read when present",
-        ["MinimumElevation"] = "surface statistics value read when present",
-        ["NumberOfPoints"] = "surface statistics value read when present",
-        ["NumberOfTriangles"] = "surface statistics value read when present"
+        ["Area"] = "display property read when present and skipped otherwise"
     };
 }

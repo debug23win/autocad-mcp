@@ -22,7 +22,7 @@ public sealed class CivilTests
     public void Every_reflected_Civil_member_exists_in_each_supported_release()
     {
         var releases = Signatures();
-        Assert.Equal(new[] { "2024", "2025", "2026" }, releases.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { "2024", "2025", "2026", "2027" }, releases.Keys.Order(StringComparer.Ordinal));
         foreach (var (release, members) in releases)
         {
             var missing = CivilApiContract.Members.Where(m => !members.Contains(m)).ToArray();

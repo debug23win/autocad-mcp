@@ -8,6 +8,7 @@ src/CadMcp.AutoCAD2026Net10/CadMcp.AutoCAD2026Net10.csproj
 src/CadMcp.AutoCAD2027/CadMcp.AutoCAD2027.csproj
 tests/CadMcp.TestCli/CadMcp.TestCli.csproj
 tests/CadMcp.Tests/CadMcp.Tests.csproj
+tests/CadMcp.CivilSignatures/CadMcp.CivilSignatures.csproj
 tests/CadMcp.ChatPanelProbe/CadMcp.ChatPanelProbe.csproj
 tests/CadMcp.CoreProbe/CadMcp.CoreProbe.csproj
 tests/CadMcp.GuiProbe/CadMcp.GuiProbe.csproj

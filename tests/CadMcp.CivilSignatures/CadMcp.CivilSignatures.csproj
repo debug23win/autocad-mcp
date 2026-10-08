@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Writes tests/CadMcp.Tests/Fixtures/civil-api-signatures.txt from Civil 3D .NET API assemblies; see scripts/civil-signatures.ps1. -->
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />
+  </ItemGroup>
+</Project>
