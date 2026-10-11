@@ -35,10 +35,14 @@ public static class ProviderProcess
         foreach (var arg in arguments) info.ArgumentList.Add(arg);
         return info;
     }
+    /// <summary>
+    /// Best effort: also runs as a cancellation callback, where an exception would surface in AutoCAD's UI thread or on a
+    /// timer thread and end acad.exe. Kill throws AggregateException when a descendant cannot be terminated.
+    /// </summary>
     public static void Stop(Process p)
     {
         try { if (!p.HasExited) p.Kill(entireProcessTree: true); }
-        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        catch (Exception e) { System.Diagnostics.Trace.WriteLine("CAD MCP: stopping the provider process failed: " + e.Message); }
     }
     public static async Task StopAndWaitAsync(Process p)
     {
