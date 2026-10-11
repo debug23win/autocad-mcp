@@ -69,6 +69,8 @@ internal sealed class ChatPanel : UserControl
     private string? chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort;
     private int maxSubagents = 3;
     private IReadOnlyList<CodexModel> catalog = Array.Empty<CodexModel>();
+    // Models of the installed Claude Code for this account; empty until the CLI answered, then the aliases are offered.
+    private IReadOnlyList<ClaudeModel> claudeCatalog = Array.Empty<ClaudeModel>();
     private bool settingChoices, firstLoad, restoring;
     private readonly string brokerPipe;
     public ChatPanel() : this(null) { }
@@ -134,7 +136,7 @@ internal sealed class ChatPanel : UserControl
             previousProvider = provider.SelectedIndex; adapter = null;
             ApplyProviderChoices();
             SetBusy(false);
-            if (!restoring && provider.SelectedIndex == 0 && IsLoaded) _ = RefreshModels();
+            if (!restoring && IsLoaded) _ = RefreshModels();
         };
         model.SelectionChanged += (_, _) =>
         {
@@ -145,7 +147,12 @@ internal sealed class ChatPanel : UserControl
                 var selected = SelectedCatalogModel();
                 if (selected is not null && !string.IsNullOrEmpty(chosenEffort) && !selected.Efforts.Contains(chosenEffort)) chosenEffort = null;
             }
-            else chosenClaudeModel = model.SelectedValue as string;
+            else
+            {
+                chosenClaudeModel = model.SelectedValue as string;
+                var selected = SelectedClaudeModel();
+                if (selected is not null && !string.IsNullOrEmpty(chosenClaudeEffort) && !selected.Efforts.Contains(chosenClaudeEffort)) chosenClaudeEffort = null;
+            }
             PopulateEfforts(); Persist();
         };
         reasoning.SelectionChanged += (_, _) =>
@@ -177,9 +184,9 @@ internal sealed class ChatPanel : UserControl
         // The policy may have been changed elsewhere (CADMCPLISP, another panel): show the stored one before the user picks.
         lispPolicy.DropDownOpened += (_, _) => LoadLispPolicy();
         refreshModels.Click += async (_, _) => await RefreshModels();
-        executable.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
-        directory.LostKeyboardFocus += async (_, _) => { if (provider.SelectedIndex == 0 && running is null) await RefreshModels(); };
-        Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; if (provider.SelectedIndex == 0) await RefreshModels(); } };
+        executable.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
+        directory.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
+        Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; await RefreshModels(); } };
         Loaded += async (_, _) => { ApplyTheme(); contextTimer.Start(); await RefreshCad(); };
         Unloaded += (_, _) => contextTimer.Stop();
         contextTimer.Tick += async (_, _) => { ApplyTheme(); if (running is null) await RefreshCad(); };
@@ -326,7 +333,7 @@ internal sealed class ChatPanel : UserControl
         catch (System.Exception error) { LogError(error); activity.Text = "Подключение: " + error.Message; }
         finally { running.Dispose(); running = null; SetBusy(false); }
         await RefreshCad();
-        if (!diagnostic && provider.SelectedIndex == 0) await RefreshModels();
+        if (!diagnostic) await RefreshModels();
     }
     private static string EffortLabel(string effort) => effort switch
     {
@@ -348,13 +355,27 @@ internal sealed class ChatPanel : UserControl
         model.ItemsSource = choices; model.SelectedValue = chosenModel ?? "";
         settingChoices = false; PopulateEfforts();
     }
+    internal void ApplyClaudeModels(IReadOnlyList<ClaudeModel> models)
+    {
+        claudeCatalog = models;
+        if (provider.SelectedIndex == 1) ApplyProviderChoices();
+    }
+    private ClaudeModel? SelectedClaudeModel()
+    {
+        var listed = claudeCatalog.Count > 0 ? claudeCatalog : ClaudeCatalog.Fallback;
+        return string.IsNullOrEmpty(chosenClaudeModel) ? claudeCatalog.FirstOrDefault(m => m.IsDefault) : listed.FirstOrDefault(m => m.Id == chosenClaudeModel);
+    }
     private void ApplyProviderChoices()
     {
         if (provider.SelectedIndex == 0) { ApplyModels(catalog); return; }
         settingChoices = true;
-        model.ItemsSource = new[] { new Choice("", "Автоматически"), new Choice("sonnet", "Claude Sonnet"),
-            new Choice("opus", "Claude Opus"), new Choice("haiku", "Claude Haiku") };
-        model.SelectedValue = chosenClaudeModel ?? "";
+        // "Автоматически" passes no --model: Claude Code then uses its default entry, named here with its current version.
+        var automatic = claudeCatalog.FirstOrDefault(m => m.IsDefault);
+        var choices = new List<Choice> { new("", "Автоматически" + (automatic is null ? "" : " — " + automatic.Label)) };
+        choices.AddRange((claudeCatalog.Count > 0 ? claudeCatalog : ClaudeCatalog.Fallback).Where(m => !m.IsDefault).Select(m => new Choice(m.Id, m.Label)));
+        if (!string.IsNullOrEmpty(chosenClaudeModel) && !choices.Any(c => c.Id == chosenClaudeModel))
+            choices.Add(new(chosenClaudeModel, chosenClaudeModel + (claudeCatalog.Count > 0 ? " — недоступна" : "")));
+        model.ItemsSource = choices; model.SelectedValue = chosenClaudeModel ?? "";
         settingChoices = false;
         PopulateEfforts();
     }
@@ -363,10 +384,12 @@ internal sealed class ChatPanel : UserControl
         settingChoices = true;
         if (provider.SelectedIndex != 0)
         {
-            reasoning.ItemsSource = new[] { new Choice("", "По умолчанию"), new Choice("low", "Низкая"),
-                new Choice("medium", "Средняя"), new Choice("high", "Высокая"),
-                new Choice("xhigh", "Очень высокая"), new Choice("max", "Максимальная") };
-            reasoning.SelectedValue = chosenClaudeEffort ?? "";
+            // The levels the selected model accepts; every --effort level while the CLI has not listed its models.
+            var levels = SelectedClaudeModel()?.Efforts ?? (claudeCatalog.Count == 0 ? ClaudeCatalog.AllEfforts : Array.Empty<string>());
+            var claudeChoices = new List<Choice> { new("", "По умолчанию") };
+            claudeChoices.AddRange(levels.Select(e => new Choice(e, EffortLabel(e))));
+            if (!string.IsNullOrEmpty(chosenClaudeEffort) && !claudeChoices.Any(c => c.Id == chosenClaudeEffort)) claudeChoices.Add(new(chosenClaudeEffort, EffortLabel(chosenClaudeEffort) + " — недоступна"));
+            reasoning.ItemsSource = claudeChoices; reasoning.SelectedValue = chosenClaudeEffort ?? "";
             settingChoices = false;
             return;
         }
@@ -383,20 +406,32 @@ internal sealed class ChatPanel : UserControl
         send.Content = acceptingInput ? "Дополнить" : "Отправить";
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
-        refreshModels.IsEnabled = !busy && provider.SelectedIndex == 0;
+        refreshModels.IsEnabled = !busy;
         agentCount.IsEnabled = !busy;
     }
     private async Task RefreshModels()
     {
-        if (running is not null || provider.SelectedIndex != 0) return;
+        if (running is not null) return;
+        bool codex = provider.SelectedIndex == 0;
         running = new(); SetBusy(true); activity.Text = "Загрузка доступных моделей…";
         try
         {
             if (!Directory.Exists(directory.Text)) throw new IOException("Укажите существующую рабочую папку в настройках подключения");
-            var models = await CodexCatalog.ReadAsync(new(executable.Text, host.Text, directory.Text), running.Token);
-            ApplyModels(models);
-            activity.Text = !string.IsNullOrEmpty(chosenModel) && !catalog.Any(m => m.Id == chosenModel)
-                ? "Сохранённая модель недоступна. Выберите другую модель." : "Доступно моделей: " + models.Count;
+            var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
+            if (codex)
+            {
+                var models = await CodexCatalog.ReadAsync(options, running.Token);
+                ApplyModels(models);
+                activity.Text = !string.IsNullOrEmpty(chosenModel) && !catalog.Any(m => m.Id == chosenModel)
+                    ? "Сохранённая модель недоступна. Выберите другую модель." : "Доступно моделей: " + models.Count;
+            }
+            else
+            {
+                var models = await ClaudeCatalog.ReadAsync(options, running.Token);
+                ApplyClaudeModels(models);
+                activity.Text = !string.IsNullOrEmpty(chosenClaudeModel) && !claudeCatalog.Any(m => m.Id == chosenClaudeModel)
+                    ? "Сохранённая модель Claude недоступна. Выберите другую модель." : "Доступно моделей Claude: " + models.Count(m => !m.IsDefault);
+            }
             Persist();
         }
         catch (OperationCanceledException) { activity.Text = "Загрузка моделей остановлена или истекло время ожидания"; }
@@ -409,6 +444,10 @@ internal sealed class ChatPanel : UserControl
         if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
         { activity.Text = "Укажите существующие MCP host и рабочую папку."; return; }
+        // A saved Claude model or level the CLI no longer offers is reported before the message is sent.
+        if (provider.SelectedIndex == 1)
+            try { ClaudeCatalog.Select(claudeCatalog, chosenClaudeModel, chosenClaudeEffort); }
+            catch (IOException error) { activity.Text = error.Message; return; }
         running = new(); acceptingInput = true; SetBusy(true);
         turnStarted = lastSignal = DateTimeOffset.Now;
         currentActivity = "Подключение";

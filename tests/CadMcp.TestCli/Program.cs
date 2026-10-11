@@ -35,7 +35,7 @@ if (args.Contains("--cli-config-check"))
     return 0;
 }
 if (args.Contains("app-server")) { await FakeCodex.RunAsync(args); return 0; }
-if (args.Contains("-p")) { await FakeClaude.RunAsync(); return 0; }
+if (args.Contains("-p")) { return await FakeClaude.RunAsync(args); }
 Console.Error.WriteLine("Usage: CadMcp.TestCli app-server | -p | --live-subagent-test <codex|claude> <cli> | --live-codex-model-test <cli> [--resume-conversation <id>] | --live-codex-approval-test <cli> | --cli-config-check <cli>");
 return 2;
 
@@ -134,10 +134,32 @@ internal static class FakeCodex
 /// <summary>Claude Code stream-json protocol with --input-format stream-json and --replay-user-messages.</summary>
 internal static class FakeClaude
 {
-    public static async Task RunAsync()
+    public static async Task<int> RunAsync(string[] args)
     {
         var input = JsonDocument.Parse(Console.ReadLine()!).RootElement;
+        if (input.GetProperty("type").GetString() == "control_request")
+        {
+            // The model list: answered to initialize without any model call, as the real CLI does.
+            if (input.GetProperty("request").GetProperty("subtype").GetString() != "initialize" || !args.Contains("--strict-mcp-config"))
+                throw new Exception("Unexpected Claude control request");
+            Console.WriteLine("{\"type\":\"autocompact_state\",\"value\":null}");
+            Console.WriteLine(JsonSerializer.Serialize(new { type = "control_response", response = new { subtype = "success", request_id = input.GetProperty("request_id").GetString(), response = new {
+                models = new object[] {
+                    new { value = "default", resolvedModel = "claude-sonnet-5-5", displayName = "Default (recommended)", description = "Sonnet 5.5 · Efficient for routine tasks", supportsEffort = true, supportedEffortLevels = new[] { "low", "medium", "high", "xhigh", "max" } },
+                    new { value = "opus", resolvedModel = "claude-opus-5-5", displayName = "Opus", description = "Opus 5.5 · Best for everyday, complex tasks", supportsEffort = true, supportedEffortLevels = new[] { "low", "medium", "high", "xhigh", "max" } },
+                    new { value = "fable", resolvedModel = "claude-fable-5-1", displayName = "Fable", description = "Fable 5.1 · Most capable", supportsEffort = true, supportedEffortLevels = new[] { "low", "medium", "high" } },
+                    new { value = "legacy", resolvedModel = "claude-legacy", displayName = "Legacy", description = (string?)null, supportsEffort = false, supportedEffortLevels = (string[]?)null } } } } }));
+            while (Console.ReadLine() is not null) { }
+            return 0;
+        }
         string initial = input.GetProperty("uuid").GetString()!;
+        int resume = Array.IndexOf(args, "--resume");
+        if (resume >= 0 && args[resume + 1] == "missing-session")
+        {
+            // A conversation Claude Code no longer has: the CLI fails before the turn, with the reason in errors.
+            Console.WriteLine(JsonSerializer.Serialize(new { type = "result", subtype = "error_during_execution", is_error = true, num_turns = 0, session_id = "missing-session", errors = new[] { "No conversation found with session ID: missing-session" } }));
+            return 1;
+        }
         var blocks = input.GetProperty("message").GetProperty("content");
         string prompt = blocks[0].GetProperty("text").GetString()!;
         if (prompt.StartsWith("ATTACHMENT") && !blocks.EnumerateArray().Any(x => x.GetProperty("type").GetString() == "image" && Convert.FromBase64String(x.GetProperty("source").GetProperty("data").GetString()!).Length > 8))
@@ -152,6 +174,27 @@ internal static class FakeClaude
         }
         switch (prompt)
         {
+            case "ATTACHMENT":
+            {
+                // Each attached file may be read wherever it is: one exact rule per file, in settings JSON.
+                var allow = JsonDocument.Parse(args[Array.IndexOf(args, "--settings") + 1]).RootElement.GetProperty("permissions").GetProperty("allow").EnumerateArray().Select(r => r.GetString()!).ToArray();
+                if (!allow.Any(r => r.StartsWith("Read(//") && r.EndsWith("/plan.txt)")) || !allow.Any(r => r.EndsWith("/view.png)")))
+                    throw new Exception("Attached files are not readable: " + string.Join(", ", allow));
+                break;
+            }
+            case "THINK":
+            {
+                Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-claude\",\"model\":\"claude-opus-5-5\"}");
+                Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}}");
+                Console.WriteLine("{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"session_id\":\"test-claude\",\"estimated_tokens\":120}");
+                Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Сверяю размеры\"}}}");
+                // A helper's own stream is not the answer.
+                Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"parent_tool_use_id\":\"tool-9\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"helper text\"}}}");
+                Console.WriteLine("{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed_warning\",\"rateLimitType\":\"seven_day\",\"utilization\":0.9}}");
+                Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Готово\"}}}");
+                Console.WriteLine("{\"type\":\"result\",\"session_id\":\"test-claude\",\"is_error\":false,\"result\":\"Готово\"}");
+                return 0;
+            }
             case "STEER":
             {
                 // One result per message: the follow-up is acknowledged during the first turn and answered by the second.
@@ -159,7 +202,7 @@ internal static class FakeClaude
                 Console.WriteLine(next.GetRawText());
                 Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Первый результат\"}");
                 Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Учёл уточнение\"}");
-                return;
+                return 0;
             }
             case "MERGE" or "MERGE_LEGACY":
             {
@@ -170,7 +213,7 @@ internal static class FakeClaude
                     ? JsonSerializer.Serialize(new { type = "result", is_error = false, result = "Учёл уточнение", user_message_uuids = new[] { initial, next.GetProperty("uuid").GetString() } })
                     : "{\"type\":\"result\",\"is_error\":false,\"result\":\"Учёл уточнение\"}");
                 await Task.Delay(TimeSpan.FromMinutes(1));
-                return;
+                return 0;
             }
             case "NOACK":
             {
@@ -178,9 +221,9 @@ internal static class FakeClaude
                 ReadFollowup();
                 Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Готово\"}");
                 await Task.Delay(TimeSpan.FromMinutes(1));
-                return;
+                return 0;
             }
-            case "SILENT": await Task.Delay(TimeSpan.FromMinutes(1)); return;
+            case "SILENT": await Task.Delay(TimeSpan.FromMinutes(1)); return 0;
         }
         Console.WriteLine("{\"type\":\"system\",\"session_id\":\"test-claude\"}");
         Console.WriteLine("{\"type\":\"assistant\",\"session_id\":\"test-claude\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"mcp__cad__cad_edit\"}]}}");
@@ -188,5 +231,6 @@ internal static class FakeClaude
         Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"event\":{\"delta\":{\"text\":\"Сеть \"}}}");
         Console.WriteLine("{\"type\":\"stream_event\",\"session_id\":\"test-claude\",\"event\":{\"delta\":{\"text\":\"✓\"}}}");
         Console.WriteLine("{\"type\":\"result\",\"session_id\":\"test-claude\",\"is_error\":false,\"result\":\"Сеть ✓\"}");
+        return 0;
     }
 }
