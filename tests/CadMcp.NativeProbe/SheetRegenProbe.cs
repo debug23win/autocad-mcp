@@ -14,6 +14,9 @@ namespace CadMcp.NativeProbe;
 /// dispatcher, cad_edit_preview, cad_edit with its commit and regeneration, then garbage collection, regenerations and a
 /// layout switch. Every step is appended to output.progress and flushed before it runs, so after a crash of AutoCAD the
 /// last line names the step that crashed. Each variant runs in its own new drawing.
+/// render_then_edit renders the sheet with cad_render, as the chat panel does after every turn, before the next edit;
+/// frame_explode explodes the generated title block with its multiline attributes as text, and closing the drawing
+/// then frees everything the explode created.
 /// CADMCP_SHEET_VARIANTS limits the variants (comma list); CADMCP_SHEET_PLAN names a JSON file with an operations array,
 /// or an operation receipt from %LOCALAPPDATA%\CadMcp\operations, to replay a real plan.
 /// </summary>
@@ -50,7 +53,7 @@ public static class SheetRegenProbe
             Log("start AutoCAD " + Convert.ToString(App.GetSystemVariable("ACADVER")) + " FIELDEVAL=" + Convert.ToString(App.GetSystemVariable("FIELDEVAL")));
             var variants = Variants();
             var only = Environment.GetEnvironmentVariable("CADMCP_SHEET_VARIANTS")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var (name, plan, preview) in variants)
+            foreach (var (name, plan, preview, then) in variants)
             {
                 if (only is { Length: > 0 } && !only.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
                 Document? doc = null;
@@ -72,22 +75,56 @@ public static class SheetRegenProbe
                         DateTimeOffset.UtcNow.AddMinutes(1)), timeout.Token);
                     document = context.DocumentId ?? throw new System.Exception("No document id: " + context.Error?.Message);
                     revision = context.Revision!.Value;
+                    // A layout switch or a preview outside the dispatcher can move the drawing's revision.
+                    async Task Refresh()
+                    {
+                        var current = await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"), "cad_context", documents.SessionId, document, null, Wire.Element(new { }),
+                            DateTimeOffset.UtcNow.AddMinutes(1)), timeout.Token);
+                        revision = current.Revision ?? revision;
+                    }
                     foreach (var layout in Layouts(plan))
                     {
                         Log(name + ": layout_create " + layout);
                         await Call("cad_edit", new { operation_id = Id(name, "layout"), operations_json = JsonSerializer.Serialize(new[] { new { op = "layout_create", name = layout } }) });
                     }
+                    JsonElement edited;
                     if (preview)
                     {
                         Log(name + ": cad_edit_preview");
                         var previewed = await Call("cad_edit_preview", new { operations_json = plan });
-                        Log(name + ": cad_edit with preview_hash (commit and regeneration inside the executor)");
-                        await Call("cad_edit", new { operation_id = Id(name, "edit"), operations_json = plan, preview_hash = previewed.Text("plan_hash") }, Data(previewed, "previewed_revision"));
+                        Log(name + ": cad_edit with preview_hash (commit and display refresh inside the executor)");
+                        edited = await Call("cad_edit", new { operation_id = Id(name, "edit"), operations_json = plan, preview_hash = previewed.Text("plan_hash") }, Data(previewed, "previewed_revision"));
                     }
                     else
                     {
-                        Log(name + ": cad_edit (commit and regeneration inside the executor)");
-                        await Call("cad_edit", new { operation_id = Id(name, "edit"), operations_json = plan });
+                        Log(name + ": cad_edit (commit and display refresh inside the executor)");
+                        edited = await Call("cad_edit", new { operation_id = Id(name, "edit"), operations_json = plan });
+                    }
+                    if (then == "render")
+                    {
+                        // The chat panel renders after every turn with a completed edit; the next turn edits again.
+                        for (int frame = 1; frame <= 3; frame++)
+                        {
+                            Log(name + ": cad_render " + frame + " of layout " + Layout);
+                            await Call("cad_render", new { layout_name = Layout, width = 640 + frame * 128, height = 480 + frame * 96 });
+                        }
+                        Log(name + ": garbage collection after the previews");
+                        await OnIdle(() => { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); });
+                        Log(name + ": cad_edit after the previews (commit and display refresh inside the executor)");
+                        await Refresh();
+                        await Call("cad_edit", new { operation_id = Id(name, "after_render"), operations_json = JsonSerializer.Serialize(new[] { new { op = "mtext", layout = Layout,
+                            position = new[] { 420, 60, 0 }, text = "Изменение после превью", height = 3.5, width = 120 } }) });
+                    }
+                    if (then == "explode")
+                    {
+                        // The frame's result names the title block reference.
+                        var frameHandle = edited.GetProperty("result").GetProperty("results")[0].Text("handle") ?? throw new System.Exception("The frame returned no handle");
+                        // Explode edits the current space only.
+                        Log(name + ": switch to layout " + Layout + " for the explode");
+                        await OnIdle(() => { using var locked = doc!.LockDocument(); LayoutManager.Current.CurrentLayout = Layout; });
+                        await Refresh();
+                        Log(name + ": explode title block " + frameHandle + " with its attributes as text");
+                        await Call("cad_edit", new { operation_id = Id(name, "explode"), operations_json = JsonSerializer.Serialize(new[] { new { op = "explode", handle = frameHandle, attributes_as_text = true } }) });
                     }
                     Log(name + ": garbage collection with finalizers");
                     await OnIdle(() => { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); });
@@ -109,6 +146,8 @@ public static class SheetRegenProbe
                 }
                 finally
                 {
+                    // Closing destroys the drawing's database: objects with two owners are freed twice here.
+                    Log(name + ": close the drawing");
                     await OnIdle(() => { if (doc is { IsDisposed: false }) doc.CloseAndDiscard(); });
                 }
             }
@@ -138,7 +177,7 @@ public static class SheetRegenProbe
         return parsed.RootElement.EnumerateArray().Select(o => o.Text("layout")).OfType<string>().Where(l => !created.Contains(l)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    private static List<(string Name, string Plan, bool Preview)> Variants()
+    private static List<(string Name, string Plan, bool Preview, string? Then)> Variants()
     {
         var frame = new object[] { new { op = "spds_sheet", layout = Layout, format = "A1", designation = "TEST-КЖ", project = "Проверка регенерации", building = "Тестовое здание",
             drawing_title = "Лист А1", organization = "CAD MCP", sheet = "1", sheets = "1" } };
@@ -162,10 +201,11 @@ public static class SheetRegenProbe
         var notes = new object[] { new { op = "mtext", layout = Layout, position = new[] { 420, 120, 0 }, text = "Примечания:\\P1. Размеры в миллиметрах.\\P2. Отметки в метрах.", height = 3.5, width = 180 } };
         var all = frame.Concat(table).Concat(notes).ToArray();
         string J(object[] plan) => JsonSerializer.Serialize(plan);
-        var variants = new List<(string, string, bool)>
+        var variants = new List<(string, string, bool, string?)>
         {
-            ("frame", J(frame), false), ("table", J(table), false), ("cross_table", J(crossTable), false), ("notes", J(notes), false),
-            ("all", J(all), false), ("all_after_preview", J(all), true), ("cross_table_after_preview", J(crossTable), true)
+            ("frame", J(frame), false, null), ("table", J(table), false, null), ("cross_table", J(crossTable), false, null), ("notes", J(notes), false, null),
+            ("all", J(all), false, null), ("all_after_preview", J(all), true, null), ("cross_table_after_preview", J(crossTable), true, null),
+            ("render_then_edit", J(all), false, "render"), ("frame_explode", J(frame), false, "explode")
         };
         if (Environment.GetEnvironmentVariable("CADMCP_SHEET_PLAN") is { Length: > 0 } path)
         {
@@ -174,8 +214,8 @@ public static class SheetRegenProbe
             // An operation receipt keeps the request: Request.Data.operations_json.
             string plan = root.ValueKind == JsonValueKind.Array ? root.GetRawText()
                 : root.GetProperty("Request").GetProperty("Data").Text("operations_json") ?? throw new InvalidDataException("No operations_json in " + path);
-            variants.Add(("user_plan", plan, false));
-            variants.Add(("user_plan_after_preview", plan, true));
+            variants.Add(("user_plan", plan, false, null));
+            variants.Add(("user_plan_after_preview", plan, true, null));
         }
         return variants;
     }

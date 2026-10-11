@@ -6,8 +6,9 @@ namespace CadMcp.Core;
 /// <summary>Durable receipts. Only terminal entries backed by disk leave the hot cache.</summary>
 public sealed class OperationJournal
 {
+    /// <param name="Phase">The last milestone a running operation recorded, such as "committed"; it survives a crash of CAD.</param>
     public sealed record Entry(string Hash, string DocumentId, string State, Response? Result,
-        Request? Request = null, DateTimeOffset? CreatedAt = null, DateTimeOffset? UpdatedAt = null);
+        Request? Request = null, DateTimeOffset? CreatedAt = null, DateTimeOffset? UpdatedAt = null, string? Phase = null);
     private readonly object sync = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly string? directory;
@@ -85,6 +86,8 @@ public sealed class OperationJournal
         return null;
     }
     public void Running(string id) { lock (sync) Save(id, (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { State = "running" }); }
+    /// <summary>Records a milestone of a running operation, so a receipt left by a crash shows how far it got.</summary>
+    public void Phase(string id, string phase) { lock (sync) Save(id, (Find(id) ?? throw new InvalidOperationException("Unknown operation")) with { Phase = phase }); }
     public Response Complete(string id, Response result)
     {
         lock (sync) return CompleteCore(id, result);
@@ -141,7 +144,7 @@ public sealed class OperationJournal
         var outer = Wire.Element(entry.Result?.Data ?? new { });
         var result = outer.TryGetProperty("result", out var r) ? r : outer;
         return new { operation_id = id, document_id = entry.DocumentId, owner_id=entry.Request?.OwnerId,
-            state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State,
+            state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State, phase = entry.Phase,
             operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
             error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
             changed_entities = result.TryGetProperty("entity_count", out var count) && count.TryGetInt32(out int total) ? total

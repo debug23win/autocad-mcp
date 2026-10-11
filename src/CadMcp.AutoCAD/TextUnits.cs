@@ -305,6 +305,9 @@ internal static class TextUnits
         foreach (var id in owners)
         {
             if (id.IsNull || tr.GetObject(id, OpenMode.ForRead) is not BlockTableRecord { IsLayout: false, IsDynamicBlock: true } block) continue;
+            // AutoCAD rebuilds the anonymous copies and repoints references outside the transaction; a preview's rollback
+            // would leave references to copies of a definition it restores.
+            if (Edits.Previewing) { failed.Add(block.Name + ": rebuilt by cad_edit, not by the preview"); continue; }
             try
             {
                 if (!block.IsWriteEnabled) block.UpgradeOpen();

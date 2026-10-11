@@ -158,7 +158,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (entry is not null && entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to a different drawing");
         bool active = entry?.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(id) || lisp?.Id == id;
         return new(r.RequestId, "completed", new { operation_id = id, state = entry is null ? "not_found" : active ? entry.State : "unknown",
-            phase = control.PhaseOf(id), result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
+            phase = control.PhaseOf(id) ?? entry?.Phase, result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
             retry = "Replay only the original exact request with its operation_id. Unknown/not_found never proves no changes." }, documents.SessionId, r.DocumentId);
     }
     private void Idle(object? sender, EventArgs e)
@@ -167,12 +167,16 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         // a nested call must never start a second operation inside the first.
         if (inIdle) return;
         inIdle = true;
+        // Last resort: an exception leaving an AutoCAD event handler can end acad.exe.
         try { RunIdle(); }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP idle: " + error); }
         finally { inIdle = false; }
     }
     private void RunIdle()
     {
         Interlocked.Exchange(ref lastIdleTicks, DateTime.UtcNow.Ticks);
+        // While AutoCAD closes its drawings no work starts; queued requests expire or are failed when the worker stops.
+        if (quitting) return;
         // All database access occurs here, on the CAD application thread.
         CheckLisp();
         if (!queue.TryPeek(out var pending))
@@ -474,7 +478,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         try
         {
             var selection = doc.Editor.SelectImplied();
-            var ids = selection.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK ? selection.Value.GetObjectIds() : [];
+            using var selected = selection.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK ? selection.Value : null;
+            var ids = selected?.GetObjectIds() ?? [];
             return new { handles = ids.Take(500).Select(id => id.Handle.ToString()).ToArray(), count = ids.Length, truncated = ids.Length > 500, source = "implied_selection", status = selection.Status.ToString() };
         }
         catch (Autodesk.AutoCAD.Runtime.Exception e)
@@ -530,6 +535,18 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if(mapOperation && operations!.Length!=1)throw new CadFault("MAP_SINGLE_OPERATION","Map API operations must run singly with a checkpoint");
         bool outsideTransaction=operations?.Any(p=>ModifyPlan.OutsideTransaction.Contains(p.Text("op")!))==true;
         journal.Begin(id, r);
+        bool committed = false;
+        // The commit is written to the receipt and the recovery record, flushed, before the drawing is redrawn:
+        // if AutoCAD fails after it, both show that the change was committed in memory.
+        void Progress(string phase)
+        {
+            if (phase == "committed")
+            {
+                committed = true;
+                try { journal.Phase(id, phase); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("Operation receipt: " + error.Message); }
+            }
+            WorkSafety.Phase(documents.SessionId, id, phase, final: committed);
+        }
         try
         {
             using var locked = doc.LockDocument();
@@ -565,7 +582,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             }
             else data = exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
                 : publishFolder is not null ? Exports.Publish(doc, publishFolder, publishLayouts!, ct)
-                : Edits.Execute(doc, operations!, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), phase => WorkSafety.Phase(documents.SessionId, id, phase));
+                : Edits.Execute(doc, operations!, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), Progress);
             // A native edit has already refreshed every generated schedule and linked table in its own transaction.
             if (operations is not null && !mapOperation) state.TakeTableChanges();
             WorkSafety.Phase(documents.SessionId, id, "completed", final: true);
@@ -579,7 +596,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
             if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
-            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
+            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
     }

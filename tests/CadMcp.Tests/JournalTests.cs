@@ -91,6 +91,24 @@ public sealed class JournalTests
     }
 
     [Fact]
+    public async Task A_commit_recorded_before_a_crash_survives_in_the_receipt()
+    {
+        using var root = new TempFolder(); string session = Guid.NewGuid().ToString("N");
+        var journal = new OperationJournal(Path.Combine(root.Path, session));
+        var request = new Request("r", "cad_edit", session, "d", 1, Wire.Element(new { operation_id = "sheet" }));
+        journal.Begin("sheet", request); journal.Running("sheet"); journal.Phase("sheet", "committed");
+        // A new process reads what the crashed one left: still running, but past its commit.
+        var reloaded = new OperationJournal(Path.Combine(root.Path, session)).Find("sheet")!;
+        Assert.True(reloaded.State == "running" && reloaded.Phase == "committed", "The commit milestone was not persisted");
+        Assert.Equal("committed", Wire.Element(OperationJournal.Summary("sheet", reloaded, active: false)).Text("phase"));
+        var broker = new Broker(Path.Combine(root.Path, "workers"), root.Path);
+        var status = Wire.Element((await broker.DispatchAsync(new("status", "cad_operation_status", session, "d", Data: Wire.Element(new { operation_id = "sheet" })), default)).Data!);
+        Assert.True(status.Text("state") == "unknown" && status.Text("phase") == "committed", "The historical receipt hides the commit");
+        journal.Complete("sheet", new("r", "completed", new { transaction = "committed" }, session, "d", 2));
+        Assert.Equal("committed", journal.Find("sheet")!.Phase);
+    }
+
+    [Fact]
     public void Listing_skips_an_unreadable_receipt_and_reports_it()
     {
         using var directory = new TempFolder();

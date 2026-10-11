@@ -126,7 +126,9 @@ internal sealed class ChatPanel : UserControl
         var log = new Button { Content = "Журнал ошибок" }; log.Click += (_, _) =>
         {
             var path = LogPath(); if (!File.Exists(path)) { activity.Text = "Журнал ошибок пуст"; return; }
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            // A UI handler inside AutoCAD: a missing file association must not escape to the dispatcher.
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (System.Exception error) { LogError(error); activity.Text = "Не удалось открыть журнал: " + path; }
         }; accountButtons.Children.Add(log); settings.Children.Add(accountButtons);
         int previousProvider = provider.SelectedIndex;
         provider.SelectionChanged += (_, _) =>
@@ -243,7 +245,9 @@ internal sealed class ChatPanel : UserControl
             }
             catch (System.Exception e) { LogError(e); activity.Text = "Не удалось подтвердить отмену CAD; проверьте состояние операции"; }
         }
-        if(ReferenceEquals(stopping,running))stopping?.Cancel(); FlushText(); Persist();
+        // async void inside AutoCAD: a cancellation callback that throws must not reach the dispatcher.
+        try { if(ReferenceEquals(stopping,running))stopping?.Cancel(); FlushText(); Persist(); }
+        catch (System.Exception e) { LogError(e); }
     }
     private void AddAttachments(IEnumerable<string> paths)
     {

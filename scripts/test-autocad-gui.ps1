@@ -19,15 +19,23 @@ $probe = (Resolve-Path (Join-Path $repoRoot 'tests/CadMcp.NativeProbe/bin/Releas
 $profile = 'CADMCP_Test_' + [guid]::NewGuid().ToString('N')
 $script = Join-Path $fixture 'probe.scr'
 @('(setvar "FILEDIA" 0)', ('(setvar "LOGFILEPATH" "' + $fixture.Replace('\','/') + '")'), '(setvar "LOGFILEMODE" 1)', ('(setvar "TRUSTEDPATHS" "' + (Split-Path $probe).Replace('\','/') + '")'), '_NETLOAD', $probe, $Command) | Set-Content -LiteralPath $script -Encoding ascii
+# The registry release follows acad.exe: 25.0 is AutoCAD 2025 (R25.0), 25.1 is AutoCAD 2026 (R25.1).
+$acadVersion = (Get-Item -LiteralPath (Join-Path $AutoCADDir 'acad.exe')).VersionInfo
+$release = 'R{0}.{1}' -f $acadVersion.FileMajorPart, $acadVersion.FileMinorPart
 # Remember the user's profile selector; trust is changed only in our newly named test profile.
 $selectors = @()
-Get-ChildItem 'HKCU:\Software\Autodesk\AutoCAD\R25.0' | ForEach-Object {
+Get-ChildItem "HKCU:\Software\Autodesk\AutoCAD\$release" | ForEach-Object {
     $key = Join-Path $_.PSPath 'Profiles'
     if (Test-Path $key) { $selectors += [pscustomobject]@{Path=$key;Value=(Get-ItemPropertyValue -LiteralPath $key -Name '(default)')} }
 }
 # /p requires an existing profile; a missing name shows a modal startup warning.
-$productKey = if ($Product -eq 'MAP') { 'ACAD-8102:419' } else { 'ACAD-8101:419' }
-$profilesRoot = "HKCU:\Software\Autodesk\AutoCAD\R25.0\$productKey\Profiles"
+# Product keys end in 01 for AutoCAD and 02 for Map 3D, then the language code: ACAD-8101:419 is AutoCAD 2025 in Russian.
+$suffix = if ($Product -eq 'MAP') { '02' } else { '01' }
+$locale = [Globalization.CultureInfo]::GetCultureInfo($Language).LCID.ToString('X3')
+$productKey = Get-ChildItem "HKCU:\Software\Autodesk\AutoCAD\$release" | Where-Object { $_.PSChildName -match "^ACAD-[0-9A-F]{2}$suffix`:$locale$" } |
+    Select-Object -First 1 -ExpandProperty PSChildName
+if (!$productKey) { throw "No $Product $Language profile under HKCU:\Software\Autodesk\AutoCAD\$release; start this AutoCAD once first" }
+$profilesRoot = "HKCU:\Software\Autodesk\AutoCAD\$release\$productKey\Profiles"
 $sourceProfile = Get-ItemPropertyValue -LiteralPath $profilesRoot -Name '(default)'
 $testProfileKey = Join-Path $profilesRoot $profile
 if (Test-Path -LiteralPath $testProfileKey) { throw "Test profile unexpectedly already exists: $profile" }

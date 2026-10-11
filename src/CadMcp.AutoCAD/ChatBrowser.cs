@@ -123,7 +123,9 @@ internal sealed class ChatBrowser : Grid
     {
         messages = lines.ToArray(); dark = isDark; selected = selectedIndex;
         if (fallback.Visibility == Visibility.Visible) fallback.Text = ChatMarkup.PlainTranscript(messages);
-        browser.DefaultBackgroundColor = dark ? System.Drawing.Color.FromArgb(37, 40, 45) : System.Drawing.Color.FromArgb(245, 246, 248);
+        // Goes straight to the WebView2 controller, which throws once its browser process has died.
+        try { browser.DefaultBackgroundColor = dark ? System.Drawing.Color.FromArgb(37, 40, 45) : System.Drawing.Color.FromArgb(245, 246, 248); }
+        catch (Exception error) { Debug.WriteLine("CAD MCP chat background: " + error.Message); }
         if (ready) Render();
     }
     private void Render()

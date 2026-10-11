@@ -285,8 +285,15 @@ internal static class DrawingInsight
         var blocks = blockCounts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal).Take(50)
             .Select(p => new { name = p.Key, references = p.Value }).ToArray();
         // Used anywhere, including inside other blocks and through the anonymous copies of a dynamic block.
-        bool Referenced(BlockTableRecord block) => block.GetBlockReferenceIds(true, false).Cast<ObjectId>().Any(id => !id.IsErased) ||
-            block.IsDynamicBlock && block.GetAnonymousBlockIds().Cast<ObjectId>().Any(id => ((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).GetBlockReferenceIds(true, false).Cast<ObjectId>().Any(r => !r.IsErased));
+        bool Referenced(BlockTableRecord block)
+        {
+            // The id collections own native arrays: released here, never by the garbage collector.
+            static bool Live(ObjectIdCollection ids) { using (ids) return ids.Cast<ObjectId>().Any(id => !id.IsErased); }
+            if (Live(block.GetBlockReferenceIds(true, false))) return true;
+            if (!block.IsDynamicBlock) return false;
+            using var anonymous = block.GetAnonymousBlockIds();
+            return anonymous.Cast<ObjectId>().Any(id => Live(((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).GetBlockReferenceIds(true, false)));
+        }
         int unused = definitions.Count(b => !b.IsLayout && !b.IsAnonymous && !b.IsFromExternalReference && !b.IsDependent && !blockCounts.ContainsKey(b.Name) && !Referenced(b));
         var styles = ((TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead)).Cast<ObjectId>().Select(id => (TextStyleTableRecord)tr.GetObject(id, OpenMode.ForRead))
             .Where(s => !s.IsShapeFile && !string.IsNullOrEmpty(s.Name)).Select(s => new { name = s.Name, font = s.FileName, big_font = string.IsNullOrEmpty(s.BigFontFileName) ? null : s.BigFontFileName })

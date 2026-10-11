@@ -76,13 +76,15 @@ internal static class PreviewRendering
         var renderedSpace=(BlockTableRecord)copyTransaction.GetObject(copyLayout.BlockTableRecordId,OpenMode.ForRead);
         var renderedModel=(BlockTableRecord)copyTransaction.GetObject(((BlockTable)copyTransaction.GetObject(drawingCopy.BlockTableId,OpenMode.ForRead))[BlockTableRecord.ModelSpace],OpenMode.ForRead);
         var copyLayers=(LayerTable)copyTransaction.GetObject(drawingCopy.LayerTableId,OpenMode.ForRead);
-        var previousWorkingDatabase=HostApplicationServices.WorkingDatabase;HostApplicationServices.WorkingDatabase=drawingCopy;
-        var descriptor=new Autodesk.AutoCAD.GraphicsSystem.KernelDescriptor();
-        descriptor.addRequirement(Autodesk.AutoCAD.UniqueString.Intern("3D Drawing"));
+        var previousWorkingDatabase=HostApplicationServices.WorkingDatabase;
+        using var descriptor=new Autodesk.AutoCAD.GraphicsSystem.KernelDescriptor();
         Autodesk.AutoCAD.GraphicsSystem.GraphicsKernel? kernel=null;
         var viewportReports=new List<object>();
         try
         {
+            // Swapped inside the try: the copy is deleted when Capture returns, and AutoCAD must never keep it as the working database.
+            HostApplicationServices.WorkingDatabase=drawingCopy;
+            descriptor.addRequirement(Autodesk.AutoCAD.UniqueString.Intern("3D Drawing"));
             kernel=Autodesk.AutoCAD.GraphicsSystem.Manager.AcquireGraphicsKernel(descriptor);
             var bitmap=Draw(renderedSpace,width,height,position,target,up,frameWidth,frameHeight,null,null);
             if(!layout.ModelType)
@@ -103,7 +105,8 @@ internal static class PreviewRendering
                         if(v.PerspectiveOn){viewportReports.Add(new{handle=v.Handle.ToString(),status="unsupported_perspective"});continue;}
                         var matrix=ReadingMetadata.DcsToWcs(v);var center=new Point3d(v.ViewCenter.X,v.ViewCenter.Y,0).TransformBy(matrix);
                         var dir=v.ViewDirection.GetNormal();var vpUp=Vector3d.YAxis.TransformBy(matrix);
-                        using var pixels=Draw(renderedModel,Math.Clamp((int)Math.Ceiling(pw),1,2048),Math.Clamp((int)Math.Ceiling(ph),1,2048),center+dir*(Math.Max(v.ViewHeight,v.ViewHeight*v.Width/v.Height)*2+1),center,vpUp,v.ViewHeight*v.Width/v.Height,v.ViewHeight,v.GetFrozenLayers().Cast<ObjectId>().Select(id=>((LayerTableRecord)tr.GetObject(id,OpenMode.ForRead)).Name).Where(name=>copyLayers.Has(name)).Select(name=>copyLayers[name]).ToArray(),v);
+                        using var frozenLayers=v.GetFrozenLayers();
+                        using var pixels=Draw(renderedModel,Math.Clamp((int)Math.Ceiling(pw),1,2048),Math.Clamp((int)Math.Ceiling(ph),1,2048),center+dir*(Math.Max(v.ViewHeight,v.ViewHeight*v.Width/v.Height)*2+1),center,vpUp,v.ViewHeight*v.Width/v.Height,v.ViewHeight,frozenLayers.Cast<ObjectId>().Select(id=>((LayerTableRecord)tr.GetObject(id,OpenMode.ForRead)).Name).Where(name=>copyLayers.Has(name)).Select(name=>copyLayers[name]).ToArray(),v);
                         var saved=graphics.Save();string clip="rectangular";
                         try
                         {
@@ -140,7 +143,10 @@ internal static class PreviewRendering
             DiagnosticTrace?.Invoke("draw start "+drawable.Name+" "+(viewport?.Handle.ToString()??"frame"));
             using var device=doc.GraphicsManager.CreateAutoCADOffScreenDevice(kernel!);
             using var model=doc.GraphicsManager.CreateAutoCADModel(kernel!);
-            using var view=doc.GraphicsManager.CreateAutoCADView(kernel!,drawable);
+            // A plain view: CreateAutoCADView would also add the copy's whole space through a graphics model AutoCAD owns, which
+            // outlives the copy and keeps cache nodes of its deleted objects (and draws every entity, unfiltered). Only the
+            // entities added below are drawn, through the model disposed here before the copy is deleted.
+            using var view=new Autodesk.AutoCAD.GraphicsSystem.View();
             device.OnSize(new System.Drawing.Size(pixelWidth,pixelHeight));device.BackgroundColor=System.Drawing.Color.White;device.Add(view);
             try
             {

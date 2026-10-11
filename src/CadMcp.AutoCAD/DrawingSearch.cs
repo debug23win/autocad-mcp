@@ -25,13 +25,15 @@ internal static class DrawingSearch
         if(scope=="viewport")selectedViewport=tr.GetObject(NativeTables.Resolve(doc.Database,EditPlan.RequiredText(options,"viewport_handle")),OpenMode.ForRead) as Viewport??throw new CadFault("INVALID_VIEWPORT","Viewport handle required");
         if(scope=="selection"&&!ReferenceEquals(doc,Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument))throw new CadFault("EDITOR_SELECTION_UNAVAILABLE","Use database scopes for an inactive DWG");
         var selection = scope == "selection" ? doc.Editor.SelectImplied() : null;
-        var roots = scope == "selection" ? selection?.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK ? selection.Value.GetObjectIds() : []
+        using var selected = selection?.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK ? selection.Value : null;
+        var roots = scope == "selection" ? selected?.GetObjectIds() ?? []
             : (chosenLayout is not null?new[]{chosenLayout.BlockTableRecordId}:scope is "current" or "view" ? new[] { doc.Database.CurrentSpaceId } : table.Cast<ObjectId>().Where(id =>
                 ((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).IsLayout && (scope is not ("model" or "viewport") || id == table[BlockTableRecord.ModelSpace]) &&
                 (scope != "layouts" || id != table[BlockTableRecord.ModelSpace])).ToArray())
                 .SelectMany(id => ((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).Cast<ObjectId>()).ToArray();
         Extents3d? area = null;
-        var viewportFrozen=selectedViewport?.GetFrozenLayers().Cast<ObjectId>().ToHashSet();
+        HashSet<ObjectId>? viewportFrozen=null;
+        if(selectedViewport is not null)using(var frozen=selectedViewport.GetFrozenLayers())viewportFrozen=frozen.Cast<ObjectId>().ToHashSet();
         if(selectedViewport is not null)
         {
             var bounds=ReadingMetadata.SearchBounds(selectedViewport,tr)??throw new CadFault("VIEWPORT_PROJECTION_UNSUPPORTED","Viewport search needs a model viewport with an orthographic top view; read target_plane_corners_wcs for other views");

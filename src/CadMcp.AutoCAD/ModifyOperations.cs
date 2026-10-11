@@ -270,7 +270,8 @@ internal static class ModifyOperations
                 created.Add(Append(tr, space, curve).ObjectId);
             }
         }
-        catch { foreach (DBObject item in curves) if (item.ObjectId.IsNull) item.Dispose(); throw; }
+        // IsDisposed first: ObjectId of a disposed wrapper reads freed native memory.
+        catch { foreach (DBObject item in curves) if (!item.IsDisposed && item.ObjectId.IsNull) item.Dispose(); throw; }
         if (created.Count == 0) throw new CadFault("OFFSET_FAILED", "AutoCAD produced no offset curve; the distance may exceed a curvature radius");
         return new(created[0], created, new { source_handle = H(source.ObjectId), handles = created.Select(H).ToArray(), distance });
     }
@@ -323,7 +324,8 @@ internal static class ModifyOperations
                 created.Add(entity.ObjectId);
             }
         }
-        catch { foreach (var item in items) if (item.ObjectId.IsNull && !item.IsDisposed) item.Dispose(); throw; }
+        // IsDisposed first: the attribute definitions above are already disposed, and ObjectId of a disposed wrapper reads freed native memory.
+        catch { foreach (var item in items) if (!item.IsDisposed && item.ObjectId.IsNull) item.Dispose(); throw; }
         if (created.Count == 0) throw new CadFault("EXPLODE_FAILED", source.GetType().Name + " produced nothing to explode");
         if (!keep) source.Erase();
         return new(ObjectId.Null, created.Append(source.ObjectId).ToArray(), new
@@ -382,9 +384,8 @@ internal static class ModifyOperations
         }
     }
 
-    private static DBText TextFrom(DBText source)
+    private static DBText TextFrom(DBText source) => Edits.Built(new DBText(), text =>
     {
-        var text = new DBText();
         text.SetPropertiesFrom(source);
         text.Normal = source.Normal; text.Thickness = source.Thickness; text.TextStyleId = source.TextStyleId;
         text.Height = source.Height; text.WidthFactor = source.WidthFactor; text.Oblique = source.Oblique; text.Rotation = source.Rotation;
@@ -392,14 +393,14 @@ internal static class ModifyOperations
         text.TextString = source.TextString; text.Position = source.Position;
         text.HorizontalMode = source.HorizontalMode; text.VerticalMode = source.VerticalMode;
         if (source.HorizontalMode != TextHorizontalMode.TextLeft || source.VerticalMode != TextVerticalMode.TextBase) text.AlignmentPoint = source.AlignmentPoint;
-        return text;
-    }
+    });
 
     private static MText MTextFrom(AttributeReference attribute)
     {
-        var text = attribute.MTextAttribute;
-        text.SetPropertiesFrom(attribute);
-        return text;
+        // MTextAttribute gives access to the attribute's own MText. Appending that object would leave it with two owners,
+        // the attribute and the space, and UNDO or closing the drawing would then free it twice. The space gets a copy.
+        using var content = attribute.MTextAttribute;
+        return Edits.Built((MText)content.Clone(), text => text.SetPropertiesFrom(attribute));
     }
 
     private static Outcome Join(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases)
@@ -415,7 +416,9 @@ internal static class ModifyOperations
         if (primary is Line or Arc)
         {
             // Lines and arcs join into a polyline, as the JOIN command does for mixed segments.
-            target = Append(tr, (BlockTableRecord)tr.GetObject(primary.OwnerId, OpenMode.ForRead), ToPolyline((Curve)primary));
+            var polyline = ToPolyline((Curve)primary);
+            try { target = Append(tr, (BlockTableRecord)tr.GetObject(primary.OwnerId, OpenMode.ForRead), polyline); }
+            catch { if (polyline.ObjectId.IsNull) polyline.Dispose(); throw; }
             converted = true;
         }
         if (target is not (Polyline or Polyline3d or Spline)) throw new CadFault("INVALID_JOIN", "The base must be a line, arc, polyline, 3D polyline or spline");
@@ -434,9 +437,8 @@ internal static class ModifyOperations
         });
     }
 
-    private static Polyline ToPolyline(Curve curve)
+    private static Polyline ToPolyline(Curve curve) => Edits.Built(new Polyline(), polyline =>
     {
-        var polyline = new Polyline();
         polyline.SetPropertiesFrom(curve);
         switch (curve)
         {
@@ -453,8 +455,7 @@ internal static class ModifyOperations
                 polyline.AddVertexAt(1, new Point2d(arc.EndPoint.X, arc.EndPoint.Y), 0, 0, 0);
                 break;
         }
-        return polyline;
-    }
+    });
 
     private static Outcome ArrayCopies(Database db, Transaction tr, JsonElement op, Dictionary<string, ObjectId> aliases, CancellationToken ct)
     {
@@ -498,8 +499,8 @@ internal static class ModifyOperations
         foreach (var position in positions)
         {
             ct.ThrowIfCancellationRequested();
-            var mapping = new IdMapping();
-            db.DeepCloneObjects(new ObjectIdCollection(sources.Select(s => s.ObjectId).ToArray()), sources[0].OwnerId, mapping, false);
+            using var mapping = new IdMapping();
+            using (var sourceIds = new ObjectIdCollection(sources.Select(s => s.ObjectId).ToArray())) db.DeepCloneObjects(sourceIds, sources[0].OwnerId, mapping, false);
             foreach (var source in sources)
             {
                 var copy = (Entity)tr.GetObject(mapping[source.ObjectId].Value, OpenMode.ForWrite);
@@ -671,7 +672,8 @@ internal static class ModifyOperations
             for (int i = 0; i < list.Count; i++)
                 if (i == removed) list[i].Dispose(); else created.Add(Append(tr, space, list[i]).ObjectId);
         }
-        catch { foreach (var piece in list) if (piece.ObjectId.IsNull && !piece.IsDisposed) piece.Dispose(); throw; }
+        // IsDisposed first: the removed piece is already disposed, and ObjectId of a disposed wrapper reads freed native memory.
+        catch { foreach (var piece in list) if (!piece.IsDisposed && piece.ObjectId.IsNull) piece.Dispose(); throw; }
         curve.Erase();
         return new(ObjectId.Null, created.Append(curve.ObjectId).ToArray(), new { source_handle = H(curve.ObjectId), handles = created.Select(H).ToArray(), removed_length = removedLength, cuts = cuts.Length, crossings = parameters.Count });
     }
@@ -746,14 +748,14 @@ internal static class ModifyOperations
         if (index < 0) throw new CadFault("INVALID_EXTEND", "The polyline needs at least two vertices");
         if (polyline.GetSegmentType(index) == SegmentType.Arc)
         {
-            var arc = polyline.GetArcSegmentAt(index);
+            using var arc = polyline.GetArcSegmentAt(index);
             var start = arc.StartPoint; var end = arc.EndPoint;
             double a0 = Math.Atan2(start.Y - arc.Center.Y, start.X - arc.Center.X), a1 = Math.Atan2(end.Y - arc.Center.Y, end.X - arc.Center.X);
             // CircularArc3d runs counter-clockwise about its normal; a clockwise bulge has the normal reversed.
             bool clockwise = arc.Normal.Z < 0;
             return clockwise ? ArcTravel(arc.Center, a1, a0, !atStart) : ArcTravel(arc.Center, a0, a1, atStart);
         }
-        var line = polyline.GetLineSegmentAt(index);
+        using var line = polyline.GetLineSegmentAt(index);
         return LineTravel(line.StartPoint, line.EndPoint, atStart);
     }
 
@@ -855,7 +857,8 @@ internal static class ModifyOperations
         }
         catch { if (mtext.ObjectId.IsNull) mtext.Dispose(); throw; }
         var field = new Field(contents, true);
-        mtext.SetField(field);
+        try { mtext.SetField(field); }
+        catch { if (field.ObjectId.IsNull) field.Dispose(); throw; }
         tr.AddNewlyCreatedDBObject(field, true);
         field.Evaluate();
         var status = field.EvaluationStatus;
@@ -884,9 +887,10 @@ internal static class ModifyOperations
         var definitionId = overlay ? db.OverlayXref(path, name) : db.AttachXref(path, name);
         if (definitionId.IsNull) throw new CadFault("XREF_FAILED", "AutoCAD did not attach " + path);
         double scale = N(op, "scale", 1);
-        var reference = new BlockReference(P(op, "position"), definitionId) { Rotation = N(op, "rotation_deg", 0) * Math.PI / 180, ScaleFactors = new Scale3d(scale) };
+        var reference = new BlockReference(P(op, "position"), definitionId);
         try
         {
+            reference.Rotation = N(op, "rotation_deg", 0) * Math.PI / 180; reference.ScaleFactors = new Scale3d(scale);
             reference.SetDatabaseDefaults(db);
             Style(db, tr, reference, op);
             Append(tr, (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead), reference);
@@ -905,7 +909,7 @@ internal static class ModifyOperations
         using var source = new Database(false, true);
         source.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, "");
         source.CloseInput(true);
-        var ids = new ObjectIdCollection();
+        using var ids = new ObjectIdCollection();
         var missing = new List<string>();
         using (var sourceTransaction = source.TransactionManager.StartOpenCloseTransaction())
         {
@@ -921,7 +925,7 @@ internal static class ModifyOperations
         if (missing.Count > 0) throw new CadFault("BLOCK_NOT_FOUND", Path.GetFileName(path) + " has no " + string.Join(", ", missing));
         var target = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
         var existing = names.Where(target.Has).ToArray();
-        var mapping = new IdMapping();
+        using var mapping = new IdMapping();
         source.WblockCloneObjects(ids, db.BlockTableId, mapping, overwrite ? DuplicateRecordCloning.Replace : DuplicateRecordCloning.Ignore, false);
         return new(ObjectId.Null, [], new
         {
@@ -948,9 +952,14 @@ internal static class ModifyOperations
             else if (create)
             {
                 SymbolUtilityServices.ValidateSymbolName(targetName, false);
-                var record = new LayerTableRecord { Name = targetName, Color = source.Color, LinetypeObjectId = source.LinetypeObjectId, LineWeight = source.LineWeight, IsPlottable = source.IsPlottable, Transparency = source.Transparency };
                 if (!layers.IsWriteEnabled) layers.UpgradeOpen();
-                target = layers.Add(record); tr.AddNewlyCreatedDBObject(record, true);
+                var record = new LayerTableRecord();
+                try
+                {
+                    record.Name = targetName; record.Color = source.Color; record.LinetypeObjectId = source.LinetypeObjectId; record.LineWeight = source.LineWeight; record.IsPlottable = source.IsPlottable; record.Transparency = source.Transparency;
+                    target = layers.Add(record); tr.AddNewlyCreatedDBObject(record, true);
+                }
+                catch { if (record.ObjectId.IsNull) record.Dispose(); throw; }
             }
             else throw new CadFault("LAYER_NOT_FOUND", targetName + "; set create_missing or add a layer operation first");
             if (map.ContainsKey(source.ObjectId)) throw new CadFault("INVALID_MAPPING", pair.Name + " is listed twice");
@@ -1071,7 +1080,8 @@ internal static class ModifyOperations
             if (delete) return new(ObjectId.Null, [], new { owner_handle = owner is null ? null : H(owner.ObjectId), dictionary = dictionaryName, key, deleted = false });
             root.UpgradeOpen();
             dictionary = new DBDictionary();
-            root.SetAt(dictionaryName, dictionary); tr.AddNewlyCreatedDBObject(dictionary, true);
+            try { root.SetAt(dictionaryName, dictionary); tr.AddNewlyCreatedDBObject(dictionary, true); }
+            catch { if (dictionary.ObjectId.IsNull) dictionary.Dispose(); throw; }
         }
         var touched = owner is null ? Array.Empty<ObjectId>() : [owner.ObjectId];
         if (delete)
@@ -1091,7 +1101,8 @@ internal static class ModifyOperations
         {
             if (!dictionary.IsWriteEnabled) dictionary.UpgradeOpen();
             xrecord = new Xrecord();
-            dictionary.SetAt(key, xrecord); tr.AddNewlyCreatedDBObject(xrecord, true);
+            try { dictionary.SetAt(key, xrecord); tr.AddNewlyCreatedDBObject(xrecord, true); }
+            catch { if (xrecord.ObjectId.IsNull) xrecord.Dispose(); throw; }
         }
         using (var data = new ResultBuffer(TypedValues(op.GetProperty("values"), xdata: false))) xrecord.Data = data;
         return new(ObjectId.Null, touched, new

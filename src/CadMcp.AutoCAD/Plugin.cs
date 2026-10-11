@@ -39,27 +39,37 @@ public sealed class Plugin : IExtensionApplication
     {
         if (ComponentManager.Ribbon is not { } control) return;
         App.Idle -= AddRibbon;
-        ribbon = new RibbonTab { Id = "CADMCP_READ_PROTOTYPE", Title = "CAD MCP" };
-        var source = new RibbonPanelSource { Title = "Ассистент" };
-        source.Items.Add(new RibbonButton { Text = "Открыть чат", ShowText = true, CommandHandler = new OpenChat() });
-        ribbon.Panels.Add(new RibbonPanel { Source = source }); control.Tabs.Add(ribbon);
+        // An AutoCAD event handler: nothing may escape it.
+        try
+        {
+            ribbon = new RibbonTab { Id = "CADMCP_READ_PROTOTYPE", Title = "CAD MCP" };
+            var source = new RibbonPanelSource { Title = "Ассистент" };
+            source.Items.Add(new RibbonButton { Text = "Открыть чат", ShowText = true, CommandHandler = new OpenChat() });
+            ribbon.Panels.Add(new RibbonPanel { Source = source }); control.Tabs.Add(ribbon);
+        }
+        catch (System.Exception error) { ribbon = null; App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP ribbon: " + error.Message + "; use CADMCPCHAT"); }
     }
     [CommandMethod("CADMCPCHAT", CommandFlags.Session)]
     public static void ShowChat()
     {
-        if (palette is null)
+        // Also runs from the ribbon button's handler, where an exception would reach AutoCAD's UI.
+        try
         {
-            palette = new PaletteSet("CAD MCP — ассистент чертежей");
-            panel = new ChatWorkspace
+            if (palette is null)
             {
-                CadSessionId = documents?.SessionId,
-                DarkThemeProvider = () => Convert.ToInt32(App.GetSystemVariable("COLORTHEME")) == 0
-            };
-            palette.AddVisual("Чат", panel);
-            palette.MinimumSize = new System.Drawing.Size(360, 480);
+                palette = new PaletteSet("CAD MCP — ассистент чертежей");
+                panel = new ChatWorkspace
+                {
+                    CadSessionId = documents?.SessionId,
+                    DarkThemeProvider = () => Convert.ToInt32(App.GetSystemVariable("COLORTHEME")) == 0
+                };
+                palette.AddVisual("Чат", panel);
+                palette.MinimumSize = new System.Drawing.Size(360, 480);
+            }
+            palette.Visible = true;
+            _ = panel!.Refresh();
         }
-        palette.Visible = true;
-        _ = panel!.Refresh();
+        catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP chat: " + error.Message); }
     }
     /// <summary>The user's AutoLISP policy for agents. Agents cannot change it; CAD_MCP_LISP_POLICY overrides it for unattended runs.</summary>
     [CommandMethod("CADMCPLISP", CommandFlags.Session)]
@@ -71,9 +81,11 @@ public sealed class Plugin : IExtensionApplication
     public void Terminate()
     {
         App.Idle -= AddRibbon;
-        panel?.Stop(); server?.Dispose(); dispatcher?.Dispose(); documents?.Dispose();
-        if (ribbon is not null) ComponentManager.Ribbon?.Tabs.Remove(ribbon);
-        palette?.Dispose(); palette = null;
+        // Runs while AutoCAD shuts down: each step is independent, and none may end the process.
+        void Step(Action action) { try { action(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP shutdown: " + error.Message); } }
+        Step(() => panel?.Stop()); Step(() => server?.Dispose()); Step(() => dispatcher?.Dispose()); Step(() => documents?.Dispose());
+        Step(() => { if (ribbon is not null) ComponentManager.Ribbon?.Tabs.Remove(ribbon); });
+        Step(() => palette?.Dispose()); palette = null;
         if (descriptorPath is not null) try { File.Delete(descriptorPath); } catch (IOException) { }
     }
     private sealed class OpenChat : ICommand
