@@ -2,9 +2,11 @@
 
 **English** | [Русский](README.ru.md)
 
-Version 0.11.1-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
+Version 0.11.2-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is currently in Russian.
+
+Version 0.11.2 fixes likely causes of AutoCAD FATAL ERROR crashes. Previews no longer leave AutoCAD's graphics cache pointing at a deleted drawing copy. Objects that never reach the drawing are released on AutoCAD's thread instead of the .NET finalizer thread. Exploding a title block no longer gives a multiline attribute's text two owners. A full regeneration after an edit runs only where it is needed, and the operation receipt records the commit before the drawing is redrawn. Claude Code mode offers the models and reasoning levels of the installed CLI, web search and attached files. The installer is built by GitHub Actions. **The crash fixes have not been run in AutoCAD yet**; the `CADMCPSHEETREGEN` probe checks them. [Changes and validation](CHANGELOG.md#0112-preview).
 
 Version 0.11.1 fixes TEXT lines from different spaces, block definitions or Z elevations being grouped together, and refreshes dynamic block references after `text_replace`. Old composite keys that combine unrelated text are rejected without changing the DWG. These fixes were checked in AutoCAD 2025 Core Console; the full Map 3D/Civil 3D interface still requires separate validation. [Release validation](CHANGELOG.md#0111-preview).
 

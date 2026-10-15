@@ -1,0 +1,189 @@
+name: Release
+
+# Builds the Windows installer from the checked-out commit with scripts/build-installer.ps1.
+# Run by hand on main (Actions → Release → Run workflow), it publishes the installer as a GitHub pre-release
+# v<version>; the version must equal <Version> in Directory.Build.props. A pull request that changes the release
+# tooling or the version only builds the installer and keeps it as a workflow artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, equal to <Version> in Directory.Build.props (for example 0.11.2-preview)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Directory.Build.props
+      - installer/**
+      - scripts/build-installer.ps1
+      - scripts/prepare-codex.ps1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          $version = ([xml](Get-Content -LiteralPath Directory.Build.props -Raw)).Project.PropertyGroup.Version
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:REQUESTED -ne $version) { throw "Directory.Build.props has $version, not $env:REQUESTED" }
+            if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'Releases are published from main only' }
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: AutoCAD 2025 reference assemblies (compile only)
+        shell: pwsh
+        run: |
+          $references = ./scripts/autocad-references.ps1 -Destination "$env:RUNNER_TEMP/autocad-2025"
+          "AUTOCAD_DIR=$references" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The same checks as CI, on the commit being released; the test counts go into validation.json.
+      - name: Restore, build and test (warnings are errors)
+        shell: pwsh
+        run: |
+          foreach ($project in Get-Content .github/ci-projects.txt) {
+            dotnet restore $project --locked-mode
+            if ($LASTEXITCODE -ne 0) { throw "Restore failed: $project" }
+          }
+          foreach ($project in Get-Content .github/ci-projects.txt) {
+            dotnet build $project -c Release --no-restore -warnaserror "-p:AutoCADDir=$env:AUTOCAD_DIR"
+            if ($LASTEXITCODE -ne 0) { throw "Build failed: $project" }
+          }
+          dotnet test tests/CadMcp.Tests/CadMcp.Tests.csproj -c Release --no-build --logger "trx;LogFileName=CadMcp.Tests.trx" --results-directory "$env:RUNNER_TEMP/test-results"
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+
+      - name: Official Codex (pinned checksums)
+        shell: pwsh
+        run: ./scripts/prepare-codex.ps1 -Destination "$env:RUNNER_TEMP/codex"
+
+      # The installer script and its text files are UTF-8 without a byte order mark, which Inno Setup reads from 6.3.
+      - name: Inno Setup 6.3 or later
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          function Usable { if (!(Test-Path -LiteralPath $iscc)) { return $false }; $info = (Get-Item -LiteralPath $iscc).VersionInfo; [version]::new($info.FileMajorPart, $info.FileMinorPart) -ge [version]'6.3' }
+          if (!(Usable)) {
+            choco upgrade innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0 -or !(Usable)) { throw 'Inno Setup 6.3 or later is not available' }
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          (Get-Item -LiteralPath $iscc).VersionInfo.FileVersion
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1 -IsccPath $env:ISCC -AutoCADDir $env:AUTOCAD_DIR -CodexDir "$env:RUNNER_TEMP/codex" `
+            -StageRoot "$env:RUNNER_TEMP/stage" -InstallerOutput "$env:RUNNER_TEMP/release" `
+            -PublishPackageCache "$env:GITHUB_WORKSPACE/.runtime/packages" -DotNet2027 dotnet
+
+      - name: Validation record and checksums
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $release = Join-Path $env:RUNNER_TEMP 'release'
+          $name = "CAD-MCP-2025-2027-$env:VERSION-Setup.exe"
+          $installer = Get-Item -LiteralPath (Join-Path $release $name)
+          # Every payload file must still match the manifest written before compilation.
+          $stage = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'stage') -Directory -Filter 'installer-*' | Sort-Object Name | Select-Object -Last 1
+          $payload = Join-Path $stage.FullName 'payload'
+          $manifest = @(Get-Content -LiteralPath (Join-Path $payload 'payload-manifest.json') -Raw | ConvertFrom-Json)
+          foreach ($entry in $manifest) {
+            if ((Get-FileHash -LiteralPath (Join-Path $payload $entry.path) -Algorithm SHA256).Hash -ne $entry.sha256) { throw "Payload file differs from the manifest: $($entry.path)" }
+          }
+          $counters = ([xml](Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'test-results/CadMcp.Tests.trx') -Raw)).TestRun.ResultSummary.Counters
+          $iscc = (Get-Item -LiteralPath $env:ISCC).VersionInfo
+          $validation = [ordered]@{
+            version = $env:VERSION
+            source_commit = $env:GITHUB_SHA
+            managed_tests = [ordered]@{ failed = [int]$counters.failed; passed = [int]$counters.passed; total = [int]$counters.total; skipped = [int]$counters.notExecuted }
+            ci_build = [ordered]@{ warnings = 0; errors = 0; projects = @(Get-Content .github/ci-projects.txt | Where-Object { $_ }).Count }
+            native = $null
+            payload_files_verified = $manifest.Count
+            installer = [ordered]@{ sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); bytes = $installer.Length; name = $name }
+            build = [ordered]@{
+              workflow_run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              runner = "$env:ImageOS $env:ImageVersion"
+              codex = (Get-Content -LiteralPath installer/codex-assets.json -Raw | ConvertFrom-Json).version
+              inno_setup = "$($iscc.FileMajorPart).$($iscc.FileMinorPart).$($iscc.FileBuildPart)"
+            }
+            limits = @(
+              'AutoCAD Core Console and GUI checks were not run for this release'
+              'The AutoCAD crash fixes require the CADMCPSHEETREGEN probe in AutoCAD 2025 or 2026'
+              'Full GUI checks in Map 3D and Civil 3D are pending'
+            )
+          }
+          $validation | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $release 'validation.json') -Encoding utf8NoBOM
+          $sums = foreach ($file in @($name, 'validation.json')) { (Get-FileHash -LiteralPath (Join-Path $release $file) -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $file }
+          Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Value $sums -Encoding ascii
+          Get-Content -LiteralPath (Join-Path $release 'validation.json')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CAD-MCP-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/release/*.exe
+            ${{ runner.temp }}/release/validation.json
+            ${{ runner.temp }}/release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  publish:
+    needs: installer
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: CAD-MCP-${{ needs.installer.outputs.version }}
+          path: release
+
+      - name: Pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.installer.outputs.version }}
+        run: |
+          # The notes are the version's section of CHANGELOG.md, followed by how to install.
+          $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw -Encoding utf8
+          $section = [regex]::Match($changelog, '(?ms)^## ' + [regex]::Escape($env:VERSION) + '\s*$(.*?)(?=^## |\z)')
+          if (!$section.Success) { throw "CHANGELOG.md has no section for $env:VERSION" }
+          $name = "CAD-MCP-2025-2027-$env:VERSION-Setup.exe"
+          $run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $install = "## Установка`n`nСкачайте ``$name``, сохраните чертежи и закройте AutoCAD, затем запустите установщик. Контрольные суммы — в ``SHA256SUMS.txt``, итоги проверок — в ``validation.json``. Установщик собран GitHub Actions из коммита $env:GITHUB_SHA ($run)."
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notes -Value ($section.Groups[1].Value.Trim() + "`n`n" + $install) -Encoding utf8NoBOM
+          gh release create "v$env:VERSION" "release/$name" release/validation.json release/SHA256SUMS.txt --target $env:GITHUB_SHA --prerelease --title "CAD MCP $env:VERSION" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
