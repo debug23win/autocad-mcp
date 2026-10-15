@@ -86,14 +86,31 @@ jobs:
       - name: Inno Setup 6.3 or later
         shell: pwsh
         run: |
-          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          function Usable { if (!(Test-Path -LiteralPath $iscc)) { return $false }; $info = (Get-Item -LiteralPath $iscc).VersionInfo; [version]::new($info.FileMajorPart, $info.FileMinorPart) -ge [version]'6.3' }
-          if (!(Usable)) {
-            choco upgrade innosetup --no-progress -y
-            if ($LASTEXITCODE -ne 0 -or !(Usable)) { throw 'Inno Setup 6.3 or later is not available' }
+          # The 64-bit and 32-bit builds install to different Program Files folders; the uninstall entry names the one in use.
+          function Find {
+            $paths = @("$env:ProgramFiles\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")
+            foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1')) {
+              $location = (Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).InstallLocation
+              if ($location) { $paths += Join-Path $location 'ISCC.exe' }
+            }
+            foreach ($path in $paths) {
+              if (!(Test-Path -LiteralPath $path)) { continue }
+              $info = (Get-Item -LiteralPath $path).VersionInfo
+              if ([version]::new($info.FileMajorPart, $info.FileMinorPart) -ge [version]'6.3') { return $path }
+            }
+          }
+          $iscc = Find
+          if (!$iscc) {
+            choco install innosetup --no-progress -y --force
+            $iscc = Find
+          }
+          if (!$iscc) {
+            Get-ChildItem -LiteralPath $env:ProgramFiles, ${env:ProgramFiles(x86)} -Directory -Filter 'Inno Setup*' -ErrorAction SilentlyContinue | ForEach-Object FullName
+            Get-Command iscc -All -ErrorAction SilentlyContinue | ForEach-Object Source
+            throw 'Inno Setup 6.3 or later is not available'
           }
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          (Get-Item -LiteralPath $iscc).VersionInfo.FileVersion
+          "$iscc $((Get-Item -LiteralPath $iscc).VersionInfo.FileVersion)"
 
       - name: Installer
         shell: pwsh
