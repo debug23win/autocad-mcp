@@ -21,6 +21,8 @@ internal static class WorkSafety
         try
         {
             // Wblock() clones the whole database, including layouts. Never SaveAs the live database.
+            // Forced copy: a fast wblock could otherwise move objects out of the live drawing, and disposing the copy would free them.
+            doc.Database.ForceWblockDatabaseCopy();
             using var copy = doc.Database.Wblock();
             copy.SaveAs(path, DwgVersion.Current);
             var info = new FileInfo(path);

@@ -10,65 +10,6 @@ namespace CadMcp.AutoCAD;
 
 internal static class DrawingReview
 {
-    public sealed class PreviewView : IDisposable
-    {
-        private readonly Document doc;
-        private readonly ViewTableRecord original;
-        private readonly bool changed;
-        public PreviewView(Document document, Transaction tr, JsonElement options, int width, int height)
-        {
-            doc = document; original = doc.Editor.GetCurrentView();
-            try
-            {
-            string name = options.Text("view_name") ?? "current";
-            Vector3d? direction = name switch { "current" => null, "front" => new(0,-1,0), "back" => new(0,1,0),
-                "left" => new(-1,0,0), "right" => new(1,0,0), "top" => Vector3d.ZAxis, "isometric" => new(1,-1,1),
-                _ => throw new CadFault("INVALID_VIEW", "Use current/front/back/left/right/top/isometric") };
-            if (options.Text("view_direction_json") is { } vector)
-            {
-                using var json=JsonDocument.Parse(vector); var p=EditPlan.Point(json.RootElement); direction=new(p[0],p[1],p[2]);
-                if(direction.Value.Length<1e-10) throw new CadFault("INVALID_VIEW","View direction must be nonzero");
-            }
-            Extents3d? bounds = null;
-            if(options.Text("handles_json") is { } handlesJson)
-            {
-                using var handles=JsonDocument.Parse(handlesJson);
-                if(handles.RootElement.ValueKind!=JsonValueKind.Array || handles.RootElement.GetArrayLength() is <1 or >500) throw new CadFault("INVALID_HANDLES","Frame 1..500 handles");
-                foreach(var h in handles.RootElement.EnumerateArray())
-                {
-                    if(!long.TryParse(h.GetString(),System.Globalization.NumberStyles.HexNumber,null,out long value) || !doc.Database.TryGetObjectId(new Handle(value),out var id) || id.IsErased)
-                        throw new CadFault("ENTITY_NOT_FOUND","Cannot frame the requested entity");
-                    if(tr.GetObject(id,OpenMode.ForRead) is not Entity entity) throw new CadFault("INVALID_HANDLES","Only entity handles can be framed");
-                    var e=entity.GeometricExtents;
-                    if(bounds is null) bounds=e; else { var combined=bounds.Value; combined.AddExtents(e); bounds=combined; }
-                }
-            }
-            changed=direction.HasValue || bounds.HasValue;
-            if(!changed)return;
-            using var view=doc.Editor.GetCurrentView();
-            view.ViewDirection=(direction ?? original.ViewDirection).GetNormal(); view.ViewTwist=0; view.PerspectiveEnabled=false;
-            if(bounds is { } box)
-            {
-                var target=new Point3d((box.MinPoint.X+box.MaxPoint.X)/2,(box.MinPoint.Y+box.MaxPoint.Y)/2,(box.MinPoint.Z+box.MaxPoint.Z)/2);
-                view.Target=target; view.CenterPoint=Point2d.Origin;
-                // Project corners with AutoCAD's actual WCS->DCS transform.
-                var worldToDcs=(Matrix3d.Displacement(target-Point3d.Origin)*Matrix3d.PlaneToWorld(view.ViewDirection)).Inverse();
-                var corners=(from x in new[]{box.MinPoint.X,box.MaxPoint.X} from y in new[]{box.MinPoint.Y,box.MaxPoint.Y} from z in new[]{box.MinPoint.Z,box.MaxPoint.Z}
-                    select new Point3d(x,y,z).TransformBy(worldToDcs)).ToArray();
-                double w=Math.Max(1e-6,corners.Max(p=>p.X)-corners.Min(p=>p.X))*1.15;
-                double h=Math.Max(1e-6,corners.Max(p=>p.Y)-corners.Min(p=>p.Y))*1.15;
-                view.Width=Math.Max(w,h*width/height); view.Height=view.Width*height/width;
-            }
-            doc.Editor.SetCurrentView(view); doc.Editor.Regen();
-            }
-            catch
-            {
-                try { if (changed) doc.Editor.SetCurrentView(original); } catch { }
-                original.Dispose(); throw;
-            }
-        }
-        public void Dispose() { try { if(changed) doc.Editor.SetCurrentView(original); } catch(System.Exception e) { System.Diagnostics.Trace.WriteLine(e.Message); } finally { original.Dispose(); } }
-    }
     public static object DocumentState(Document doc)
     {
         try

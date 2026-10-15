@@ -1,7 +1,14 @@
 param(
     [string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025',
     [string]$Language = 'ru-RU',
-    [ValidateSet('ACAD','MAP')][string]$Product = 'ACAD'
+    [ValidateSet('ACAD','MAP')][string]$Product = 'ACAD',
+    # CADMCPSHEETREGEN reproduces a sheet batch step by step; see tests/CadMcp.NativeProbe/SheetRegenProbe.cs.
+    [ValidateSet('CADMCPPROBE','CADMCPSHEETREGEN')][string]$Command = 'CADMCPPROBE',
+    # For CADMCPSHEETREGEN: an operations array or an operation receipt (%LOCALAPPDATA%\CadMcp\operations\...\<id>.json) to replay.
+    [string]$Plan,
+    # For CADMCPSHEETREGEN: a comma list of variants to run, e.g. 'frame,table'.
+    [string]$Variants,
+    [int]$TimeoutSeconds = 180
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -11,16 +18,24 @@ $output = Join-Path $fixture 'result.json'
 $probe = (Resolve-Path (Join-Path $repoRoot 'tests/CadMcp.NativeProbe/bin/Release/net8.0-windows/CadMcp.NativeProbe.dll')).Path.Replace('\','/')
 $profile = 'CADMCP_Test_' + [guid]::NewGuid().ToString('N')
 $script = Join-Path $fixture 'probe.scr'
-@('(setvar "FILEDIA" 0)', ('(setvar "LOGFILEPATH" "' + $fixture.Replace('\','/') + '")'), '(setvar "LOGFILEMODE" 1)', ('(setvar "TRUSTEDPATHS" "' + (Split-Path $probe).Replace('\','/') + '")'), '_NETLOAD', $probe, 'CADMCPPROBE') | Set-Content -LiteralPath $script -Encoding ascii
+@('(setvar "FILEDIA" 0)', ('(setvar "LOGFILEPATH" "' + $fixture.Replace('\','/') + '")'), '(setvar "LOGFILEMODE" 1)', ('(setvar "TRUSTEDPATHS" "' + (Split-Path $probe).Replace('\','/') + '")'), '_NETLOAD', $probe, $Command) | Set-Content -LiteralPath $script -Encoding ascii
+# The registry release follows acad.exe: 25.0 is AutoCAD 2025 (R25.0), 25.1 is AutoCAD 2026 (R25.1).
+$acadVersion = (Get-Item -LiteralPath (Join-Path $AutoCADDir 'acad.exe')).VersionInfo
+$release = 'R{0}.{1}' -f $acadVersion.FileMajorPart, $acadVersion.FileMinorPart
 # Remember the user's profile selector; trust is changed only in our newly named test profile.
 $selectors = @()
-Get-ChildItem 'HKCU:\Software\Autodesk\AutoCAD\R25.0' | ForEach-Object {
+Get-ChildItem "HKCU:\Software\Autodesk\AutoCAD\$release" | ForEach-Object {
     $key = Join-Path $_.PSPath 'Profiles'
     if (Test-Path $key) { $selectors += [pscustomobject]@{Path=$key;Value=(Get-ItemPropertyValue -LiteralPath $key -Name '(default)')} }
 }
 # /p requires an existing profile; a missing name shows a modal startup warning.
-$productKey = if ($Product -eq 'MAP') { 'ACAD-8102:419' } else { 'ACAD-8101:419' }
-$profilesRoot = "HKCU:\Software\Autodesk\AutoCAD\R25.0\$productKey\Profiles"
+# Product keys end in 01 for AutoCAD and 02 for Map 3D, then the language code: ACAD-8101:419 is AutoCAD 2025 in Russian.
+$suffix = if ($Product -eq 'MAP') { '02' } else { '01' }
+$locale = [Globalization.CultureInfo]::GetCultureInfo($Language).LCID.ToString('X3')
+$productKey = Get-ChildItem "HKCU:\Software\Autodesk\AutoCAD\$release" | Where-Object { $_.PSChildName -match "^ACAD-[0-9A-F]{2}$suffix`:$locale$" } |
+    Select-Object -First 1 -ExpandProperty PSChildName
+if (!$productKey) { throw "No $Product $Language profile under HKCU:\Software\Autodesk\AutoCAD\$release; start this AutoCAD once first" }
+$profilesRoot = "HKCU:\Software\Autodesk\AutoCAD\$release\$productKey\Profiles"
 $sourceProfile = Get-ItemPropertyValue -LiteralPath $profilesRoot -Name '(default)'
 $testProfileKey = Join-Path $profilesRoot $profile
 if (Test-Path -LiteralPath $testProfileKey) { throw "Test profile unexpectedly already exists: $profile" }
@@ -32,6 +47,8 @@ $start.WorkingDirectory = Join-Path $AutoCADDir 'UserDataCache'
 if (!(Test-Path -LiteralPath $start.WorkingDirectory)) { throw "AutoCAD shortcut working directory is missing: $($start.WorkingDirectory)" }
 $start.Environment['CADMCP_PROBE_OUTPUT'] = $output
 $start.Environment['CADMCP_PROBE_PRODUCT'] = $Product
+if ($Plan) { $start.Environment['CADMCP_SHEET_PLAN'] = (Resolve-Path -LiteralPath $Plan).Path }
+if ($Variants) { $start.Environment['CADMCP_SHEET_VARIANTS'] = $Variants }
 # The probe runs cad_lisp unattended; the default policy would wait for a confirmation nobody gives.
 $start.Environment['CAD_MCP_LISP_POLICY'] = 'allow'
 foreach ($argument in @('/product',$Product,'/language',$Language,'/p',$profile,'/b',$script)) { $start.ArgumentList.Add($argument) }
@@ -39,12 +56,17 @@ $process = [Diagnostics.Process]::Start($start)
 [IO.File]::WriteAllText($output + '.pid', $process.Id.ToString())
 try {
     # Polling checks only our process/result; it never closes another AutoCAD instance.
-    for ($i = 0; $i -lt 180; $i++) {
+    for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
         if (Test-Path -LiteralPath $output) { break }
         if ($process.HasExited) { break }
         Start-Sleep -Milliseconds 1000
     }
-    if (!(Test-Path -LiteralPath $output)) { throw "GUI probe did not return a result: $fixture" }
+    if (!(Test-Path -LiteralPath $output)) {
+        # A crash of AutoCAD leaves no result; the progress file names the step that was running.
+        $progress = $output + '.progress'
+        if (Test-Path -LiteralPath $progress) { Write-Host 'Last steps before AutoCAD stopped:'; Get-Content -LiteralPath $progress -Tail 5 | Write-Host }
+        throw "GUI probe did not return a result: $fixture"
+    }
     $report = Get-Content -LiteralPath $output -Raw | ConvertFrom-Json
     New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'artifacts') | Out-Null
     Copy-Item -LiteralPath $output -Destination (Join-Path $repoRoot 'artifacts/gui-probe-latest.json')

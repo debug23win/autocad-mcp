@@ -24,6 +24,33 @@ internal static class Edits
     public static bool Previewable(string kind) => kind is not ("layout_create" or "layout_copy" or "layout_configure" or "viewport" or "image_attach") &&
         !kind.StartsWith("civil_", StringComparison.Ordinal) && !kind.StartsWith("map_", StringComparison.Ordinal) && !ModifyPlan.OutsideTransaction.Contains(kind);
 
+    /// <summary>True while a preview runs: work AutoCAD does outside the transaction, which the rollback cannot undo, is skipped.</summary>
+    internal static bool Previewing { get; private set; }
+    private sealed class PreviewScope : IDisposable
+    {
+        public PreviewScope() => Previewing = true;
+        public void Dispose() => Previewing = false;
+    }
+    /// <summary>
+    /// Changes that the graphics update after the commit may not show: block definitions changed under existing references,
+    /// a page setup, a new viewport or external reference, and tables, whose formulas the regeneration has always updated.
+    /// Everything else is drawn without regenerating the whole drawing.
+    /// </summary>
+    private static bool Regenerates(string kind) => kind is "block_import" or "layer_merge" or "text_replace" or "text_translate" or "text_fit"
+        or "layout_configure" or "viewport" or "xref_attach"
+        or "table_create" or "spds_table" or "table_cells" or "table_rows" or "table_columns" or "table_merge" or "table_recalculate"
+        or "assembly_schedule" or "assembly_create" or "assembly_update";
+
+    /// <summary>
+    /// Finishes a new object and disposes it if that fails. An object that never reaches the database would otherwise be
+    /// deleted by the garbage collector on its finalizer thread, concurrently with AutoCAD, which can corrupt AutoCAD's memory.
+    /// </summary>
+    internal static T Built<T>(T created, Action<T> setup) where T : DBObject
+    {
+        try { setup(created); return created; }
+        catch { created.Dispose(); throw; }
+    }
+
     /// <summary>
     /// Runs the batch in one transaction. With <paramref name="preview"/> everything is computed, read back,
     /// checked against the expectations and reviewed, then rolled back: nothing is saved and no undo step remains.
@@ -33,6 +60,7 @@ internal static class Edits
         if (preview && operations.Select(o => o.Text("op") ?? "").FirstOrDefault(k => !Previewable(k)) is { } unsupported)
             throw new CadFault("PREVIEW_UNSUPPORTED", unsupported + " changes layouts, files or vendor objects outside the drawing transaction and cannot be previewed");
         using var undoGroup = preview ? null : new UndoGroup(doc);
+        using var previewing = preview ? new PreviewScope() : null;
         using var tr = doc.Database.TransactionManager.StartTransaction();
         // Opened for write only where an entity is appended or cloned into it.
         var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead);
@@ -40,10 +68,12 @@ internal static class Edits
         var touched = new HashSet<ObjectId>();
         var results = new List<object>();
         int index = 0;
+        bool regenerate = false;
         foreach (var op in operations)
         {
             ct.ThrowIfCancellationRequested();
             string kind = S(op, "op"); progress?.Invoke("action " + index + ": " + kind);
+            regenerate |= Regenerates(kind);
             if (kind == "layer")
             {
                 var name = S(op, "name");
@@ -57,7 +87,10 @@ internal static class Edits
                 }
                 else record = (LayerTableRecord)tr.GetObject(layers[name], OpenMode.ForRead);
                 if (record.IsDependent) throw new CadFault("XREF_LAYER", "Cannot edit a dependent layer");
-                if (!record.IsWriteEnabled && (op.TryGetProperty("color_index", out _) || op.TryGetProperty("locked", out _) || op.TryGetProperty("off", out _))) record.UpgradeOpen();
+                bool display = op.TryGetProperty("color_index", out _) || op.TryGetProperty("locked", out _) || op.TryGetProperty("off", out _);
+                if (!record.IsWriteEnabled && display) record.UpgradeOpen();
+                // The colour, visibility and lock fading of what is already drawn on an existing layer change.
+                regenerate |= display && !created;
                 if (op.TryGetProperty("color_index", out var color))
                 {
                     var c = color.GetInt32();
@@ -80,10 +113,11 @@ internal static class Edits
                 if (sources.Distinct().Count() != sources.Length) throw new CadFault("DUPLICATE_SOURCE", "Block source handles must be unique");
                 foreach (var source in sources) Editable(doc.Database, tr, source, false);
                 table.UpgradeOpen();
-                var definition = new BlockTableRecord { Name = name, Origin = Point(op, "base_point") };
+                var origin = Point(op, "base_point");
+                var definition = new BlockTableRecord { Name = name, Origin = origin };
                 table.Add(definition); tr.AddNewlyCreatedDBObject(definition, true);
-                var mapping = new IdMapping();
-                doc.Database.DeepCloneObjects(new ObjectIdCollection(sources), definition.ObjectId, mapping, false);
+                using var mapping = new IdMapping();
+                using (var sourceIds = new ObjectIdCollection(sources)) doc.Database.DeepCloneObjects(sourceIds, definition.ObjectId, mapping, false);
                 var cloned = sources.Select(source => mapping[source].Value).ToArray();
                 foreach (var clone in cloned) touched.Add(clone);
                 results.Add(new { index = index++, op = kind, name, handle = definition.Handle.ToString(),
@@ -213,9 +247,9 @@ internal static class Edits
                 sourceHandle = entity.Handle.ToString();
                 if (kind == "copy")
                 {
-                    var mapping = new IdMapping();
+                    using var mapping = new IdMapping();
                     if (!space.IsWriteEnabled) space.UpgradeOpen();
-                    doc.Database.DeepCloneObjects(new ObjectIdCollection([sourceId]), space.ObjectId, mapping, false);
+                    using (var sourceIds = new ObjectIdCollection([sourceId])) doc.Database.DeepCloneObjects(sourceIds, space.ObjectId, mapping, false);
                     entity = (Entity)tr.GetObject(mapping[sourceId].Value, OpenMode.ForWrite);
                     if (op.TryGetProperty("layer", out var layer)) entity.LayerId = Layer(doc.Database, tr, layer.GetString()!);
                     RequireUnlocked(tr, entity);
@@ -321,9 +355,24 @@ internal static class Edits
         }
         ct.ThrowIfCancellationRequested();
         if (preview) return data;
+        // No command is active here: queue what the batch changed, so the commit's graphics flush draws it. Display only:
+        // a failure here must not cost the edit.
+        try { doc.TransactionManager.QueueForGraphicsFlush(); }
+        catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Edit graphics queue: " + e.Message); }
         tr.Commit();
-        // A display failure after commit must never be reported as an uncommitted transaction.
-        try { doc.Editor.Regen(); } catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Committed edit; redraw failed: " + e.Message); }
+        // Recorded before the display refresh: a failure there must never hide that the change was committed. Bookkeeping
+        // after the commit never fails the edit.
+        try { progress?.Invoke("committed"); }
+        catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Committed edit; progress record failed: " + e.Message); }
+        // A full regeneration re-evaluates every field and redraws every object of the drawing, under this edit's lock and
+        // undo group; the plugin's own fields are evaluated as they are made. It runs only for the changes listed in
+        // Regenerates and for existing layers. A display failure after commit must never be reported as an uncommitted transaction.
+        try
+        {
+            if (regenerate) doc.Editor.Regen();
+            else { doc.TransactionManager.FlushGraphics(); doc.Editor.UpdateScreen(); }
+        }
+        catch (System.Exception e) { System.Diagnostics.Trace.WriteLine("Committed edit; redraw failed: " + e.Message); }
         return data;
     }
     internal static void Transform(Entity entity, Matrix3d transform, Transaction tr)
@@ -375,9 +424,11 @@ internal static class Edits
                 var points = op.GetProperty("points").EnumerateArray().Select(EditPlan.Point).ToArray();
                 var bulges = op.TryGetProperty("bulges", out var bs) ? bs.EnumerateArray().Select(x => x.GetDouble()).ToArray() : new double[points.Length];
                 if (bulges.Length != points.Length) throw new CadFault("INVALID_BULGES", "One bulge per vertex is required");
-                var poly = new Polyline(points.Length) { Elevation = points[0][2], Closed = Bool(op, "closed") };
-                for (int i = 0; i < points.Length; i++) poly.AddVertexAt(i, new(points[i][0], points[i][1]), bulges[i], N(op, "width", 0), N(op, "width", 0));
-                return poly;
+                return Built(new Polyline(points.Length), poly =>
+                {
+                    poly.Elevation = points[0][2]; poly.Closed = Bool(op, "closed");
+                    for (int i = 0; i < points.Length; i++) poly.AddVertexAt(i, new(points[i][0], points[i][1]), bulges[i], N(op, "width", 0), N(op, "width", 0));
+                });
             case "polyline3d": return new Polyline3d();
             case "spline":
                 var fitPoints = new Point3dCollection();
@@ -411,7 +462,7 @@ internal static class Edits
                 var direction = Point(op, "direction") - Point3d.Origin;
                 if (direction.Length < 1e-8) throw new CadFault("INVALID_EXTRUSION_DIRECTION", "Extrusion direction must be nonzero");
                 var extruded = new Solid3d();
-                try { extruded.CreateExtrudedSolid(profile, direction, new SweepOptions()); return extruded; }
+                try { using (var options = new SweepOptions()) extruded.CreateExtrudedSolid(profile, direction, options); return extruded; }
                 catch { extruded.Dispose(); throw; }
             case "sweep":
                 var sweepProfile = Editable(db, tr, Resolve(db, tr, op, aliases), false);
@@ -423,7 +474,7 @@ internal static class Edits
                 if (Editable(db, tr, pathId, false) is not Curve sweepPath)
                     throw new CadFault("INVALID_SWEEP_PATH", "Use a current-space line, arc, polyline or spline as the path");
                 var swept = new Solid3d();
-                try { swept.CreateSweptSolid(sweepProfile, sweepPath, new SweepOptions()); return swept; }
+                try { using (var options = new SweepOptions()) swept.CreateSweptSolid(sweepProfile, sweepPath, options); return swept; }
                 catch { swept.Dispose(); throw; }
             case "revolve":
                 var revolveProfile = Editable(db, tr, Resolve(db, tr, op, aliases), false);
@@ -434,18 +485,21 @@ internal static class Edits
                 if (Math.Abs(revolveAngle) < 1e-10 || Math.Abs(revolveAngle) > Math.PI * 2 + 1e-10)
                     throw new CadFault("INVALID_REVOLVE_ANGLE", "Revolve angle must be nonzero and at most 360 degrees");
                 var revolved = new Solid3d();
-                try { revolved.CreateRevolvedSolid(revolveProfile, revolveStart, revolveEnd - revolveStart, revolveAngle, 0, new RevolveOptions()); return revolved; }
+                try { using (var options = new RevolveOptions()) revolved.CreateRevolvedSolid(revolveProfile, revolveStart, revolveEnd - revolveStart, revolveAngle, 0, options); return revolved; }
                 catch { revolved.Dispose(); throw; }
             case "rectangle":
                 var p = Point(op, "first"); var q = Point(op, "second");
                 if (Math.Abs(p.Z - q.Z) > 1e-8 || Math.Abs(p.X - q.X) < 1e-10 || Math.Abs(p.Y - q.Y) < 1e-10) throw new CadFault("DEGENERATE_RECTANGLE", "Opposite corners need different X/Y and the same Z");
-                var rect = new Polyline(4) { Elevation = p.Z, Closed = true };
-                rect.AddVertexAt(0, new(p.X, p.Y), 0, 0, 0); rect.AddVertexAt(1, new(q.X, p.Y), 0, 0, 0);
-                rect.AddVertexAt(2, new(q.X, q.Y), 0, 0, 0); rect.AddVertexAt(3, new(p.X, q.Y), 0, 0, 0); return rect;
+                return Built(new Polyline(4), rect =>
+                {
+                    rect.Elevation = p.Z; rect.Closed = true;
+                    rect.AddVertexAt(0, new(p.X, p.Y), 0, 0, 0); rect.AddVertexAt(1, new(q.X, p.Y), 0, 0, 0);
+                    rect.AddVertexAt(2, new(q.X, q.Y), 0, 0, 0); rect.AddVertexAt(3, new(p.X, q.Y), 0, 0, 0);
+                });
             case "text":
-                return new DBText { Position = Point(op, "position"), TextString = op.GetProperty("text").GetString()!, Height = N(op, "height"), Rotation = Angle(op, "rotation_deg"), TextStyleId = TextStyle(db, tr, op.Text("style")) };
+                return Built(new DBText(), text => { text.Position = Point(op, "position"); text.TextString = op.GetProperty("text").GetString()!; text.Height = N(op, "height"); text.Rotation = Angle(op, "rotation_deg"); text.TextStyleId = TextStyle(db, tr, op.Text("style")); });
             case "mtext":
-                return new MText { Location = Point(op, "position"), Contents = op.GetProperty("text").GetString()!, TextHeight = N(op, "height"), Width = N(op, "width", 0), Rotation = Angle(op, "rotation_deg"), TextStyleId = TextStyle(db, tr, op.Text("style")), Attachment = AttachmentPoint.TopLeft };
+                return Built(new MText(), text => { text.Location = Point(op, "position"); text.Contents = op.GetProperty("text").GetString()!; text.TextHeight = N(op, "height"); text.Width = N(op, "width", 0); text.Rotation = Angle(op, "rotation_deg"); text.TextStyleId = TextStyle(db, tr, op.Text("style")); text.Attachment = AttachmentPoint.TopLeft; });
             case "block":
                 var table = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead); var name = S(op, "name");
                 if (!table.Has(name)) throw new CadFault("BLOCK_NOT_FOUND", name + "; read cad_catalog or create the definition with block_define");
@@ -453,7 +507,7 @@ internal static class Edits
                 if (definition.IsLayout || definition.IsFromExternalReference || definition.IsDependent) throw new CadFault("UNSUPPORTED_BLOCK", "Expected a local block definition");
                 var scale = new[] { 1d, 1d, 1d };
                 if (op.TryGetProperty("scale", out var s)) scale = s.ValueKind == JsonValueKind.Array ? EditPlan.Point(s) : [s.GetDouble(), s.GetDouble(), s.GetDouble()];
-                return new BlockReference(Point(op, "position"), table[name]) { Rotation = Angle(op, "rotation_deg"), ScaleFactors = new(scale[0], scale[1], scale[2]) };
+                return Built(new BlockReference(Point(op, "position"), table[name]), reference => { reference.Rotation = Angle(op, "rotation_deg"); reference.ScaleFactors = new(scale[0], scale[1], scale[2]); });
             case "dimension_aligned":
                 var dimStyles = (DimStyleTable)tr.GetObject(db.DimStyleTableId, OpenMode.ForRead);
                 var dimStyle = op.Text("style") is { } style ? dimStyles.Has(style) ? dimStyles[style] : throw new CadFault("STYLE_NOT_FOUND", style) : db.Dimstyle;
@@ -462,31 +516,33 @@ internal static class Edits
             case "hatch": return new Hatch();
             case "box":
                 if (N(op, "width") <= 0) throw new CadFault("INVALID_PARAMETER", "Box width must be positive");
-                var box = new Solid3d(); box.CreateBox(N(op, "length"), N(op, "width"), N(op, "height"));
-                var boxBounds = box.GeometricExtents;
-                var boxCenter = new Point3d((boxBounds.MinPoint.X + boxBounds.MaxPoint.X) / 2, (boxBounds.MinPoint.Y + boxBounds.MaxPoint.Y) / 2, (boxBounds.MinPoint.Z + boxBounds.MaxPoint.Z) / 2);
-                box.TransformBy(Matrix3d.Displacement(Point(op, "center") - boxCenter)); return box;
+                return Built(new Solid3d(), box =>
+                {
+                    box.CreateBox(N(op, "length"), N(op, "width"), N(op, "height"));
+                    var boxBounds = box.GeometricExtents;
+                    var boxCenter = new Point3d((boxBounds.MinPoint.X + boxBounds.MaxPoint.X) / 2, (boxBounds.MinPoint.Y + boxBounds.MaxPoint.Y) / 2, (boxBounds.MinPoint.Z + boxBounds.MaxPoint.Z) / 2);
+                    box.TransformBy(Matrix3d.Displacement(Point(op, "center") - boxCenter));
+                });
             case "cylinder":
-                var solid = new Solid3d(); solid.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), N(op, "radius"));
-                var center = Point(op, "center");
-                // Derive placement from the actual solid extents rather than assuming the factory origin.
-                var bounds = solid.GeometricExtents;
-                solid.TransformBy(Matrix3d.Displacement(new(center.X - (bounds.MinPoint.X + bounds.MaxPoint.X) / 2,
-                    center.Y - (bounds.MinPoint.Y + bounds.MaxPoint.Y) / 2, center.Z - bounds.MinPoint.Z))); return solid;
+                return Built(new Solid3d(), solid =>
+                {
+                    solid.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), N(op, "radius"));
+                    var center = Point(op, "center");
+                    // Derive placement from the actual solid extents rather than assuming the factory origin.
+                    var bounds = solid.GeometricExtents;
+                    solid.TransformBy(Matrix3d.Displacement(new(center.X - (bounds.MinPoint.X + bounds.MaxPoint.X) / 2,
+                        center.Y - (bounds.MinPoint.Y + bounds.MaxPoint.Y) / 2, center.Z - bounds.MinPoint.Z)));
+                });
             case "sphere":
-                var sphere = new Solid3d(); sphere.CreateSphere(N(op, "radius"));
-                PlaceSolid(sphere, Point(op, "center"), false); return sphere;
+                return Built(new Solid3d(), sphere => { sphere.CreateSphere(N(op, "radius")); PlaceSolid(sphere, Point(op, "center"), false); });
             case "cone":
-                var cone = new Solid3d(); cone.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), 0);
-                PlaceSolid(cone, Point(op, "center"), true); return cone;
+                return Built(new Solid3d(), cone => { cone.CreateFrustum(N(op, "height"), N(op, "radius"), N(op, "radius"), 0); PlaceSolid(cone, Point(op, "center"), true); });
             case "wedge":
                 if (N(op, "width") <= 0) throw new CadFault("INVALID_PARAMETER", "Wedge width must be positive");
-                var wedge = new Solid3d(); wedge.CreateWedge(N(op, "length"), N(op, "width"), N(op, "height"));
-                PlaceSolid(wedge, Point(op, "center"), false); return wedge;
+                return Built(new Solid3d(), wedge => { wedge.CreateWedge(N(op, "length"), N(op, "width"), N(op, "height")); PlaceSolid(wedge, Point(op, "center"), false); });
             case "torus":
                 if (N(op, "minor_radius") >= N(op, "major_radius")) throw new CadFault("INVALID_TORUS", "minor_radius must be smaller than major_radius");
-                var torus = new Solid3d(); torus.CreateTorus(N(op, "major_radius"), N(op, "minor_radius"));
-                PlaceSolid(torus, Point(op, "center"), false); return torus;
+                return Built(new Solid3d(), torus => { torus.CreateTorus(N(op, "major_radius"), N(op, "minor_radius")); PlaceSolid(torus, Point(op, "center"), false); });
             default: throw new CadFault("INVALID_OPERATION", S(op, "op"));
         }
     }
@@ -610,9 +666,14 @@ internal static class Edits
             foreach (ObjectId id in definition)
             {
                 if (tr.GetObject(id, OpenMode.ForRead) is not AttributeDefinition ad || ad.Constant) continue;
-                var ar = new AttributeReference(); ar.SetAttributeFromBlock(ad, block.BlockTransform);
-                ar.TextString = requested.TryGetValue(ad.Tag, out var value) ? value : ad.TextString;
-                block.AttributeCollection.AppendAttribute(ar); tr.AddNewlyCreatedDBObject(ar, true);
+                var ar = new AttributeReference();
+                try
+                {
+                    ar.SetAttributeFromBlock(ad, block.BlockTransform);
+                    ar.TextString = requested.TryGetValue(ad.Tag, out var value) ? value : ad.TextString;
+                    block.AttributeCollection.AppendAttribute(ar); tr.AddNewlyCreatedDBObject(ar, true);
+                }
+                catch { if (ar.ObjectId.IsNull) ar.Dispose(); throw; }
                 if (requested.ContainsKey(ad.Tag)) applied.Add(ad.Tag);
             }
         }

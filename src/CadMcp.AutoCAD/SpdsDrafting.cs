@@ -17,20 +17,28 @@ internal static class SpdsDrafting
     {
         string name=op.Text("name")!;var styles=(DimStyleTable)tr.GetObject(db.DimStyleTableId,OpenMode.ForRead);
         if(styles.Has(name))throw new CadFault("STYLE_EXISTS","Choose a new name; existing dimension styles are not overwritten");
-        var record=new DimStyleTableRecord();using (var defaults = db.GetDimstyleData()) record.CopyFrom(defaults);record.Name=name;
+        // Checked before the record exists: a record that never reaches the database is deleted by the garbage collector.
         double factor=op.TryGetProperty("measurement_factor",out _)?DraftingPlan.Positive(op,"measurement_factor",1):db.Insunits switch{UnitsValue.Meters=>1000,UnitsValue.Centimeters=>10,UnitsValue.Millimeters=>1,_=>throw new CadFault("UNITS_REQUIRED","Specify measurement_factor for this drawing unit")};
-        record.Dimscale=DraftingPlan.Positive(op,"drawing_scale",1)/factor;
-        record.Dimlfac=factor;record.Dimtxt=DraftingPlan.Positive(op,"text_height",2.5);
-        record.Dimtxsty=TextStyle(db,tr,op.Text("text_style"));record.Dimasz=3;
-        record.Dimtsz=op.TryGetProperty("ticks",out var ticks)&&!ticks.GetBoolean()?0:1.5;
-        record.Dimdle=2;record.Dimexe=2;record.Dimexo=0;record.Dimgap=1;record.Dimtad=1;
-        record.Dimtih=false;record.Dimtoh=false;record.Dimdec=0;record.Dimzin=8;record.Dimlunit=2;
-        record.Dimalt=false;record.Dimtol=false;record.Dimlim=false;record.Dimpost="";record.Dimapost="";
-        record.Dimsah=false;record.Dimblk=ObjectId.Null;record.Dimblk1=ObjectId.Null;record.Dimblk2=ObjectId.Null;
-        record.Dimclrd=Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByLayer,256);
-        record.Dimclre=record.Dimclrd;record.Dimclrt=record.Dimclrd;
-        record.Dimlwd=LineWeight.LineWeight018;record.Dimlwe=LineWeight.LineWeight018;
-        styles.UpgradeOpen();styles.Add(record);tr.AddNewlyCreatedDBObject(record,true);
+        double drawingScale=DraftingPlan.Positive(op,"drawing_scale",1),textHeight=DraftingPlan.Positive(op,"text_height",2.5);
+        var textStyle=TextStyle(db,tr,op.Text("text_style"));
+        var record=new DimStyleTableRecord();
+        try
+        {
+            using (var defaults = db.GetDimstyleData()) record.CopyFrom(defaults);record.Name=name;
+            record.Dimscale=drawingScale/factor;
+            record.Dimlfac=factor;record.Dimtxt=textHeight;
+            record.Dimtxsty=textStyle;record.Dimasz=3;
+            record.Dimtsz=op.TryGetProperty("ticks",out var ticks)&&!ticks.GetBoolean()?0:1.5;
+            record.Dimdle=2;record.Dimexe=2;record.Dimexo=0;record.Dimgap=1;record.Dimtad=1;
+            record.Dimtih=false;record.Dimtoh=false;record.Dimdec=0;record.Dimzin=8;record.Dimlunit=2;
+            record.Dimalt=false;record.Dimtol=false;record.Dimlim=false;record.Dimpost="";record.Dimapost="";
+            record.Dimsah=false;record.Dimblk=ObjectId.Null;record.Dimblk1=ObjectId.Null;record.Dimblk2=ObjectId.Null;
+            record.Dimclrd=Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByLayer,256);
+            record.Dimclre=record.Dimclrd;record.Dimclrt=record.Dimclrd;
+            record.Dimlwd=LineWeight.LineWeight018;record.Dimlwe=LineWeight.LineWeight018;
+            styles.UpgradeOpen();styles.Add(record);tr.AddNewlyCreatedDBObject(record,true);
+        }
+        catch{if(record.ObjectId.IsNull)record.Dispose();throw;}
         return new {name,handle=record.Handle.ToString(),linear_units="millimeters",measurement_factor=factor,drawing_scale=record.Dimscale*factor,
             paper_text_height=record.Dimtxt,tick_length=record.Dimtsz*2,standard="ГОСТ Р 21.101-2026 / 5.4.1–5.4.2",
             limitations=new[]{"text_font_must_be_reviewed_for_GOST_2_304","radial_diametric_dimensions_use_arrow_overrides"}};
@@ -39,13 +47,17 @@ internal static class SpdsDrafting
     {
         var style=DimensionStyle(db,tr,op.Text("style"));string text=op.Text("text")??"";
         var position=P(op,"position");
+        // Zero-length or zero-radius geometry reaches AutoCAD's dimension module when the dimension block is computed.
+        void Distinct(string a,string b){if(P(op,a).DistanceTo(P(op,b))<1e-10)throw new CadFault("DEGENERATE_GEOMETRY",a+" and "+b+" must differ");}
         switch(op.Text("op"))
         {
-            case "dimension_rotated":return new RotatedDimension(EditPlan.Numeric(op,"angle_deg",0)*Math.PI/180,P(op,"first"),P(op,"second"),position,text,style);
+            case "dimension_rotated":Distinct("first","second");return new RotatedDimension(EditPlan.Numeric(op,"angle_deg",0)*Math.PI/180,P(op,"first"),P(op,"second"),position,text,style);
             case "dimension_radius":
-                var radius=new RadialDimension(P(op,"center"),P(op,"chord"),P(op,"chord").DistanceTo(position),text,style);radius.Dimtsz=0;radius.TextPosition=position;return radius;
+                Distinct("center","chord");
+                return Edits.Built(new RadialDimension(P(op,"center"),P(op,"chord"),P(op,"chord").DistanceTo(position),text,style),radius=>{radius.Dimtsz=0;radius.TextPosition=position;});
             default:
-                var diameter=new DiametricDimension(P(op,"first"),P(op,"second"),P(op,"first").DistanceTo(position),text,style);diameter.Dimtsz=0;diameter.TextPosition=position;return diameter;
+                Distinct("first","second");
+                return Edits.Built(new DiametricDimension(P(op,"first"),P(op,"second"),P(op,"first").DistanceTo(position),text,style),diameter=>{diameter.Dimtsz=0;diameter.TextPosition=position;});
         }
     }
     public static BlockReference Axis(Database db,Transaction tr,JsonElement op)
@@ -63,11 +75,12 @@ internal static class SpdsDrafting
     public static BlockReference Level(Database db,Transaction tr,JsonElement op)
     {
         var point=P(op,"position");double scale=DraftingPlan.Positive(op,"scale",1),sign=op.Text("direction")=="left"?-1:1;
+        var textStyle=TextStyle(db,tr,op.Text("text_style"));
         var block=NewBlock(db,tr,"LEVEL");Point3d Q(double x,double y)=>new(point.X+x*scale*sign,point.Y+y*scale,point.Z);
         Add(block,tr,new Line(Q(-2,2),Q(0,0)));Add(block,tr,new Line(Q(0,0),Q(2,2)));
         Add(block,tr,new Line(Q(0,0),Q(0,6)));Add(block,tr,new Line(Q(0,6),Q(18,6)));
         double elevation=EditPlan.Numeric(op,"elevation");string text=Math.Abs(elevation)<1e-12?"±0.000":(elevation>0?"+":"")+elevation.ToString("0.000",CultureInfo.InvariantCulture);
-        Add(block,tr,new DBText{Position=Q(1,7),Height=2.5*scale,TextString=text,TextStyleId=TextStyle(db,tr,op.Text("text_style"))});
+        Add(block,tr,new DBText{Position=Q(1,7),Height=2.5*scale,TextString=text,TextStyleId=textStyle});
         return new BlockReference(Point3d.Origin,block.ObjectId);
     }
     private static BlockTableRecord NewBlock(Database db,Transaction tr,string kind)

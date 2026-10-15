@@ -35,10 +35,14 @@ public static class ProviderProcess
         foreach (var arg in arguments) info.ArgumentList.Add(arg);
         return info;
     }
+    /// <summary>
+    /// Best effort: also runs as a cancellation callback, where an exception would surface in AutoCAD's UI thread or on a
+    /// timer thread and end acad.exe. Kill throws AggregateException when a descendant cannot be terminated.
+    /// </summary>
     public static void Stop(Process p)
     {
         try { if (!p.HasExited) p.Kill(entireProcessTree: true); }
-        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        catch (Exception e) { System.Diagnostics.Trace.WriteLine("CAD MCP: stopping the provider process failed: " + e.Message); }
     }
     public static async Task StopAndWaitAsync(Process p)
     {
@@ -82,14 +86,25 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     internal TimeSpan QuietAfterResult { get; set; } = TimeSpan.FromSeconds(30);
     internal TimeSpan AcknowledgementTimeout { get => live.AcknowledgementTimeout; set => live.AcknowledgementTimeout = value; }
     public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
-    public string[] Arguments()
+    // Read-only built-in tools: the working folder and the files the user attached, never anything else.
+    private static readonly string[] ReadTools = ["Read", "Glob", "Grep"];
+    private static readonly JsonSerializerOptions SettingsJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+    public string[] Arguments() => Arguments(Array.Empty<ChatAttachment>());
+    /// <param name="attachments">Files of the message: Claude may read exactly these, wherever they are on disk.</param>
+    public string[] Arguments(IReadOnlyList<ChatAttachment> attachments)
     {
         if (options.MaxSubagents is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(options.MaxSubagents));
         var config = JsonSerializer.Serialize(new { mcpServers = new { cad = new { command = options.McpExecutable, args = options.McpArguments ?? Array.Empty<string>(), env = options.CadEnvironment } } });
         var args = new List<string> { "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__cad__*" };
-        // --allowedTools takes a list: the helper permission must directly follow it, before any other option.
+        // --allowedTools takes a list: the helper and web search permissions must directly follow it, before any other option.
+        // Without the web search permission every search the agents may make is refused: print mode has nobody to ask.
         if (options.MaxSubagents > 0) args.Add("Agent(cad_researcher)");
+        args.Add("WebSearch");
+        // Attached files live anywhere; reading outside the working folder needs a rule per file. The rules go in
+        // settings JSON: --allowedTools splits its list at spaces next to parentheses, as in "План (ред. 2).pdf".
+        var readable = attachments.Select(file => ReadRule(file.Path)).OfType<string>().Distinct(StringComparer.Ordinal).ToArray();
+        if (readable.Length > 0) args.AddRange(["--settings", JsonSerializer.Serialize(new { permissions = new { allow = readable } }, SettingsJson)]);
         if (!string.IsNullOrWhiteSpace(options.Model)) args.AddRange(["--model", options.Model]);
         if (!string.IsNullOrWhiteSpace(options.ReasoningEffort)) args.AddRange(["--effort", options.ReasoningEffort]);
         if (options.MaxSubagents > 0)
@@ -101,35 +116,74 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 {
                     description="CAD coordinator and sole drawing writer",
                     prompt=CadAgent.Instructions,
-                    tools=new[]{"mcp__cad__*","Agent(cad_researcher)","WebSearch"}
+                    tools=new[]{"mcp__cad__*","Agent(cad_researcher)","WebSearch"}.Concat(ReadTools).ToArray()
                 },
                 ["cad_researcher"] = new
                 {
                     description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
                     prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
                     mcpServers=new object[]{new Dictionary<string,object>{["cad"] = new {command=options.McpExecutable,args=options.McpArguments??Array.Empty<string>(),env=readOnlyEnvironment}}},
-                    tools = CadOperations.HelperAllowed.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").ToArray()
+                    tools = CadOperations.HelperAllowed.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").Concat(ReadTools).ToArray()
                 }
             }),"--agent","cad_primary"]);
         }
         // The selected agent's prompt replaces the default system prompt, so with an agent the instructions
         // are not appended a second time. That also keeps the command line far below the Windows limit.
-        else args.AddRange(["--disallowedTools", "Agent", "--append-system-prompt", CadAgent.Instructions]);
+        // Without helpers the built-in tools are cut to the same read-only set the agents have.
+        else args.AddRange(["--disallowedTools", "Agent", "--tools", string.Join(",", ReadTools.Append("WebSearch")), "--append-system-prompt", CadAgent.Instructions]);
         if (SessionId is not null) args.AddRange(["--resume", SessionId]);
         args.AddRange(["--input-format", "stream-json", "--replay-user-messages"]);
         return args.ToArray();
     }
+
+    /// <summary>
+    /// A permission rule that lets Claude read exactly one file. Claude Code matches absolute paths from the filesystem
+    /// root (//path) and normalizes Windows paths to POSIX form (C:\Users becomes /c/Users); the gitignore pattern
+    /// characters are escaped. Network paths get no rule: Claude Code checks those reads on its own.
+    /// </summary>
+    internal static string? ReadRule(string path)
+    {
+        string normalized;
+        if (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/')
+            normalized = "/" + char.ToLowerInvariant(path[0]) + "/" + path[3..].Replace('\\', '/');
+        else if (path.StartsWith('/') && !path.StartsWith("//", StringComparison.Ordinal)) normalized = path;
+        else return null;
+        var rule = new StringBuilder("Read(/");
+        foreach (char c in normalized)
+        {
+            if (c is '\\' or '*' or '?' or '[' or ']') rule.Append('\\');
+            rule.Append(c);
+        }
+        return rule.Append(')').ToString();
+    }
+
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
     {
         attachments ??= Array.Empty<ChatAttachment>();
-        var start = ProviderProcess.StartInfo(options, Arguments());
+        var attempt = new Attempt();
+        await foreach (var item in RunAsync(prompt, attachments, attempt, ct)) yield return item;
+        if (!attempt.SessionMissing) yield break;
+        // Claude Code keeps conversations per working folder and deletes old ones; the saved id then no longer
+        // resumes and every message of the chat would fail. Start over and say so: the earlier context is gone.
+        SessionId = null;
+        yield return new("status", "Прежний диалог Claude Code не найден (его удалил Claude Code или изменилась рабочая папка); начат новый диалог");
+        await foreach (var item in RunAsync(prompt, attachments, new Attempt(), ct)) yield return item;
+    }
+
+    private sealed class Attempt { public bool SessionMissing; }
+
+    private async IAsyncEnumerable<ChatEvent> RunAsync(string prompt, IReadOnlyList<ChatAttachment> attachments, Attempt attempt, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var start = ProviderProcess.StartInfo(options, Arguments(attachments));
         if (options.MaxSubagents > 0) start.Environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = options.MaxSubagents.ToString();
+        string? resumed = SessionId;
         using var p = Process.Start(start) ?? throw new IOException("Cannot start Claude Code");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
         var stderr = ProviderProcess.DrainErrors(p);
         var lines = new ProviderLines(p.StandardOutput);
         Task<JsonDocument?>? reading = null;
-        bool completed = false, streamed = false;
+        bool completed = false, streamed = false, initialized = false, thinking = false;
+        string? limitWarning = null;
         var pendingTools = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
@@ -174,16 +228,43 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 {
                     var e = json.RootElement;
                     string? type = ProviderJson.Text(e, "type");
+                    string? subtype = ProviderJson.Text(e, "subtype");
+                    // Lines of a helper carry the tool call that started it; only the main agent speaks to the user.
+                    bool main = ProviderJson.Child(e, "parent_tool_use_id").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null;
                     // session_id repeats on nearly every streamed line; report it only when it changes.
                     if (ProviderJson.Text(e, "session_id") is { } sid && sid != SessionId) { SessionId = sid; yield return new("session", sid); }
                     if (type is "stream_event" or "assistant" or "user") turnActive = true;
+                    if (type == "system" && subtype == "init" && !initialized)
+                    {
+                        // The model Claude Code resolved for this session, e.g. claude-opus-5-5 for "opus".
+                        initialized = true;
+                        if (ProviderJson.Text(e, "model") is { Length: > 0 } model) yield return new("model", model);
+                        if (!string.IsNullOrWhiteSpace(options.ReasoningEffort)) yield return new("effort", options.ReasoningEffort);
+                    }
+                    if (type == "system" && subtype == "thinking_tokens" && ProviderJson.Child(e, "estimated_tokens") is { ValueKind: JsonValueKind.Number } estimate && estimate.TryGetInt32(out int tokens))
+                        yield return new("status", "Claude рассуждает: около " + tokens + " токенов");
+                    if (type == "rate_limit_event" && ProviderJson.Child(e, "rate_limit_info") is { ValueKind: JsonValueKind.Object } limit
+                        && ProviderJson.Text(limit, "status") == "allowed_warning" && LimitWarning(limit) is { } warning && warning != limitWarning)
+                    { limitWarning = warning; yield return new("status", warning); }
                     if (type == "user" && ProviderJson.Text(e, "uuid") is {} uuid && acknowledgements.TryRemove(uuid,out int receiptId))
                     {
                         turns.Acknowledge(uuid);
                         live.Resolve(receiptId,new("accepted","Claude принял дополнение; оно включено в очередь этой сессии"));
                     }
-                    if (type == "stream_event" && ProviderJson.Text(ProviderJson.Child(ProviderJson.Child(e, "event"), "delta"), "text") is { } text)
-                    { streamed = true; yield return new("text", text); }
+                    if (type == "stream_event" && main)
+                    {
+                        var streamEvent = ProviderJson.Child(e, "event");
+                        var delta = ProviderJson.Child(streamEvent, "delta");
+                        if (ProviderJson.Text(streamEvent, "type") == "content_block_start")
+                        {
+                            bool startsThinking = ProviderJson.Text(ProviderJson.Child(streamEvent, "content_block"), "type") == "thinking";
+                            if (startsThinking && !thinking) yield return new("status", "Claude рассуждает");
+                            thinking = startsThinking;
+                        }
+                        // Claude Code shows a summary of the reasoning when it has one, never the reasoning itself.
+                        if (ProviderJson.Text(delta, "thinking") is { Length: > 0 } summary) yield return new("reasoning_summary", summary);
+                        if (ProviderJson.Text(delta, "text") is { } text) { streamed = true; yield return new("text", text); }
+                    }
                     if (type == "assistant" && ProviderJson.Child(ProviderJson.Child(e, "message"), "content") is { ValueKind: JsonValueKind.Array } blocks)
                         foreach (var block in blocks.EnumerateArray())
                             if (ProviderJson.Text(block, "type") == "tool_use" && ProviderJson.Text(block, "name") is { } toolName)
@@ -205,7 +286,12 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                     if (type == "result")
                     {
                         if (ProviderJson.Child(e, "is_error").ValueKind == JsonValueKind.True)
-                            throw new IOException("Claude Code: " + (ProviderJson.Text(e, "result") ?? e.ToString()));
+                        {
+                            string message = ResultError(e);
+                            if (resumed is not null && !initialized && message.Contains("No conversation found", StringComparison.OrdinalIgnoreCase))
+                            { attempt.SessionMissing = true; yield break; }
+                            throw new IOException("Claude Code: " + FriendlyError(message));
+                        }
                         if (!streamed && ProviderJson.Text(e, "result") is { } result) yield return new("text", result);
                         var answered = ProviderJson.Child(e, "user_message_uuids") is { ValueKind: JsonValueKind.Array } listed
                             ? listed.EnumerateArray().Select(u => u.ValueKind == JsonValueKind.String ? u.GetString() : null).OfType<string>().ToArray() : null;
@@ -221,6 +307,38 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
             if (p.ExitCode != 0 || !completed) throw new IOException("Claude Code ended without success. " + await stderr + lines.Skipped);
         }
         finally { live.Close(); await ProviderProcess.FinishAsync(p, stderr); ProviderProcess.Forget(reading); }
+    }
+
+    /// <summary>The text of a failed result: Claude Code puts it in result, or in errors when the turn never started.</summary>
+    internal static string ResultError(JsonElement result)
+    {
+        if (ProviderJson.Text(result, "result") is { Length: > 0 } text) return text;
+        if (ProviderJson.Child(result, "errors") is { ValueKind: JsonValueKind.Array } errors)
+        {
+            var listed = errors.EnumerateArray().Select(error => error.ValueKind == JsonValueKind.String ? error.GetString() : ProviderJson.Text(error, "message")).OfType<string>().Where(s => s.Length > 0).ToArray();
+            if (listed.Length > 0) return string.Join("; ", listed);
+        }
+        return "ход завершился ошибкой (" + (ProviderJson.Text(result, "subtype") ?? "без описания") + ")";
+    }
+
+    public static string FriendlyError(string message)
+    {
+        if (message.Contains("issue with the selected model", StringComparison.OrdinalIgnoreCase))
+            return "Выбранная модель недоступна для этого аккаунта или версии Claude Code. Обновите список моделей и выберите другую. (" + message + ")";
+        if (message.Contains("/login", StringComparison.OrdinalIgnoreCase) || message.Contains("Invalid API key", StringComparison.OrdinalIgnoreCase) || message.Contains("OAuth token", StringComparison.OrdinalIgnoreCase))
+            return "Нужно войти в Claude Code: нажмите «Войти» в панели. (" + message + ")";
+        return message;
+    }
+
+    private static string? LimitWarning(JsonElement limit)
+    {
+        if (ProviderJson.Child(limit, "utilization") is not { ValueKind: JsonValueKind.Number } used) return null;
+        string window = ProviderJson.Text(limit, "rateLimitType") switch
+        {
+            "five_hour" => "пятичасового", "seven_day" => "недельного", "seven_day_opus" => "недельного для Opus", "seven_day_sonnet" => "недельного для Sonnet",
+            var other => other is null ? "" : "«" + other + "»"
+        };
+        return "Claude: израсходовано " + Math.Round(used.GetDouble() * 100) + "% " + window + " лимита подписки";
     }
 }
 

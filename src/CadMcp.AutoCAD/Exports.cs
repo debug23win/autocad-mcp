@@ -202,8 +202,9 @@ internal static class Exports
         var layouts = (DBDictionary)transaction.GetObject(document.Database.LayoutDictionaryId, OpenMode.ForRead);
         if (!layouts.Contains(layoutName)) throw new CadFault("LAYOUT_NOT_FOUND", layoutName);
         var layout = (Layout)transaction.GetObject(layouts.GetAt(layoutName), OpenMode.ForRead);
-        using var info = new PlotInfo { Layout = layout.ObjectId };
+        // Declared first, disposed last: the plot info holds these settings as its override.
         using var settings = new PlotSettings(layout.ModelType);
+        using var info = new PlotInfo { Layout = layout.ObjectId };
         settings.CopyFrom(layout);
         var validator = PlotSettingsValidator.Current;
         validator.SetPlotConfigurationName(settings, "DWG To PDF.pc3", null);
@@ -227,14 +228,29 @@ internal static class Exports
         infoValidator.Validate(info);
         ct.ThrowIfCancellationRequested();
         using var engine = PlotFactory.CreatePublishEngine();
-        engine.BeginPlot(null, null);
-        engine.BeginDocument(info, document.Name, null, 1, true, path);
-        using (var page = new PlotPageInfo()) engine.BeginPage(page, info, true, null);
-        engine.BeginGenerateGraphics(null);
-        engine.EndGenerateGraphics(null);
-        engine.EndPage(null);
-        engine.EndDocument(null);
-        engine.EndPlot(null);
+        // How far the plot got: a failure part way still ends what was begun, in reverse order, before the engine is
+        // destroyed, so AutoCAD is not left inside a plot.
+        int stage = 0;
+        try
+        {
+            engine.BeginPlot(null, null); stage = 1;
+            engine.BeginDocument(info, document.Name, null, 1, true, path); stage = 2;
+            using (var page = new PlotPageInfo()) engine.BeginPage(page, info, true, null);
+            stage = 3;
+            engine.BeginGenerateGraphics(null); stage = 4;
+            engine.EndGenerateGraphics(null); stage = 3;
+            engine.EndPage(null); stage = 2;
+            engine.EndDocument(null); stage = 1;
+            engine.EndPlot(null); stage = 0;
+        }
+        finally
+        {
+            void End(Action step) { try { step(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP plot cleanup: " + error.Message); } }
+            if (stage >= 4) End(() => engine.EndGenerateGraphics(null));
+            if (stage >= 3) End(() => engine.EndPage(null));
+            if (stage >= 2) End(() => engine.EndDocument(null));
+            if (stage >= 1) End(() => engine.EndPlot(null));
+        }
         // Paper size of the validated plot, in millimetres; orientation is compared both ways.
         var size = (info.ValidatedSettings ?? settings).PlotPaperSize;
         return size.X > 0 && size.Y > 0 ? (size.X, size.Y) : null;

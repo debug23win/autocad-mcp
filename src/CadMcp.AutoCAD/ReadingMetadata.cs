@@ -31,7 +31,7 @@ internal static class ReadingMetadata
     {
         if(v.Number==1)return true;
         var layout=LayoutOf(v.OwnerId,tr);if(layout is null)return false;
-        var ids=layout.GetViewports();if(ids.Count>0)return ids[0]==v.ObjectId;
+        using(var ids=layout.GetViewports())if(ids.Count>0)return ids[0]==v.ObjectId;
         // An uninitialized layout has no runtime viewport list; the first paper viewport is its overall view.
         return ((BlockTableRecord)tr.GetObject(v.OwnerId,OpenMode.ForRead)).Cast<ObjectId>().FirstOrDefault(id=>id.ObjectClass.IsDerivedFrom(Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(Viewport))))==v.ObjectId;
     }
@@ -60,9 +60,10 @@ internal static class ReadingMetadata
             dcs_to_wcs=valid?DcsToWcs(v).ToArray():null,target_plane_corners_wcs=valid?ViewportCorners(v).Select(P).ToArray():null,
             model_search_bounds=SearchBounds(v,tr),nonrectangular_clip=v.NonRectClipOn,
             clip_handle=v.NonRectClipEntityId.IsNull?null:v.NonRectClipEntityId.Handle.ToString(),
-            frozen_layer_handles=v.GetFrozenLayers().Cast<ObjectId>().Take(256).Select(id=>id.Handle.ToString()).ToArray(),
+            frozen_layer_handles=FrozenLayerHandles(v),
             coverage="target-plane projection; search bounds are conservative XY envelope, not exact visibility or clipping"};
     }
+    private static string[] FrozenLayerHandles(Viewport v){using var ids=v.GetFrozenLayers();return ids.Cast<ObjectId>().Take(256).Select(id=>id.Handle.ToString()).ToArray();}
     public static object DimensionStyle(DimStyleTableRecord s)=>new{name=s.Name,measurement_factor=s.Dimlfac,drawing_scale=s.Dimscale,
         linear_units=s.Dimlunit,linear_precision=s.Dimdec,rounding=s.Dimrnd,decimal_separator=s.Dimdsep.ToString(),
         primary_postfix=s.Dimpost,alternate_enabled=s.Dimalt,alternate_factor=s.Dimaltf,alternate_precision=s.Dimaltd,

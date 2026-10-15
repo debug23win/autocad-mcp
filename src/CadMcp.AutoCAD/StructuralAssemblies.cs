@@ -21,7 +21,7 @@ internal static class StructuralAssemblies
     internal static object Update(Database db,Transaction tr,BlockReference reference,JsonElement op)
     {
         var definition=(BlockTableRecord)tr.GetObject(reference.BlockTableRecord,OpenMode.ForWrite);var old=Load(definition,tr)??throw new CadFault("NOT_PARAMETRIC_ASSEMBLY","Select an assembly created by CAD MCP");
-        if(definition.GetBlockReferenceIds(true,false).Count>1)throw new CadFault("SHARED_ASSEMBLY","This definition has multiple instances; updating it would change all. Make it unique first.");
+        using(var references=definition.GetBlockReferenceIds(true,false))if(references.Count>1)throw new CadFault("SHARED_ASSEMBLY","This definition has multiple instances; updating it would change all. Make it unique first.");
         var recipe=old with{Parameters=op.GetProperty("parameters").Clone(),Mark=op.Text("mark")??old.Mark,Material=op.Text("material")??old.Material,Density=EditPlan.Numeric(op,"density",old.Density),Annotations=op.TryGetProperty("show_annotations",out var a)?a.GetBoolean():old.Annotations,GeometryVersion=2};
         foreach(ObjectId id in definition){var entity=(Entity)tr.GetObject(id,OpenMode.ForWrite);entity.Erase();}
         Build(db,tr,definition,recipe);Store(definition,tr,recipe);reference.RecordGraphicsModified(true);

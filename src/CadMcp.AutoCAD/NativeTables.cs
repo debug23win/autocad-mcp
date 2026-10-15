@@ -11,9 +11,12 @@ internal static class NativeTables
 {
     public static Table Create(Database db,Transaction tr,JsonElement op)
     {
-        var table=new Table { TableStyle=Style(db,tr,op.Text("style")), Position=P(op.GetProperty("position")) };
+        // Looked up before the table exists: a table that never reaches the database is deleted by the garbage collector.
+        var style=Style(db,tr,op.Text("style"));var position=P(op.GetProperty("position"));
+        var table=new Table();
         try
         {
+            table.TableStyle=style;table.Position=position;
             int rows=op.GetProperty("rows").GetInt32(),columns=op.GetProperty("columns").GetInt32();
             table.SetSize(rows,columns);
             table.Cells.TextHeight=DraftingPlan.Positive(op,"text_height",2.5);

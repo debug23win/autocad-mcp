@@ -257,13 +257,109 @@ public sealed class ProviderTests
         Assert.True(helperTools.Contains("mcp__cad__cad_search") && !helperTools.Contains("mcp__cad__cad_edit") && !helperTools.Contains("mcp__cad__cad_lisp") && !helperTools.Contains("mcp__cad__cad_focus"), "Claude helper must be read-only");
         // The agent prompt replaces the default system prompt; appending it again would duplicate it.
         Assert.DoesNotContain("--append-system-prompt", a);
+        // Both agents may search the web and read; reading reaches the working folder and attached files only.
+        var primaryTools = helper.RootElement.GetProperty("cad_primary").GetProperty("tools").EnumerateArray().Select(x => x.GetString()).ToArray();
+        foreach (var tool in new[] { "WebSearch", "Read", "Glob", "Grep" })
+            Assert.True(primaryTools.Contains(tool) && helperTools.Contains(tool), tool + " missing from the Claude agents");
+        Assert.DoesNotContain("--settings", a);
         var single = new ClaudeProvider(Options with { MaxSubagents = 0 }).Arguments();
         Assert.True(single.Contains("--disallowedTools") && !single.Contains("--agents") && single.Contains("--append-system-prompt"), "Claude helper opt-out missing");
+        Assert.Equal("Read,Glob,Grep,WebSearch", single[Array.IndexOf(single, "--tools") + 1]);
+        Assert.Equal("WebSearch", single[Array.IndexOf(single, "--allowedTools") + 2]);
         var selected = new ClaudeProvider(Options with { Model = "opus", ReasoningEffort = "high" }).Arguments();
         Assert.Equal("opus", selected[Array.IndexOf(selected, "--model") + 1]);
         Assert.Equal("high", selected[Array.IndexOf(selected, "--effort") + 1]);
-        // --allowedTools takes a list; the helper permission must not be read as a prompt after another option.
+        // --allowedTools takes a list; the helper and web search permissions must not be read as a prompt after another option.
         Assert.Equal("Agent(cad_researcher)", selected[Array.IndexOf(selected, "--allowedTools") + 2]);
+        Assert.Equal("WebSearch", selected[Array.IndexOf(selected, "--allowedTools") + 3]);
+    }
+
+    [Fact]
+    public void Claude_reads_exactly_the_attached_files_wherever_they_are()
+    {
+        // Claude Code matches //absolute paths, Windows drives normalized to /c/..., gitignore pattern characters escaped.
+        Assert.Equal(@"Read(//c/Users/Имя/Docs/План (ред. 2) \[a\].pdf)", ClaudeProvider.ReadRule(@"C:\Users\Имя\Docs\План (ред. 2) [a].pdf"));
+        Assert.Equal(@"Read(//d/Проект/plan.dwg)", ClaudeProvider.ReadRule("D:/Проект/plan.dwg"));
+        Assert.Equal(@"Read(//home/u/f\*\?.txt)", ClaudeProvider.ReadRule("/home/u/f*?.txt"));
+        // Network and relative paths get no rule.
+        Assert.Null(ClaudeProvider.ReadRule(@"\\server\share\plan.pdf"));
+        Assert.Null(ClaudeProvider.ReadRule("//server/share/plan.pdf"));
+        Assert.Null(ClaudeProvider.ReadRule("plan.pdf"));
+        var files = new[] { new ChatAttachment(@"C:\A (1)\b (2).pdf", "b (2).pdf", 10, AttachmentKind.File), new ChatAttachment(@"\\server\x.pdf", "x.pdf", 1, AttachmentKind.File) };
+        var arguments = new ClaudeProvider(Options).Arguments(files);
+        // The rules travel as settings JSON: --allowedTools would split "A (1)/b (2).pdf" at its spaces.
+        using var settings = JsonDocument.Parse(arguments[Array.IndexOf(arguments, "--settings") + 1]);
+        Assert.Equal(new[] { "Read(//c/A (1)/b (2).pdf)" }, settings.RootElement.GetProperty("permissions").GetProperty("allow").EnumerateArray().Select(r => r.GetString()));
+    }
+
+    [Fact]
+    public async Task Claude_model_list_and_levels_come_from_the_installed_CLI()
+    {
+        var models = await ClaudeCatalog.ReadAsync(Options, default);
+        Assert.Equal(new[] { "default", "opus", "fable", "legacy" }, models.Select(m => m.Id));
+        Assert.True(models[0].IsDefault && models.Skip(1).All(m => !m.IsDefault), "The default entry is not recognized");
+        Assert.Equal("Opus 5.5 · Best for everyday, complex tasks", models[1].Label);
+        Assert.Equal("Legacy", models[3].Label);
+        Assert.Equal(new[] { "low", "medium", "high" }, models[2].Efforts);
+        Assert.Empty(models[3].Efforts);
+        Assert.Equal(new ClaudeSelection("opus", "max"), ClaudeCatalog.Select(models, "opus", "max"));
+        Assert.Equal(new ClaudeSelection(null, "xhigh"), ClaudeCatalog.Select(models, "", "xhigh"));
+        Assert.Throws<IOException>(() => ClaudeCatalog.Select(models, "fable", "max"));
+        Assert.Throws<IOException>(() => ClaudeCatalog.Select(models, "legacy", "low"));
+        Assert.Throws<IOException>(() => ClaudeCatalog.Select(models, "retired", null));
+        // Without a list nothing is checked: the previous behaviour for a CLI that cannot list its models.
+        Assert.Equal(new ClaudeSelection("custom", "high"), ClaudeCatalog.Select([], "custom", "high"));
+    }
+
+    [Fact]
+    public void Claude_model_entries_with_missing_fields_do_not_break_the_list()
+    {
+        var models = ClaudeCatalog.Parse(JsonDocument.Parse("""
+            [{"value":"a"}, {"displayName":"no value"}, {"value":42}, "text", {"value":"a","displayName":"duplicate"},
+             {"value":"b","supportsEffort":true,"supportedEffortLevels":[null,"low","",7,"low"]},
+             {"value":"c","supportsEffort":true}]
+            """).RootElement);
+        Assert.Equal(new[] { "a", "b", "c" }, models.Select(m => m.Id));
+        Assert.Equal("a", models[0].DisplayName);
+        Assert.Equal(new[] { "low" }, models[1].Efforts);
+        Assert.Empty(models[2].Efforts);
+        Assert.Empty(ClaudeCatalog.Parse(default));
+    }
+
+    [Fact]
+    public async Task Claude_reports_its_model_level_reasoning_and_limit_without_helper_text()
+    {
+        var events = await TestEnvironment.Collect(new ClaudeProvider(Options with { Model = "opus", ReasoningEffort = "high" }).SendAsync("THINK", default));
+        Assert.Contains(events, e => e.Kind == "model" && e.Text == "claude-opus-5-5");
+        Assert.Contains(events, e => e.Kind == "effort" && e.Text == "high");
+        Assert.Contains(events, e => e.Kind == "status" && e.Text == "Claude рассуждает");
+        Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("120"));
+        Assert.Contains(events, e => e.Kind == "reasoning_summary" && e.Text == "Сверяю размеры");
+        Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("90%") && e.Text.Contains("недельного"));
+        Assert.Equal("Готово", string.Concat(events.Where(e => e.Kind == "text").Select(e => e.Text)));
+        Assert.Contains(events, e => e.Kind == "completed");
+    }
+
+    [Fact]
+    public async Task Claude_starts_a_new_conversation_when_the_saved_one_is_gone()
+    {
+        var provider = new ClaudeProvider(Options) { SessionId = "missing-session" };
+        var events = await TestEnvironment.Collect(provider.SendAsync("hello", default));
+        Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("Прежний диалог Claude Code не найден"));
+        Assert.Contains(events, e => e.Kind == "completed");
+        Assert.Equal("test-claude", provider.SessionId);
+    }
+
+    [Fact]
+    public void Claude_errors_are_readable()
+    {
+        var failed = JsonDocument.Parse("""{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Turn failed",{"message":"second"}]}""").RootElement;
+        Assert.Equal("Turn failed; second", ClaudeProvider.ResultError(failed));
+        Assert.Contains("error_during_execution", ClaudeProvider.ResultError(JsonDocument.Parse("""{"subtype":"error_during_execution"}""").RootElement));
+        Assert.Equal("Model text", ClaudeProvider.ResultError(JsonDocument.Parse("""{"result":"Model text","errors":["ignored"]}""").RootElement));
+        Assert.Contains("Обновите список моделей", ClaudeProvider.FriendlyError("There's an issue with the selected model (x). It may not exist or you may not have access to it."));
+        Assert.Contains("«Войти»", ClaudeProvider.FriendlyError("Invalid API key · Please run /login"));
+        Assert.Equal("Something else", ClaudeProvider.FriendlyError("Something else"));
     }
 
     [Theory]
@@ -273,7 +369,9 @@ public sealed class ProviderTests
     {
         var options = Options with { MaxSubagents = helpers, McpExecutable = @"C:\Users\Пользователь с длинным именем\AppData\Roaming\Autodesk\ApplicationPlugins\CadMcp.AutoCAD2025.bundle\Contents\Host\CadMcp.Host.exe",
             OwnerId = Guid.NewGuid().ToString("N"), CadSessionId = Guid.NewGuid().ToString("N"), CadDocumentId = Guid.NewGuid().ToString("N"), Model = "claude-opus", ReasoningEffort = "high" };
-        foreach (var arguments in new[] { new ClaudeProvider(options) { SessionId = Guid.NewGuid().ToString() }.Arguments(), new CodexProvider(options).Arguments() })
+        // Ten attachments with long Cyrillic paths add their read rules to the Claude command line.
+        var files = Enumerable.Range(1, 10).Select(i => new ChatAttachment(@"C:\Users\Пользователь с длинным именем\Documents\Проект жилого дома (стадия П)\Раздел " + i + @" — пояснительная записка [ред. 2].pdf", "f.pdf", 1, AttachmentKind.File)).ToArray();
+        foreach (var arguments in new[] { new ClaudeProvider(options) { SessionId = Guid.NewGuid().ToString() }.Arguments(files), new CodexProvider(options).Arguments() })
             Assert.InRange(WindowsCommandLineLength(options.Executable, arguments), 0, 24000);
     }
 

@@ -31,16 +31,19 @@ internal static class RasterImages
         if (imageDictionaryId.IsNull) imageDictionaryId = RasterImageDef.CreateImageDictionary(db);
         var dictionary = (DBDictionary)tr.GetObject(imageDictionaryId, OpenMode.ForWrite);
         if (dictionary.Contains(name)) throw new CadFault("IMAGE_NAME_EXISTS", "Use a unique image definition name: " + name);
-        var definition = new RasterImageDef { SourceFileName = path };
-        definition.Load();
-        dictionary.SetAt(name, definition); tr.AddNewlyCreatedDBObject(definition, true);
+        var definition = Edits.Built(new RasterImageDef(), loaded => { loaded.SourceFileName = path; loaded.Load(); });
+        try { dictionary.SetAt(name, definition); tr.AddNewlyCreatedDBObject(definition, true); }
+        catch { if (definition.ObjectId.IsNull) definition.Dispose(); throw; }
         var origin = fit.PixelToWorld(0, height);
         var right = fit.PixelToWorld(width, height);
         var top = fit.PixelToWorld(0, 0);
-        var image = new RasterImage { ImageDefId = definition.ObjectId };
-        image.Orientation = new CoordinateSystem3d(new Point3d(origin[0], origin[1], origin[2]),
-            new Vector3d(right[0] - origin[0], right[1] - origin[1], 0),
-            new Vector3d(top[0] - origin[0], top[1] - origin[1], 0));
+        var image = Edits.Built(new RasterImage(), placed =>
+        {
+            placed.ImageDefId = definition.ObjectId;
+            placed.Orientation = new CoordinateSystem3d(new Point3d(origin[0], origin[1], origin[2]),
+                new Vector3d(right[0] - origin[0], right[1] - origin[1], 0),
+                new Vector3d(top[0] - origin[0], top[1] - origin[1], 0));
+        });
         return (image, new { source_path = path, image_name = name, pixel_width = width, pixel_height = height,
             pixel_origin = "top_left", coordinate_system = "WCS", pixel_to_world_x = fit.X, pixel_to_world_y = fit.Y,
             world_z = fit.Z, control_points = fit.ControlPointCount, rms_error = fit.RmsError, max_error = fit.MaxError,

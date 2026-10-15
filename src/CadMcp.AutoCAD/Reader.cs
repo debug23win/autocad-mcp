@@ -98,7 +98,9 @@ internal static class Reader
                 if (block.IsDynamicBlock)
                 {
                     item["effective_name"] = ((BlockTableRecord)tr.GetObject(block.DynamicBlockTableRecord, OpenMode.ForRead)).Name;
-                    item["dynamic_properties"] = block.DynamicBlockReferencePropertyCollection.Cast<DynamicBlockReferenceProperty>().Take(100)
+                    // The collection owns a native array: released here on the AutoCAD thread, never by the garbage collector.
+                    using var dynamicProperties = block.DynamicBlockReferencePropertyCollection;
+                    item["dynamic_properties"] = dynamicProperties.Cast<DynamicBlockReferenceProperty>().Take(100)
                         .Select(p => new { name = p.PropertyName, value = p.Value is double or int or short or string ? p.Value : p.Value?.ToString(), read_only = p.ReadOnly,
                             units = p.UnitsType.ToString(), allowed_values = p.GetAllowedValues().Take(100).Select(v => v is double or int or short or string ? v : v?.ToString()).ToArray() }).ToArray();
                 }

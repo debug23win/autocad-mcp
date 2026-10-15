@@ -43,9 +43,20 @@ internal static class Program
         var restored = new ChatPanel(store); restored.ApplyModels(models);
         Assert((string)((ComboBox)typeof(ChatPanel).GetField("model", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(restored)!).SelectedValue == "gpt-6-sol", "Reopened panel lost model");
         Field("provider").SelectedIndex = 1;
-        Assert(model.IsEnabled && reasoning.IsEnabled && ((System.Collections.IEnumerable)model.ItemsSource).Cast<object>().Count() == 4, "Claude model controls are missing");
-        model.SelectedValue = "sonnet"; reasoning.SelectedValue = "high";
-        Assert(store.Load()!.ClaudeModel == "sonnet", "Claude selection was not saved");
+        int Items(ComboBox box) => ((System.Collections.IEnumerable)box.ItemsSource).Cast<object>().Count();
+        string Label(ComboBox box, int index) => (string)box.Items[index].GetType().GetProperty("Label")!.GetValue(box.Items[index])!;
+        // Until Claude Code lists its models, the aliases are offered with every level.
+        Assert(model.IsEnabled && reasoning.IsEnabled && Items(model) == 5 && Items(reasoning) == 6, "Claude model controls are missing");
+        panel.ApplyClaudeModels(new[] {
+            new ClaudeModel("default", "Default (recommended)", "Sonnet 5.5 · Efficient for routine tasks", "claude-sonnet-5-5", ClaudeCatalog.AllEfforts, true),
+            new ClaudeModel("opus", "Opus", "Opus 5.5 · Best for everyday, complex tasks", "claude-opus-5-5", ClaudeCatalog.AllEfforts, false),
+            new ClaudeModel("haiku", "Haiku", "Haiku 5.5 · Fastest for quick answers", "claude-haiku-5-5", new[] { "low", "medium" }, false) });
+        Assert(Items(model) == 3 && Label(model, 0).Contains("Sonnet 5.5") && Label(model, 1).StartsWith("Opus 5.5"), "Claude models do not come from the CLI list");
+        model.SelectedValue = "opus"; reasoning.SelectedValue = "max";
+        model.SelectedValue = "haiku";
+        Assert((string)reasoning.SelectedValue == "" && Items(reasoning) == 3, "Claude levels do not follow the selected model");
+        reasoning.SelectedValue = "medium";
+        Assert(store.Load()!.ClaudeModel == "haiku" && store.Load()!.ClaudeReasoningEffort == "medium", "Claude selection was not saved");
         Field("provider").SelectedIndex = 0;
         Assert(model.IsEnabled && reasoning.IsEnabled, "Codex controls remained disabled");
         typeof(ChatPanel).GetField("acceptingInput", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(panel,true);

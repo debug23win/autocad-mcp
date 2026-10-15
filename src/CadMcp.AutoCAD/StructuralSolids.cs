@@ -21,7 +21,7 @@ internal static class StructuralSolids
         section.Closed=true;var regions=Region.CreateFromCurves(new DBObjectCollection{section});
         try
         {
-            var solid=new Solid3d();try{solid.CreateExtrudedSolid((Region)regions[0],new Vector3d(0,0,length),new SweepOptions());
+            var solid=new Solid3d();try{using(var options=new SweepOptions())solid.CreateExtrudedSolid((Region)regions[0],new Vector3d(0,0,length),options);
                 solid.TransformBy(Matrix3d.AlignCoordinateSystem(Point3d.Origin,Vector3d.XAxis,Vector3d.YAxis,Vector3d.ZAxis,Point3d.Origin,Vector3d.YAxis,Vector3d.ZAxis,Vector3d.XAxis));return solid;}
             catch{solid.Dispose();throw;}
         }
@@ -66,6 +66,6 @@ internal static class StructuralSolids
         using var path=new Arc(Point3d.Origin,Vector3d.ZAxis,bend.Radius,0,bend.Angle);
         path.TransformBy(Matrix3d.AlignCoordinateSystem(Point3d.Origin,Vector3d.XAxis,Vector3d.YAxis,Vector3d.ZAxis,center,x,y,normal));
         using var profile=new Circle(P(bend.Start),y,barRadius);var solid=new Solid3d();
-        try{solid.CreateSweptSolid(profile,path,new SweepOptions());return solid;}catch{solid.Dispose();throw;}
+        try{using(var options=new SweepOptions())solid.CreateSweptSolid(profile,path,options);return solid;}catch{solid.Dispose();throw;}
     }
 }
