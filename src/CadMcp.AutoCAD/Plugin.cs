@@ -37,17 +37,17 @@ public sealed class Plugin : IExtensionApplication
     }
     private static void AddRibbon(object? sender, EventArgs e)
     {
-        if (ComponentManager.Ribbon is not { } control) return;
-        App.Idle -= AddRibbon;
         // An AutoCAD event handler: nothing may escape it.
         try
         {
+            if (ComponentManager.Ribbon is not { } control) return;
+            App.Idle -= AddRibbon;
             ribbon = new RibbonTab { Id = "CADMCP_READ_PROTOTYPE", Title = "CAD MCP" };
             var source = new RibbonPanelSource { Title = "Ассистент" };
             source.Items.Add(new RibbonButton { Text = "Открыть чат", ShowText = true, CommandHandler = new OpenChat() });
             ribbon.Panels.Add(new RibbonPanel { Source = source }); control.Tabs.Add(ribbon);
         }
-        catch (System.Exception error) { ribbon = null; App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP ribbon: " + error.Message + "; use CADMCPCHAT"); }
+        catch (System.Exception error) { App.Idle -= AddRibbon; ribbon = null; System.Diagnostics.Trace.WriteLine("CAD MCP ribbon: " + error); }
     }
     [CommandMethod("CADMCPCHAT", CommandFlags.Session)]
     public static void ShowChat()

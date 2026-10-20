@@ -19,8 +19,7 @@ internal sealed class ChatBrowser : Grid
     private IReadOnlyList<ChatLine> messages = Array.Empty<ChatLine>();
     private bool dark, ready;
     private int selected = -1;
-    private long sequence;
-    private string? lastRender;
+    private readonly ChatPatchBuilder patches = new();
     private Task? initialization;
     public string AssetRoot { get; }
     private readonly string chatRoot;
@@ -82,7 +81,7 @@ internal sealed class ChatBrowser : Grid
             // "Open in new window" or a middle click would otherwise open a browser window outside the
             // navigation filter. Such links go through the same external-link check as ordinary clicks.
             browser.CoreWebView2.NewWindowRequested += (_, args) => { args.Handled = true; OpenLink?.Invoke(args.Uri); };
-            browser.CoreWebView2.NavigationCompleted += (_, args) => { ready = args.IsSuccess; lastRender = null; if (ready) Render(); };
+            browser.CoreWebView2.NavigationCompleted += (_, args) => { ready = args.IsSuccess; patches.Reset(); if (ready) Render(); };
             browser.Source = new Uri("https://cadmcp.local/chat.html");
         }
         catch (Exception error)
@@ -133,14 +132,10 @@ internal sealed class ChatBrowser : Grid
         if (!ready) return;
         try
         {
-            string html = ChatMarkup.ConversationHtml(messages, AssetRoot);
-            string signature = (dark ? "dark" : "light") + selected + html;
-            if (signature == lastRender) return;
-            var json = JsonSerializer.Serialize(new { html, dark, selected, sequence = ++sequence });
-            browser.CoreWebView2.PostWebMessageAsJson(json);
-            lastRender = signature;
+            var update = patches.Build(messages, AssetRoot, dark, selected);
+            if (update is not null) browser.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(update, CadMcp.Core.Wire.Json));
         }
-        catch (Exception error) { Debug.WriteLine("CAD MCP chat render: " + error); }
+        catch (Exception error) { patches.Reset(); Debug.WriteLine("CAD MCP chat render: " + error); }
     }
 }
 

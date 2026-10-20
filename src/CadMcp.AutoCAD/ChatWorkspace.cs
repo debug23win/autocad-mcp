@@ -11,13 +11,14 @@ namespace CadMcp.AutoCAD;
 
 public sealed class ChatWorkspace:UserControl
 {
-    private readonly TabControl tabs=new();private readonly TextBlock status=new();private readonly Dictionary<string,(TabItem Tab,ChatPanel Panel)> projects=new();
+    private readonly TabControl tabs=new();private readonly TextBlock status=new();private readonly Dictionary<string,(TabItem Tab,ChatPanel Panel,string Project)> projects=new();
     private readonly string host;
     private readonly string brokerPipe;
     private readonly string? projectStoreRoot;
     public string? CadSessionId{get;set;}
     public Func<bool>? DarkThemeProvider{get;set;}
-    private bool refreshing,darkTheme=true;
+    private bool darkTheme=true;
+    private Task? refreshTask;
     private readonly System.Windows.Threading.DispatcherTimer timer=new(){Interval=TimeSpan.FromSeconds(5)};
     public ChatWorkspace(string? hostExecutable=null,string? pipeName=null,string? historyRoot=null)
     {
@@ -27,9 +28,9 @@ public sealed class ChatWorkspace:UserControl
         refresh.Click+=async(_,_)=>await Refresh();header.Children.Add(refresh);header.Children.Add(status);DockPanel.SetDock(header,Dock.Top);root.Children.Add(header);root.Children.Add(tabs);Content=root;
         Loaded+=async(_,_)=>{timer.Start();await Refresh();};Unloaded+=(_,_)=>timer.Stop();timer.Tick+=async(_,_)=>await Refresh();
     }
-    public async Task Refresh()
+    public Task Refresh() => refreshTask is { IsCompleted: false } ? refreshTask : refreshTask = RefreshCore();
+    private async Task RefreshCore()
     {
-        if(refreshing)return;refreshing=true;
         try
         {
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));await BrokerBootstrap.EnsureAsync(host,timeout.Token,brokerPipe);
@@ -40,12 +41,15 @@ public sealed class ChatWorkspace:UserControl
             foreach(var drawing in data.EnumerateArray())
             {
                 string id=drawing.Text("document_id")!,name=drawing.Text("name")!,project=drawing.Text("project_key")!;present.Add(id);darkTheme=drawing.GetProperty("dark_theme").GetBoolean();
+                string root=projectStoreRoot is null?Wire.DataDirectory("chat","projects",project):Path.Combine(projectStoreRoot,project);
                 if(!projects.TryGetValue(id,out var entry))
                 {
-                    string root=projectStoreRoot is null?Wire.DataDirectory("chat","projects",project):Path.Combine(projectStoreRoot,project);
                     var panel=new ChatPanel(new ChatStateStore(root),Path.IsPathFullyQualified(name)?Path.GetDirectoryName(name):null,brokerPipe){CadSessionId=CadSessionId,CadDocumentId=id,DarkThemeProvider=()=>DarkThemeProvider?.Invoke()??darkTheme};
-                    var tab=new TabItem{Content=panel};entry=(tab,panel);projects.Add(id,entry);tabs.Items.Add(tab);
+                    panel.BeforeSend = Refresh;
+                    var tab=new TabItem{Content=panel};entry=(tab,panel,project);projects.Add(id,entry);tabs.Items.Add(tab);
                 }
+                else if (entry.Project != project && entry.Panel.RebindProject(new ChatStateStore(root),Path.IsPathFullyQualified(name)?Path.GetDirectoryName(name):null))
+                { entry = (entry.Tab,entry.Panel,project); projects[id] = entry; }
                 bool dark=DarkThemeProvider?.Invoke()??darkTheme;var background=dark?new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(36,40,46)):System.Windows.Media.Brushes.White;var foreground=dark?System.Windows.Media.Brushes.Gainsboro:System.Windows.Media.Brushes.Black;
                 Background=tabs.Background=background;Foreground=tabs.Foreground=foreground;entry.Tab.Background=background;entry.Tab.Foreground=foreground;
                 entry.Tab.Header=Path.GetFileName(name)+(entry.Panel.IsWorking?" · выполняется":"");entry.Tab.ToolTip=name;entry.Tab.IsEnabled=true;
@@ -56,7 +60,6 @@ public sealed class ChatWorkspace:UserControl
             status.Text="Каждая вкладка работает со своим DWG";
         }
         catch(System.Exception e){status.Text=e.Message;}
-        finally{refreshing=false;}
     }
     public void Stop(){timer.Stop();foreach(var entry in projects.Values)entry.Panel.Stop();}
     internal IReadOnlyDictionary<string,ChatPanel> ProjectPanels=>projects.ToDictionary(p=>p.Key,p=>p.Value.Panel);

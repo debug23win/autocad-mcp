@@ -29,11 +29,11 @@ public static class ChatMarkup
     }
 
     public static string ConversationHtml(IReadOnlyList<ChatLine> messages, string assetDirectory)
+        => string.Concat(messages.Select((message, index) => MessageHtml(message, index, assetDirectory)));
+
+    public static string MessageHtml(ChatLine message, int index, string assetDirectory)
     {
         var html = new StringBuilder();
-        for (int index = 0; index < messages.Count; index++)
-        {
-            var message = messages[index];
             string role = message.Role is "user" or "assistant" or "progress" ? message.Role : "history";
             html.Append("<article class='message ").Append(role).Append("' data-index='").Append(index).Append("'>");
             html.Append("<header>").Append(role switch { "user" => "Вы", "assistant" => "Ассистент", "progress" => "Ход работы", _ => "История" });
@@ -65,7 +65,6 @@ public static class ChatMarkup
                 html.Append("<section class='reasoning'><strong>Краткий ход рассуждений</strong>")
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
             html.Append("</article>");
-        }
         return html.ToString();
     }
 

@@ -54,8 +54,11 @@ internal sealed class ChatPanel : UserControl
     private DateTimeOffset turnStarted, lastSignal;
     private string currentActivity = "Готово";
     private readonly SolidColorBrush panelBrush = new(), controlBrush = new(), foregroundBrush = new(), borderBrush = new();
-    private readonly ChatStateStore store;
+    private ChatStateStore store;
     private readonly StringBuilder streamedText = new();
+    private readonly StringBuilder streamedReasoning = new();
+    internal Func<Task>? BeforeSend { get; set; }
+    private bool preparing;
     private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private string codexExecutable = "codex.exe", claudeExecutable = "claude.exe";
     private ChatState? restored;
@@ -231,6 +234,23 @@ internal sealed class ChatPanel : UserControl
         RenderChat();
     }
     internal bool IsWorking=>running is not null;
+    internal bool RebindProject(ChatStateStore destination, string? workingDirectory)
+    {
+        if (IsWorking) return false;
+        // Keep the former project's history intact and start a separate CLI conversation for the new path.
+        var current = State(); store.Save(current);
+        var state = (destination.Load() ?? current) with {
+            SessionId = null, AdapterKey = null, CodexExecutable = current.CodexExecutable,
+            ClaudeExecutable = current.ClaudeExecutable, Host = current.Host,
+            Directory = Directory.Exists(workingDirectory) ? workingDirectory! : current.Directory
+        };
+        var draft = input.Text; var files = attachments.ToArray();
+        store = destination;
+        Restore(state, imported: false);
+        input.Text = draft; attachments.AddRange(files); RefreshAttachments(); Persist();
+        activity.Text = "Путь DWG изменился; история привязана к новому проекту";
+        return true;
+    }
     private readonly string operationOwner = Guid.NewGuid().ToString("N");
     public async void Stop()
     {
@@ -446,6 +466,12 @@ internal sealed class ChatPanel : UserControl
     {
         if (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0) return;
         if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
+        if (preparing) return;
+        preparing = true;
+        try { if (BeforeSend is { } refresh) await refresh(); }
+        catch (System.Exception error) { activity.Text = "Проект не обновлён: " + error.Message; LogError(error); return; }
+        finally { preparing = false; }
+        if (running is not null) return;
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
         { activity.Text = "Укажите существующие MCP host и рабочую папку."; return; }
         // A saved Claude model or level the CLI no longer offers is reported before the message is sent.
@@ -493,7 +519,7 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "text") streamedText.Append(item.Text);
                 if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); currentActivity = "Модель: " + item.Text; }
                 if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
-                if (item.Kind == "reasoning_summary") UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
+                if (item.Kind == "reasoning_summary") streamedReasoning.Append(item.Text);
                 if (item.Kind == "step")
                 {
                     currentActivity = CadToolActivity.Describe(item.Text);
@@ -641,9 +667,11 @@ internal sealed class ChatPanel : UserControl
     }
     private void FlushText()
     {
-        if (streamedText.Length == 0) return;
+        if (streamedText.Length == 0 && streamedReasoning.Length == 0) return;
         string text = streamedText.ToString(); streamedText.Clear();
-        UpdateAssistant(line => line with { Text = line.Text + text });
+        string reasoningText = streamedReasoning.ToString(); streamedReasoning.Clear();
+        UpdateAssistant(line => line with { Text = line.Text + text,
+            ReasoningSummary = reasoningText.Length == 0 ? line.ReasoningSummary : (line.ReasoningSummary ?? "") + reasoningText });
     }
     private void UpdateAssistant(Func<ChatLine, ChatLine> update)
     {

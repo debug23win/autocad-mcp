@@ -108,6 +108,8 @@ internal static class FakeCodex
             }
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
             Console.WriteLine("{\"id\":3,\"result\":{}}");
+            if (prompt is "HELPER_ERROR" or "PRIMARY_ERROR")
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "error", @params = new { threadId = prompt == "HELPER_ERROR" ? "child-thread" : "test-thread", willRetry = false, error = new { message = "Fixture agent failure" } } }));
             if (prompt == "REQUEST")
             {
                 // A server-initiated request must be declined without ending the turn.
@@ -174,6 +176,14 @@ internal static class FakeClaude
         }
         switch (prompt)
         {
+            case "HELPER_ERROR":
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = "child-session", parent_tool_use_id = "child-tool", model = "child-only-model" }));
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = "test-claude", model = "fixture" }));
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "result", session_id = "child-session", parent_tool_use_id = "child-tool", is_error = true, result = "Fixture agent failure" }));
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "result", session_id = "test-claude", is_error = false, result = "Сеть ✓" }));
+                return 0;
+            }
             case "ATTACHMENT":
             {
                 // Each attached file may be read wherever it is: one exact rule per file, in settings JSON.

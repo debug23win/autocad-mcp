@@ -6,6 +6,15 @@ namespace CadMcp.Tests;
 public sealed class TransportTests
 {
     [Fact]
+    public void Wire_keeps_Cyrillic_readable_and_escapes_HTML_sensitive_characters()
+    {
+        var json = JsonSerializer.Serialize(new { text = "Чертёж «Лист №2» ⌀20 ±0,5 90° — <script>&'" }, Wire.Json);
+        Assert.Contains("Чертёж «Лист №2» ⌀20 ±0,5 90° —", json);
+        Assert.DoesNotContain("<script>", json);
+        Assert.DoesNotContain("&'", json);
+        Assert.Equal("Чертёж «Лист №2» ⌀20 ±0,5 90° — <script>&'", JsonDocument.Parse(json).RootElement.GetProperty("text").GetString());
+    }
+    [Fact]
     public async Task Frame_roundtrip_keeps_unicode()
     {
         using var stream = new MemoryStream(); var bytes = System.Text.Encoding.UTF8.GetBytes("СПДС — сеть ✓");
