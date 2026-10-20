@@ -7,16 +7,16 @@ public enum AutoSaveMode
 {
     /// <summary>Nothing; only AutoCAD's own SAVETIME autosave remains.</summary>
     Off,
-    /// <summary>A recovery copy in the CAD MCP data folder; the user's DWG is not touched (default).</summary>
+    /// <summary>A recovery copy in the CAD MCP data folder; the user's DWG is not touched.</summary>
     Copy,
-    /// <summary>The active titled drawing is saved to its own file, as QSAVE does; other drawings get a recovery copy.</summary>
+    /// <summary>The active titled drawing is saved to its own file by AutoCAD's QSAVE (default); other drawings get a recovery copy.</summary>
     Save
 }
 
 public sealed record AutoSaveSettings(AutoSaveMode Mode, int Minutes)
 {
     public const int DefaultMinutes = 10, MinMinutes = 1, MaxMinutes = 240;
-    public static AutoSaveSettings Default { get; } = new(AutoSaveMode.Copy, DefaultMinutes);
+    public static AutoSaveSettings Default { get; } = new(AutoSaveMode.Save, DefaultMinutes);
     public TimeSpan Interval => TimeSpan.FromMinutes(Minutes);
 
     public static string Name(AutoSaveMode mode) => mode switch { AutoSaveMode.Off => "off", AutoSaveMode.Save => "save", _ => "copy" };
@@ -58,7 +58,7 @@ public sealed record AutoSaveSettings(AutoSaveMode Mode, int Minutes)
                 ? Math.Clamp(stored, MinMinutes, MaxMinutes) : DefaultMinutes;
             return new(mode, minutes);
         }
-        // A damaged or hand-edited file falls back to the safe default, a recovery copy.
+        // A damaged or hand-edited file falls back to the default the user allowed: saving the drawing.
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or CadFault or InvalidOperationException) { return Default; }
     }
 

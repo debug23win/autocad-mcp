@@ -162,9 +162,9 @@ internal static class AutoSavePrompt
         var current = AutoSaveSettings.Stored();
         var options = new EditorInput.PromptKeywordOptions("\nАвтосохранение CAD MCP. Сейчас: " + AutoSaveSettings.Label(current.Mode) +
             (current.Mode == AutoSaveMode.Off ? "" : ", каждые " + current.Minutes + " мин") +
-            ". Копия — резервная копия в папке CAD MCP, файл DWG не трогается; Сохранять — активный чертёж сохраняется в свой файл, как QSAVE") { AppendKeywordsToMessage = true };
-        options.Keywords.Add("Copy", "Копия", "Копия");
+            ". Сохранять — активный чертёж сохраняется в свой файл командой QSAVE, остальные получают копию; Копия — только резервная копия в папке CAD MCP, файл DWG не трогается") { AppendKeywordsToMessage = true };
         options.Keywords.Add("Save", "Сохранять", "Сохранять");
+        options.Keywords.Add("Copy", "Копия", "Копия");
         options.Keywords.Add("Off", "Выключить", "Выключить");
         options.Keywords.Default = current.Mode switch { AutoSaveMode.Save => "Save", AutoSaveMode.Off => "Off", _ => "Copy" };
         var choice = editor.GetKeywords(options);

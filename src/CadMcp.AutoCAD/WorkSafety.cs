@@ -203,8 +203,9 @@ internal static class DrawingSaving
 }
 
 /// <summary>
-/// Periodic protection of unsaved work, run from Idle when nothing is queued: a rotating recovery copy (default) or,
-/// when the user chose it with CADMCPAUTOSAVE, a save of the active drawing to its own file. One drawing per Idle.
+/// Periodic protection of unsaved work, run from Idle when nothing is queued. The user chooses it with CADMCPAUTOSAVE:
+/// the active titled drawing is saved to its own file by AutoCAD's QSAVE command (default), other drawings get a
+/// rotating recovery copy; or every changed drawing gets only the copy. One drawing per Idle.
 /// </summary>
 internal sealed class AutoSaver(Documents documents)
 {
@@ -215,10 +216,17 @@ internal sealed class AutoSaver(Documents documents)
     /// <summary>The effective settings, read from disk at most every 5 seconds; Idle runs many times a second.</summary>
     internal static AutoSaveSettings Current { get; private set; } = AutoSaveSettings.Default;
 
+    /// <summary>A QSAVE sent to AutoCAD; its result arrives with the command's end event.</summary>
+    private sealed record PendingSave(Document Document, DocumentState State, DateTimeOffset Sent, DateTime FileBefore);
+    private PendingSave? pending;
+    private static readonly TimeSpan SaveTimeout = TimeSpan.FromMinutes(2);
+
     public void Tick()
     {
         var now = DateTimeOffset.UtcNow;
         if (now - settingsRead > TimeSpan.FromSeconds(5)) { settings = Current = AutoSaveSettings.Effective(); settingsRead = now; }
+        // The command line may have dropped the QSAVE (a document switch, a closed drawing): give up after a while.
+        if (pending is { } waiting) { if (now - waiting.Sent > SaveTimeout) Complete(waiting, "QSAVE did not run within " + SaveTimeout.TotalMinutes + " minutes"); return; }
         if (settings.Mode == AutoSaveMode.Off) return;
         foreach (var (doc, state) in documents.Open())
         {
@@ -236,25 +244,18 @@ internal sealed class AutoSaver(Documents documents)
         string? path = null;
         try
         {
+            if (save) { StartQuickSave(doc, state, now); return; }
             using var locked = doc.LockDocument();
-            if (save)
-            {
-                var result = Wire.Element(DrawingSaving.Execute(documents, doc, state, "save", null));
-                path = result.Text("path");
-            }
-            else
-            {
-                string folder = RecoveryCopies.Folder(WorkSafety.Root, ProjectIdentity.ForDrawing(doc.Name, state.Id));
-                Directory.CreateDirectory(folder);
-                path = Path.Combine(folder, RecoveryCopies.FileName(doc.Name, now));
-                FileInfo info;
-                using (documents.ReadScope(doc)) info = WorkSafety.WriteCopy(doc, path);
-                File.WriteAllText(path + ".json", JsonSerializer.Serialize(new { path, original = doc.Name, revision, bytes = info.Length, created_at = now,
-                    kind = "autosave_recovery_copy", restore = "Open this copy separately; do not overwrite the working drawing" }, Wire.Json));
-                RecoveryCopies.Prune(folder);
-            }
+            string folder = RecoveryCopies.Folder(WorkSafety.Root, ProjectIdentity.ForDrawing(doc.Name, state.Id));
+            Directory.CreateDirectory(folder);
+            path = Path.Combine(folder, RecoveryCopies.FileName(doc.Name, now));
+            FileInfo info;
+            using (documents.ReadScope(doc)) info = WorkSafety.WriteCopy(doc, path);
+            File.WriteAllText(path + ".json", JsonSerializer.Serialize(new { path, original = doc.Name, revision, bytes = info.Length, created_at = now,
+                kind = "autosave_recovery_copy", restore = "Open this copy separately; do not overwrite the working drawing" }, Wire.Json));
+            RecoveryCopies.Prune(folder);
             state.AutoSavedRevision = revision;
-            Statuses[state.Id] = new(state.Id, doc.Name, save ? "save" : "copy", now, path, revision, null);
+            Statuses[state.Id] = new(state.Id, doc.Name, "copy", now, path, revision, null);
         }
         catch (System.Exception error)
         {
@@ -262,6 +263,46 @@ internal sealed class AutoSaver(Documents documents)
             Statuses[state.Id] = new(state.Id, doc.Name, save ? "save" : "copy", now, path, revision, error.Message);
             System.Diagnostics.Trace.WriteLine("CAD MCP autosave: " + error);
         }
+    }
+
+    /// <summary>
+    /// The user allowed saving the DWG itself: AutoCAD's own QSAVE, sent from Idle while no command runs, keeps the .bak,
+    /// clears DBMOD and resets SAVETIME exactly like the user's save. It is the plugin's fixed command, not agent code.
+    /// </summary>
+    private void StartQuickSave(Document doc, DocumentState state, DateTimeOffset now)
+    {
+        var before = File.Exists(doc.Name) ? File.GetLastWriteTimeUtc(doc.Name) : DateTime.MinValue;
+        pending = new(doc, state, now, before);
+        doc.CommandEnded += SaveEnded; doc.CommandCancelled += SaveInterrupted; doc.CommandFailed += SaveInterrupted;
+        try { doc.SendStringToExecute("_.QSAVE\n", false, false, false); }
+        catch (System.Exception error) { Complete(pending, "QSAVE could not be sent: " + error.Message); }
+    }
+    // AutoCAD event handlers: nothing may escape them.
+    private void SaveEnded(object? sender, CommandEventArgs e)
+    {
+        try { if (pending is { } waiting && ReferenceEquals(sender, waiting.Document) && IsQuickSave(e)) Complete(waiting, null); }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP autosave: " + error); }
+    }
+    private void SaveInterrupted(object? sender, CommandEventArgs e)
+    {
+        try { if (pending is { } waiting && ReferenceEquals(sender, waiting.Document) && IsQuickSave(e)) Complete(waiting, "QSAVE was cancelled or failed"); }
+        catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP autosave: " + error); }
+    }
+    private static bool IsQuickSave(CommandEventArgs e) => e.GlobalCommandName.TrimStart('_', '.').Equals("QSAVE", StringComparison.OrdinalIgnoreCase);
+    private void Complete(PendingSave save, string? error)
+    {
+        if (!ReferenceEquals(pending, save)) return;
+        pending = null;
+        var doc = save.Document;
+        if (!doc.IsDisposed) { doc.CommandEnded -= SaveEnded; doc.CommandCancelled -= SaveInterrupted; doc.CommandFailed -= SaveInterrupted; }
+        string name = doc.IsDisposed ? "" : doc.Name;
+        // The file itself is the evidence: QSAVE ends normally even when AutoCAD could not write it.
+        if (error is null && (doc.IsDisposed || !File.Exists(name) || File.GetLastWriteTimeUtc(name) <= save.FileBefore))
+            error = "QSAVE ended but the DWG file was not rewritten";
+        // Saving changes nothing the user drew; events raised during it must not schedule another save.
+        if (error is null) save.State.AutoSavedRevision = save.State.Revision;
+        Statuses[save.State.Id] = new(save.State.Id, name, "save", save.Sent, name, save.State.Revision, error);
+        if (error is not null) System.Diagnostics.Trace.WriteLine("CAD MCP autosave: " + error);
     }
 
     internal static void Forget(string documentId) => Statuses.TryRemove(documentId, out _);

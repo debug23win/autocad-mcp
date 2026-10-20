@@ -6,7 +6,7 @@ namespace CadMcp.Tests;
 public sealed class AutoSaveTests
 {
     [Fact]
-    public void Settings_default_to_a_recovery_copy_persist_and_yield_to_the_environment()
+    public void Settings_default_to_saving_the_drawing_persist_and_yield_to_the_environment()
     {
         var folder = Path.Combine(Path.GetTempPath(), "cadmcp-autosave-" + Guid.NewGuid().ToString("N"));
         var path = Path.Combine(folder, "settings.json");
@@ -14,15 +14,16 @@ public sealed class AutoSaveTests
         try
         {
             Environment.SetEnvironmentVariable("CAD_MCP_AUTOSAVE", null);
-            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Copy, 10), AutoSaveSettings.Effective(path));
+            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Save, 10), AutoSaveSettings.Effective(path));
             // Storing autosave keeps the AutoLISP policy stored in the same file, and the other way round.
             CadSettings.StoreLispPolicy(LispPolicyMode.Deny, path);
-            AutoSaveSettings.Store(new(AutoSaveMode.Save, 5), path);
-            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Save, 5), AutoSaveSettings.Stored(path));
+            Assert.Equal(AutoSaveSettings.Default, AutoSaveSettings.Stored(path));
+            AutoSaveSettings.Store(new(AutoSaveMode.Copy, 5), path);
+            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Copy, 5), AutoSaveSettings.Stored(path));
             Assert.Equal(LispPolicyMode.Deny, CadSettings.StoredLispPolicy(path));
             CadSettings.StoreLispPolicy(LispPolicyMode.Ask, path);
-            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Save, 5), AutoSaveSettings.Stored(path));
-            // A damaged or hand-edited file falls back to the copy, which never touches the user's DWG.
+            Assert.Equal(new AutoSaveSettings(AutoSaveMode.Copy, 5), AutoSaveSettings.Stored(path));
+            // A damaged or hand-edited file falls back to the default the user allowed.
             File.WriteAllText(path, "{ broken");
             Assert.Equal(AutoSaveSettings.Default, AutoSaveSettings.Stored(path));
             File.WriteAllText(path, "{\"autosave_mode\":\"always\",\"autosave_minutes\":5}");

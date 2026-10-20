@@ -16,7 +16,7 @@ Version 0.10.0 adds measurable task criteria, verification of all geometry chang
 
 ## Features
 
-The agent saves drawings through native C# with `cad_save` when you ask: in place like QSAVE, under a new name, or as a separate copy; existing files are never overwritten. The `CADMCPAUTOSAVE` command sets periodic protection: a rotating recovery copy outside your DWG (default, every 10 minutes after changes), saving the active drawing itself, or off. [Saving and autosave](docs/saving.md).
+The agent saves drawings through native C# with `cad_save` when you ask: in place like QSAVE, under a new name, or as a separate copy; existing files are never overwritten. The `CADMCPAUTOSAVE` command sets periodic protection: saving the active drawing with AutoCAD's own QSAVE (default, every 10 minutes after changes; untitled drawings get a recovery copy), a rotating recovery copy outside your DWG, or off. [Saving and autosave](docs/saving.md).
 
 Version 0.8.0 adds native AutoCAD tables: reading, creation, editing, merged cells, rows/columns, local formulas, and references to cells in other tables through DWG fields. It also adds SPDS dimensions, grid axes and elevation marks; editable borders and title blocks on A0–A4 sheets; schedule/specification forms based on GOST R 21.101-2026; and reinforced-concrete (KZh) and steelwork (KM) schedules. All objects are created through C#. [Contracts, examples and limits of standards checking](docs/spds-tables.md).
 
