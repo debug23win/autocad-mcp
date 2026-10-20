@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Trace = System.Diagnostics.Trace;
 using System.Windows.Input;
 using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -29,22 +30,22 @@ public sealed class Plugin : IExtensionApplication
         descriptor = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, pid, Wire.Version));
         App.Idle += AddRibbon;
         }
-        catch (System.Exception error) { Terminate(); App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP initialization: " + error.Message); }
+        catch (System.Exception error) { Terminate(); Trace.WriteLine("CAD MCP initialization: " + error); }
     }
     private static void AddRibbon(object? sender, EventArgs e)
     {
-        dynamic? control = Type.GetType("Autodesk.Windows.ComponentManager, AdWindows")?.GetProperty("Ribbon")?.GetValue(null);
-        if (control is null) return;
-        App.Idle -= AddRibbon;
         try
         {
+            dynamic? control = Type.GetType("Autodesk.Windows.ComponentManager, AdWindows")?.GetProperty("Ribbon")?.GetValue(null);
+            if (control is null) return;
+            App.Idle -= AddRibbon;
             dynamic Make(string name) => Activator.CreateInstance(Type.GetType("Autodesk.Windows." + name + ", AdWindows", true)!)!;
             dynamic tab = Make("RibbonTab"); tab.Id = "CADMCP_ASSISTANT"; tab.Title = "CAD MCP";
             dynamic source = Make("RibbonPanelSource"); source.Title = "Ассистент";
             dynamic button = Make("RibbonButton"); button.Text = "Открыть чат"; button.ShowText = true; button.CommandHandler = new OpenChat(); source.Items.Add(button);
             dynamic panel = Make("RibbonPanel"); panel.Source = source; tab.Panels.Add(panel); control.Tabs.Add(tab); ribbon = tab;
         }
-        catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP ribbon: " + error.Message + "; use CADMCPCHAT"); }
+        catch (System.Exception error) { App.Idle -= AddRibbon; Trace.WriteLine("CAD MCP ribbon: " + error); }
     }
     [CommandMethod("CADMCPCHAT", CommandFlags.Session)]
     public static void ShowChat()
@@ -68,9 +69,14 @@ public sealed class Plugin : IExtensionApplication
     public static int Finish(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     public void Terminate()
     {
-        App.Idle -= AddRibbon; server?.Dispose(); dispatcher?.Dispose(); documents?.Dispose();
-        if (descriptor is not null) try { File.Delete(descriptor); } catch (IOException) { }
-        try { dynamic? control = Type.GetType("Autodesk.Windows.ComponentManager, AdWindows")?.GetProperty("Ribbon")?.GetValue(null); if (ribbon is not null) control?.Tabs.Remove((dynamic)ribbon); } catch (System.Exception) { }
+        void Step(Action action) { try { action(); } catch (System.Exception error) { Trace.WriteLine("CAD MCP shutdown: " + error); } }
+        Step(() => App.Idle -= AddRibbon);
+        Step(() => server?.Dispose()); server = null;
+        Step(() => dispatcher?.Dispose()); dispatcher = null;
+        Step(() => documents?.Dispose()); documents = null;
+        Step(() => { if (descriptor is not null) File.Delete(descriptor); }); descriptor = null;
+        Step(() => { dynamic? control = Type.GetType("Autodesk.Windows.ComponentManager, AdWindows")?.GetProperty("Ribbon")?.GetValue(null); if (ribbon is not null) control?.Tabs.Remove((dynamic)ribbon); }); ribbon = null;
+        Step(() => chatClient?.Dispose()); chatClient = null;
     }
     private sealed class OpenChat : ICommand
     {

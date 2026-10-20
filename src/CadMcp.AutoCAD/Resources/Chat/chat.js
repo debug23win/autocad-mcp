@@ -47,18 +47,32 @@ function update(data) {
   lastSequence = data.sequence ?? lastSequence;
   following = nearBottom(); anchor = captureAnchor();
   document.body.classList.toggle("dark", data.dark === true);
-  const template = document.createElement("template");
-  template.innerHTML = data.html || "<p id='empty'>Напишите запрос о чертеже или прикрепите файлы.</p>";
-  const incoming = [...template.content.children];
-  if (incoming.length < conversation.children.length) { following = true; anchor.index = undefined; }
-  incoming.forEach((card, i) => {
+  function applyCard(card, i) {
     const previous = conversation.children[i];
     const source = card.outerHTML;
     if (previous?.dataset.index === card.dataset.index && previous.tagName === card.tagName) {
       if (previous._sourceHtml !== source) { patchArticle(previous, card); previous._sourceHtml = source; renderMath(previous); }
     } else { card._sourceHtml = source; if (previous) previous.replaceWith(card); else conversation.appendChild(card); renderMath(card); }
-  });
-  while (conversation.children.length > incoming.length) conversation.lastElementChild.remove();
+  }
+  if (Array.isArray(data.patches) && Number.isInteger(data.count) && data.count >= 0) {
+    if (data.count < conversation.children.length) { following = true; anchor.index = undefined; }
+    if (conversation.firstElementChild?.id === "empty") conversation.replaceChildren();
+    data.patches.forEach(patch => {
+      if (!Number.isInteger(patch.index) || patch.index < 0 || patch.index >= data.count) return;
+      const template = document.createElement("template"); template.innerHTML = patch.html;
+      const card = template.content.firstElementChild;
+      if (card) applyCard(card, patch.index);
+    });
+    while (conversation.children.length > data.count) conversation.lastElementChild.remove();
+    if (data.count === 0) conversation.innerHTML = "<p id='empty'>Напишите запрос о чертеже или прикрепите файлы.</p>";
+  } else {
+    const template = document.createElement("template");
+    template.innerHTML = data.html || "<p id='empty'>Напишите запрос о чертеже или прикрепите файлы.</p>";
+    const incoming = [...template.content.children];
+    if (incoming.length < conversation.children.length) { following = true; anchor.index = undefined; }
+    incoming.forEach(applyCard);
+    while (conversation.children.length > incoming.length) conversation.lastElementChild.remove();
+  }
   selected = Number.isInteger(data.selected) ? data.selected : selected;
   conversation.querySelectorAll(".message.assistant").forEach(x => x.classList.toggle("selected", Number(x.dataset.index) === selected));
   restorePosition(); schedulePosition();

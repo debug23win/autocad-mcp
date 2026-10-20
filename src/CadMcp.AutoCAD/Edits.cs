@@ -308,8 +308,10 @@ internal static class Edits
                 image_registration = imageRegistration });
         }
         // A restructured schedule fails this edit only when the edit touched that schedule or its sources.
-        var schedule_warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, touched.Select(id => id.Handle.Value).ToHashSet());
-        var table_dependencies = TableLinks.Recalculate(doc.Database, tr);
+        var changedHandles = touched.Select(id => id.Handle.Value).ToHashSet();
+        bool affectsTables = touched.Any(id => tr.GetObject(id, OpenMode.ForRead, true) is Table or BlockReference);
+        var schedule_warnings = affectsTables ? StructuralAssemblies.RefreshSchedules(doc.Database, tr, strictFor: changedHandles, updatedTables: changedHandles) : [];
+        var table_dependencies = TableLinks.Recalculate(doc.Database, tr, changedHandles);
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
         {

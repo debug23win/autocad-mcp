@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using CadMcp.Core;
@@ -10,6 +11,8 @@ internal static class WorkSafety
 {
     private static readonly object Sync = new();
     private static readonly string Root = Wire.DataDirectory("recovery");
+    private static readonly ConcurrentDictionary<string, string> Projects = new();
+    internal static void RegisterDocument(string session, string document, string name) => Projects[session + ":" + document] = ProjectIdentity.ForDrawing(name, document);
     internal static bool Required(Request request, JsonElement[]? operations) => request.Operation == "cad_lisp" || operations is { Length: >= 25 }
         || operations?.Any(p => p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true || p.Text("op") is "erase" or "solid_boolean" or "solid_shell" or "assembly_update"
             or "text_replace" or "layer_merge" or "explode" or "trim" or "join" or "block_import" || p.Text("action") == "delete") == true;
@@ -27,7 +30,8 @@ internal static class WorkSafety
             copy.SaveAs(path, DwgVersion.Current);
             var info = new FileInfo(path);
             if (info.Length == 0) throw new IOException("Empty checkpoint");
-            var record = new { path, sha256 = Portable.Hash(File.ReadAllBytes(path)), bytes = info.Length, operation_id = operation,
+            using var content = File.OpenRead(path);
+            var record = new { path, sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)), bytes = info.Length, operation_id = operation,
                 original = doc.Name, created_at = DateTimeOffset.UtcNow, restore = "Open this copy separately; do not overwrite the working drawing" };
             File.WriteAllText(path + ".json", JsonSerializer.Serialize(record, Wire.Json));
             foreach (var old in Directory.EnumerateFiles(directory, "*.dwg").Select(p => new FileInfo(p)).OrderByDescending(p => p.CreationTimeUtc).Skip(10))
@@ -45,6 +49,7 @@ internal static class WorkSafety
         {
             Directory.CreateDirectory(Path.Combine(Root, session));
             var record = Wire.Element(new { session_id = session, document_id = request.DocumentId, operation_id = request.Data.Text("operation_id"),
+                project_key = Projects.GetValueOrDefault(session + ":" + request.DocumentId),
                 operation = request.Operation, owner_id = request.OwnerId, started_at = DateTimeOffset.UtcNow,
                 plugin_version = typeof(WorkSafety).Assembly.GetName().Version?.ToString(), process_id = Environment.ProcessId, checkpoint, phase = "accepted" });
             Save(session, record.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone()), durable: true);
@@ -58,12 +63,16 @@ internal static class WorkSafety
     {
         try { lock (Sync)
         {
-            string path = Path.Combine(Root, session, "last-operation.json");
-            var data = lastSession == session ? last : null;
+            // The record in memory may belong to another drawing (a LISP job waits in one DWG while another is edited);
+            // each drawing has its own file, so look the operation up there.
+            var data = lastSession == session && last?.GetValueOrDefault("operation_id").ValueKind == JsonValueKind.String
+                && last["operation_id"].GetString() == operation ? last : null;
             if (data is null)
             {
-                if (!File.Exists(path)) return;
-                data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path), Wire.Json)!;
+                var file = Directory.Exists(Path.Combine(Root, session)) ? Directory.EnumerateFiles(Path.Combine(Root, session), "last-operation*.json")
+                    .FirstOrDefault(p => { try { return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(p), Wire.Json).Text("operation_id") == operation; } catch { return false; } }) : null;
+                if (file is null) return;
+                data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(file), Wire.Json)!;
             }
             if (data.GetValueOrDefault("operation_id").ValueKind != JsonValueKind.String || data["operation_id"].GetString() != operation) return;
             data["phase"] = Wire.Element(phase); data["last_signal_at"] = Wire.Element(DateTimeOffset.UtcNow);
@@ -72,7 +81,7 @@ internal static class WorkSafety
     }
     private static void Save(string session, Dictionary<string, JsonElement> value, bool durable)
     {
-        string path = Path.Combine(Root, session, "last-operation.json");
+        string path = Path.Combine(Root, session, "last-operation-" + Portable.Hash(System.Text.Encoding.UTF8.GetBytes(value["document_id"].GetString()!)) + ".json");
         using (var stream = new FileStream(path + ".tmp", FileMode.Create)) { JsonSerializer.Serialize(stream, value, Wire.Json); stream.Flush(durable); }
         Portable.ReplaceFile(path + ".tmp", path);
         last = value; lastSession = session;
@@ -80,8 +89,7 @@ internal static class WorkSafety
     internal static object Diagnostics(string session,string? document=null)
     {
         lock (Sync)
-            return new { session_id = session, directory = Root, last_operations = Directory.Exists(Root) ? Directory.EnumerateFiles(Root, "last-operation.json", SearchOption.AllDirectories)
-                .OrderByDescending(File.GetLastWriteTimeUtc).Select(p => { try { return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(p), Wire.Json); } catch { return Wire.Element(new { unreadable = p }); } }).Where(p=>document is null || p.Text("session_id")==session && p.Text("document_id")==document).Take(10).ToArray() : [],
+            return new { session_id = session, directory = Root, last_operations = RecoveryDiagnostics.Read(Root, session, document, document is null ? null : Projects.GetValueOrDefault(session + ":" + document)),
                 interpretation = "Non-terminal phase from a previous session means interrupted/unknown, never proof of rollback. Check checkpoint and receipt before retrying." };
     }
 }

@@ -112,10 +112,28 @@ internal static class TableLinks
         }
         Save(db,tr,graph);
     }
-    internal static object Recalculate(Database db, Transaction tr)
+    internal static object Recalculate(Database db, Transaction tr, IReadOnlySet<long>? changed = null, bool strict = true)
     {
-        var graph=Load(db,tr); Rebind(graph,db,tr); var cells=graph.Cells.ToDictionary(c=>c.Id); var updated=new HashSet<ObjectId>();
-        foreach(var formula in Order(graph))
+        var graph = Load(db, tr);
+        var changedCells = changed is null ? null : graph.Cells.Where(c =>
+            long.TryParse(c.Table, System.Globalization.NumberStyles.HexNumber, null, out var handle) && changed.Contains(handle)).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        if (changedCells is { Count: 0 })
+            return new { formulas = graph.Formulas.Count, evaluated = 0, updated_tables = Array.Empty<string>(), cycle_check = "not_required_for_unrelated_edit", references = "stable_cell_identity" };
+        var affected = changedCells is null ? null : DependencyGraph.Affected(
+            graph.Formulas.Select(f => new DependencyGraph.Formula(f.Cell, f.References.Select(r => r.Cell).ToArray())), changedCells);
+        var formulas = graph.Formulas.Where(f => affected is null || affected.Contains(f.Cell)).ToList();
+        var needed = formulas.Select(f => f.Cell).Concat(formulas.SelectMany(f => f.References.Select(r => r.Cell))).ToHashSet(StringComparer.Ordinal);
+        var scope = new Graph(graph.Cells.Where(c => needed.Contains(c.Id)).ToList(), formulas);
+        var updated = new HashSet<ObjectId>();
+        bool graphChanged = false;
+        Formula[] ordered;
+        try { graphChanged = Rebind(scope, db, tr); ordered = Order(scope); }
+        catch (CadFault error) when (!strict)
+        {
+            return new { formulas = graph.Formulas.Count, evaluated = 0, updated_tables = Array.Empty<string>(), state = "unverified", warnings = new[] { error.Code + ": " + error.Message } };
+        }
+        var cells = scope.Cells.ToDictionary(c => c.Id);
+        foreach(var formula in ordered)
         {
             var identity=cells[formula.Cell]; var table=Table(identity,db,tr); table.UpgradeOpen(); var target=table.Cells[identity.Row,identity.Column];
             if(formula.Local)
@@ -134,7 +152,7 @@ internal static class TableLinks
                     target.FieldId=ObjectId.Null;
                     field=new Field("%<\\AcExpr ("+expression[1..]+") \\f \"%lu2%pr"+formula.Precision+"\">%");
                     db.AddDBObject(field);tr.AddNewlyCreatedDBObject(field,true);target.FieldId=field.ObjectId;
-                    graph.Formulas[graph.Formulas.IndexOf(formula)]=formula with{BoundExpression=expression};
+                    graph.Formulas[graph.Formulas.IndexOf(formula)]=formula with{BoundExpression=expression}; graphChanged = true;
                 }
                 field.EvaluationOption=FieldEvaluationOptions.Automatic;field.Evaluate((int)FieldEvaluationContext.Demand,db);
                 if(field.Value is null||field.GetStringValue().Contains("####",StringComparison.Ordinal))throw new CadFault("FORMULA_EVALUATION_FAILED",identity.Table+":"+DraftingPlan.Address(identity.Row,identity.Column)+" "+field.EvaluationStatus+" "+field.GetFieldCode(FieldCodeFlags.AddMarkers)+" refs="+string.Join(";",formula.References.Select(r=>{var c=cells[r.Cell];var t=Table(c,db,tr);return c.Table+":"+DraftingPlan.Address(c.Row,c.Column)+" value="+t.Cells[c.Row,c.Column].Value+" formula="+t.Cells[c.Row,c.Column].Contents[0].Formula;})));
@@ -142,11 +160,16 @@ internal static class TableLinks
             }
             updated.Add(table.ObjectId);
         }
-        if(graph.Formulas.Count>0)Save(db,tr,graph);
-        return new {formulas=graph.Formulas.Count,updated_tables=updated.Select(id=>id.Handle.ToString()).ToArray(),cycle_check="passed",references="stable_cell_identity"};
+        if (graphChanged)
+        {
+            for (int i = 0; i < graph.Cells.Count; i++) if (cells.TryGetValue(graph.Cells[i].Id, out var rebound)) graph.Cells[i] = rebound;
+            Save(db, tr, graph);
+        }
+        return new {formulas=graph.Formulas.Count,evaluated=formulas.Count,updated_tables=updated.Select(id=>id.Handle.ToString()).ToArray(),cycle_check="passed_for_affected_formulas",references="stable_cell_identity"};
     }
-    private static void Rebind(Graph graph,Database db,Transaction tr)
+    private static bool Rebind(Graph graph,Database db,Transaction tr)
     {
+        bool changed = false;
         foreach(var group in graph.Cells.GroupBy(c=>c.Table).ToArray())
         {
             var table=tr.GetObject(NativeTables.Resolve(db,group.Key),OpenMode.ForRead) as Table??throw new CadFault("BROKEN_TABLE_REFERENCE",group.Key);
@@ -154,8 +177,9 @@ internal static class TableLinks
             for(int r=0;r<table.Rows.Count;r++)for(int c=0;c<table.Columns.Count;c++)
             {string? id;try{id=table.Cells[r,c].GetCustomData("CADMCP_CELL_ID") as string;}catch{id=null;}if(id is not null&&wanted.Contains(id)){if(!found.TryAdd(id,(r,c)))throw new CadFault("DUPLICATE_CELL_ID","Copied cell identities require rebuilding affected formulas");}}
             foreach(var cell in group)
-            {if(!found.TryGetValue(cell.Id,out var location))throw new CadFault("BROKEN_TABLE_REFERENCE","Tracked cell was deleted outside CAD MCP: "+group.Key+":"+DraftingPlan.Address(cell.Row,cell.Column));graph.Cells[graph.Cells.IndexOf(cell)]=cell with{Row=location.Row,Column=location.Column};}
+            {if(!found.TryGetValue(cell.Id,out var location))throw new CadFault("BROKEN_TABLE_REFERENCE","Tracked cell was deleted outside CAD MCP: "+group.Key+":"+DraftingPlan.Address(cell.Row,cell.Column));if (cell.Row != location.Row || cell.Column != location.Column) changed = true;graph.Cells[graph.Cells.IndexOf(cell)]=cell with{Row=location.Row,Column=location.Column};}
         }
+        return changed;
     }
     private static string Bind(Formula formula, Dictionary<string,Cell> cells,Database db,Transaction tr)
     {
