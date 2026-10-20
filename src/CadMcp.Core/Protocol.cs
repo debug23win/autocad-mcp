@@ -30,8 +30,8 @@ public static class Wire
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         PropertyNameCaseInsensitive = true,
-        // Preserve readable Cyrillic in MCP text while retaining the default HTML-sensitive escaping.
-        Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic)
+        // Keep drawing text readable (Cyrillic, «», №, °, ±, ⌀, …) while retaining the default HTML-sensitive escaping.
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
     };
     public static JsonElement Element(object value) => JsonSerializer.SerializeToElement(value, Json);
 

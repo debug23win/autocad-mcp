@@ -63,7 +63,10 @@ internal static class WorkSafety
     {
         try { lock (Sync)
         {
-            var data = lastSession == session ? last : null;
+            // The record in memory may belong to another drawing (a LISP job waits in one DWG while another is edited);
+            // each drawing has its own file, so look the operation up there.
+            var data = lastSession == session && last?.GetValueOrDefault("operation_id").ValueKind == JsonValueKind.String
+                && last["operation_id"].GetString() == operation ? last : null;
             if (data is null)
             {
                 var file = Directory.Exists(Path.Combine(Root, session)) ? Directory.EnumerateFiles(Path.Combine(Root, session), "last-operation*.json")

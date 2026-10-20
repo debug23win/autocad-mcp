@@ -310,7 +310,7 @@ internal static class Edits
         // A restructured schedule fails this edit only when the edit touched that schedule or its sources.
         var changedHandles = touched.Select(id => id.Handle.Value).ToHashSet();
         bool affectsTables = touched.Any(id => tr.GetObject(id, OpenMode.ForRead, true) is Table or BlockReference);
-        var schedule_warnings = affectsTables ? StructuralAssemblies.RefreshSchedules(doc.Database, tr, changedHandles, changedHandles) : [];
+        var schedule_warnings = affectsTables ? StructuralAssemblies.RefreshSchedules(doc.Database, tr, strictFor: changedHandles, updatedTables: changedHandles) : [];
         var table_dependencies = TableLinks.Recalculate(doc.Database, tr, changedHandles);
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
