@@ -130,7 +130,7 @@ internal static class StructuralAssemblies
     /// It is still an error when <paramref name="strictFor"/> (the handles an edit touched) includes the
     /// schedule or one of its sources: that edit would otherwise leave its own schedule stale.
     /// </summary>
-    internal static List<string> RefreshSchedules(Database db,Transaction tr,IReadOnlySet<long>? strictFor=null)
+    internal static List<string> RefreshSchedules(Database db,Transaction tr,IReadOnlySet<long>? strictFor=null,ISet<long>? updatedTables=null,IReadOnlySet<long>? affectedBy=null)
     {
         var warnings=new List<string>();
         var blocks=(BlockTable)tr.GetObject(db.BlockTableId,OpenMode.ForRead);
@@ -144,6 +144,8 @@ internal static class StructuralAssemblies
                 using var data=((Xrecord)tr.GetObject(dictionary.GetAt(ScheduleKey),OpenMode.ForRead)).Data;
                 var handles=JsonSerializer.Deserialize<string[]>(string.Concat(data.AsArray().Select(v=>(string)v.Value)))!;
                 bool strict=strictFor is not null&&(strictFor.Contains(table.Handle.Value)||handles.Any(h=>long.TryParse(h,System.Globalization.NumberStyles.HexNumber,null,out var value)&&strictFor.Contains(value)));
+                if (affectedBy is not null && !affectedBy.Contains(table.Handle.Value) && !handles.Any(h => long.TryParse(h,System.Globalization.NumberStyles.HexNumber,null,out var value) && affectedBy.Contains(value))) continue;
+                if (strictFor is not null && !strict) continue;
                 string? missing=handles.FirstOrDefault(h=>!long.TryParse(h,System.Globalization.NumberStyles.HexNumber,null,out var value)||!db.TryGetObjectId(new Handle(value),out _));
                 (string Code,string Message)? problem=table.Rows.Count!=handles.Length+2||table.Columns.Count!=6
                     ?("SCHEDULE_STRUCTURE_CHANGED","Schedule "+table.Handle+" rows or columns were changed by hand; it is no longer updated. Recreate it with assembly_schedule")
@@ -161,7 +163,7 @@ internal static class StructuralAssemblies
                     for(int c=0;c<values.Length;c++)
                     {var cell=table.Cells[n+2,c];bool equal=Equals(cell.Value,values[c]) || values[c] is int or double && double.TryParse(Convert.ToString(cell.Value,System.Globalization.CultureInfo.InvariantCulture),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var oldValue) && oldValue==Convert.ToDouble(values[c]);if(!equal){if(!table.IsWriteEnabled)table.UpgradeOpen();cell.Value=values[c];}}
                 }
-                if(table.IsWriteEnabled){table.GenerateLayout();table.RecomputeTableBlock(true);}
+                if(table.IsWriteEnabled){table.GenerateLayout();table.RecomputeTableBlock(true);updatedTables?.Add(table.Handle.Value);}
             }
         }
         return warnings;

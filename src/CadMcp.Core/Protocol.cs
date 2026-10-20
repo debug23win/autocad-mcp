@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Principal;
+using System.Text.Encodings.Web;
+using System.Text.Unicode;
 
 namespace CadMcp.Core;
 
@@ -27,7 +29,9 @@ public static class Wire
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        // Preserve readable Cyrillic in MCP text while retaining the default HTML-sensitive escaping.
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic)
     };
     public static JsonElement Element(object value) => JsonSerializer.SerializeToElement(value, Json);
 

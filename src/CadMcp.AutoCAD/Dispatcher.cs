@@ -19,6 +19,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private readonly ResultArchive archive = new(Wire.DataDirectory("results", documents.SessionId));
     private readonly RevisionCache<JsonElement> catalogCache = new();
     private readonly RevisionCache<JsonElement> searchCache = new(8);
+    // Cache detached PNGs only; keeping cloned CAD databases or graphics objects alive risks native lifetime errors.
+    private readonly RevisionCache<JsonElement> renderCache = new(2, TimeSpan.FromSeconds(2));
     private sealed record RenderFrame(string DocumentId, long Revision, int Width, int Height, DateTimeOffset CapturedAt, ImageRegistration? Registration);
     private readonly ConcurrentDictionary<string, RenderFrame> renderFrames = new();
     private readonly ConcurrentQueue<string> renderOrder = new();
@@ -260,7 +262,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         capabilities = CadOperations.WorkerOperations,
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id,
                             lisp_policy = LispPolicy.Name(CadSettings.EffectiveLispPolicy()), lisp_policy_owner = "user (AutoCAD command CADMCPLISP)" },
-                        cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
+                        cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = true, render_hits = renderCache.Hits, render_misses = renderCache.Misses, render_ttl_seconds = 2,
                             table_dependency_error = state.TableError, ignored_read_side_effect_events = state.ReadSideEffectEvents },
                         limitations = new[] { "preview_render_unverified", "Civil3D_Map3D_SPDS_special_geometry_partial", "native_edits_current_space_only" } };
                 break;
@@ -335,6 +337,20 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 int width = r.Data.Number("width", 1024), height = r.Data.Number("height", 768);
                 if (width < 128 || width > 1600 || height < 128 || height > 1600)
                     throw new CadFault("INVALID_IMAGE_SIZE", "Image dimensions must be 128..1600");
+                string renderKey = doc.Database.CurrentSpaceId.Handle + ":" + r.Data.GetRawText();
+                if ((r.Data.Text("view_name") ?? "current") == "current")
+                {
+                    bool active = ReferenceEquals(doc, App.DocumentManager.MdiActiveDocument);
+                    renderKey += active ? ":active" : ":inactive";
+                    if (active)
+                    {
+                        using var currentView = doc.Editor.GetCurrentView();
+                        renderKey += JsonSerializer.Serialize(new { direction = currentView.ViewDirection.ToArray(), twist = currentView.ViewTwist }, Wire.Json);
+                    }
+                }
+                if (renderCache.TryGet(state.Id, renderKey, state.Revision, out var cachedRender)
+                    && cachedRender.Text("image_id") is { } cachedImage && renderFrames.ContainsKey(cachedImage))
+                { data = cachedRender; status = "partial"; break; }
                 using (var bitmap = PreviewRendering.Capture(doc,tr,r.Data,width,height,ct,out var previewMetadata))
                 using (var png = new MemoryStream())
                 {
@@ -352,6 +368,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         view = previewMetadata,
                         limitations = new[] { "preview_fidelity_requires_live_validation", "control_points_required_for_exact_pixel_to_world_mapping" } };
                 }
+                renderCache.Put(state.Id, renderKey, state.Revision, Wire.Element(data));
                 status = "partial";
                 break;
 #endif
@@ -755,8 +772,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             using var undo = new UndoGroup(doc);
             using var tr = doc.Database.TransactionManager.StartTransaction();
             state.Author = "table_recalculation";
-            var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr);
-            TableLinks.Recalculate(doc.Database, tr);
+            var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, updatedTables: changed, affectedBy: changed);
+            var tableResult = Wire.Element(TableLinks.Recalculate(doc.Database, tr, changed, strict: false));
+            if (tableResult.TryGetProperty("warnings", out var tableWarnings)) warnings.AddRange(tableWarnings.EnumerateArray().Select(w => w.GetString()!));
             tr.Commit();
             state.TableError = warnings.Count == 0 ? null : string.Join("; ", warnings);
         }

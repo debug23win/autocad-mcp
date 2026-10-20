@@ -63,6 +63,11 @@ public static class FeatureProbe
             Edit(JsonSerializer.Serialize(new[]{new{op="solid_shell",handle=shellHandle,faces=new[]{topology.GetProperty("faces")[0].GetProperty("index").GetInt64()},offset=-5}}));
             using(var tr=doc.Database.TransactionManager.StartOpenCloseTransaction()){double v=((Solid3d)tr.GetObject(NativeTables.Resolve(doc.Database,shellHandle),OpenMode.ForRead)).MassProperties.Volume;Check(v>0&&v<1000000,"Native shell removes a selected face and retains a valid reduced volume");}
             doc.Database.SaveAs(Path.ChangeExtension(output,".dwg"),DwgVersion.Current);using(var copy=new Database(false,true)){copy.ReadDwgFile(Path.ChangeExtension(output,".dwg"),FileOpenMode.OpenForReadAndAllShare,true,null);using var tr=copy.TransactionManager.StartOpenCloseTransaction();var graph=TableLinks.Load(copy,tr);Check(graph.Formulas.Count==2&&graph.Cells.Count>=4,"Stable table dependency graph persists through DWG save and reopen");}
+            using(var tr=doc.Database.TransactionManager.StartTransaction())
+            {tr.GetObject(NativeTables.Resolve(doc.Database,source),OpenMode.ForWrite).Erase();tr.Commit();}
+            var unrelated = Edit("""[{"op":"line","start":[22000,0,0],"end":[22100,0,0]}]""");
+            Check(unrelated.GetProperty("transaction").GetString()=="committed" && unrelated.GetProperty("table_dependencies").GetProperty("evaluated").GetInt32()==0,
+                "Manually erased formula source does not block or recalculate unrelated geometry");
             GC.Collect();GC.WaitForPendingFinalizers();doc.Editor.Regen();Check(true,"New features survive save, native GC and regeneration");
         }
         catch(System.Exception e){failure=e.ToString();}

@@ -144,9 +144,10 @@ internal sealed class Documents : IDisposable
     }
     public DocumentState Register(Document d)
     {
-        if (states.TryGetValue(d, out var state)) return state;
+        if (states.TryGetValue(d, out var state)) { WorkSafety.RegisterDocument(SessionId, state.Id, d.Name); return state; }
         // Linked tables are recalculated after changes, not when a drawing is opened: opening must not modify it.
         state = new(d.Database); states.Add(d, state);
+        WorkSafety.RegisterDocument(SessionId, state.Id, d.Name);
         d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
         state.Database.ObjectAppended += Appended; state.Database.ObjectModified += Modified; state.Database.ObjectErased += Erased;
         state.Database.ObjectUnappended += Unappended; state.Database.ObjectReappended += Reappended;
@@ -161,7 +162,7 @@ internal sealed class Documents : IDisposable
         states.Remove(d);
     }
     public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,
-        project_key=System.IO.Path.IsPathFullyQualified(p.Key.Name)?Portable.Hash(System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(p.Key.Name).ToUpperInvariant())):p.Value.Id}).ToArray();
+        project_key=ProjectIdentity.ForDrawing(p.Key.Name,p.Value.Id)}).ToArray();
     public Document Active(Request r, bool checkRevision = true, bool allowInactive = false)
     {
         if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");

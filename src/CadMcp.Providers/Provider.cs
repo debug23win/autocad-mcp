@@ -232,9 +232,9 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                     // Lines of a helper carry the tool call that started it; only the main agent speaks to the user.
                     bool main = ProviderJson.Child(e, "parent_tool_use_id").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null;
                     // session_id repeats on nearly every streamed line; report it only when it changes.
-                    if (ProviderJson.Text(e, "session_id") is { } sid && sid != SessionId) { SessionId = sid; yield return new("session", sid); }
-                    if (type is "stream_event" or "assistant" or "user") turnActive = true;
-                    if (type == "system" && subtype == "init" && !initialized)
+                    if (main && ProviderJson.Text(e, "session_id") is { } sid && sid != SessionId) { SessionId = sid; yield return new("session", sid); }
+                    if (main && type is ("stream_event" or "assistant" or "user")) turnActive = true;
+                    if (main && type == "system" && subtype == "init" && !initialized)
                     {
                         // The model Claude Code resolved for this session, e.g. claude-opus-5-5 for "opus".
                         initialized = true;
@@ -285,6 +285,12 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             }
                     if (type == "result")
                     {
+                        if (!main)
+                        {
+                            if (ProviderJson.Child(e, "is_error").ValueKind == JsonValueKind.True)
+                                yield return new("status", "Помощник завершился с ошибкой: " + FriendlyError(ResultError(e)));
+                            continue;
+                        }
                         if (ProviderJson.Child(e, "is_error").ValueKind == JsonValueKind.True)
                         {
                             string message = ResultError(e);
@@ -494,6 +500,13 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         yield return new("status", "Объединяю результаты помощников");
                     if (name == "error")
                     {
+                        if (!rootEvent)
+                        {
+                            yield return new("status", ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True
+                                ? "Помощник восстанавливает соединение"
+                                : "Помощник завершился с ошибкой: " + FriendlyError(ErrorMessage(parameters)));
+                            continue;
+                        }
                         if (ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True) yield return new("status", "Codex восстанавливает соединение");
                         else throw new IOException("Codex: " + FriendlyError(ErrorMessage(parameters)));
                     }

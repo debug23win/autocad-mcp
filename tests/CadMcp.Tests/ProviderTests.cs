@@ -125,6 +125,30 @@ public sealed class ProviderTests
     [Theory]
     [InlineData("Codex")]
     [InlineData("Claude")]
+    public async Task A_helper_error_preserves_the_primary_answer_and_session(string name)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var provider = Make(name);
+        var events = await TestEnvironment.Collect(provider.SendAsync("HELPER_ERROR", timeout.Token));
+        Assert.Equal("Сеть ✓", string.Concat(events.Where(e => e.Kind == "text").Select(e => e.Text)));
+        Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("Fixture agent failure"));
+        Assert.Contains(events, e => e.Kind == "completed");
+        Assert.Equal(name == "Codex" ? "test-thread" : "test-claude", provider.SessionId);
+        Assert.Single(events, e => e.Kind == "session");
+        Assert.DoesNotContain(events, e => e.Kind == "model" && e.Text == "child-only-model");
+    }
+
+    [Fact]
+    public async Task A_primary_error_still_fails_the_Codex_turn()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var error = await Assert.ThrowsAsync<IOException>(() => TestEnvironment.Collect(new CodexProvider(Options).SendAsync("PRIMARY_ERROR", timeout.Token)));
+        Assert.Contains("Fixture agent failure", error.Message);
+    }
+
+    [Theory]
+    [InlineData("Codex")]
+    [InlineData("Claude")]
     public async Task Stopping_a_silent_process_does_not_hang(string name)
     {
         var provider = Make(name); using var timeout = new CancellationTokenSource(400); var sw = Stopwatch.StartNew();

@@ -92,6 +92,25 @@ internal static class Program
         Console.WriteLine("UI image: " + path);
         Console.WriteLine("Dark UI image: " + darkPath);
         var browserProbe = new ChatBrowser(Path.Combine(root, "browser-data"));
+        var oldProject = new ChatStateStore(Path.Combine(root, "old-project"));
+        oldProject.Save(new(0, "codex.exe", "claude.exe", "host.exe", root, "old-project-session", "Project A history"));
+        var reboundPanel = new ChatPanel(oldProject);
+        var nextProject = new ChatStateStore(Path.Combine(root, "next-project"));
+        string nextDirectory = Path.Combine(root, "next-drawing-folder"); Directory.CreateDirectory(nextDirectory);
+        var draft = (System.Windows.Controls.TextBox)typeof(ChatPanel).GetField("input", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reboundPanel)!;
+        draft.Text = "Unsent Save As draft";
+        var runningField = typeof(ChatPanel).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        using (var active = new CancellationTokenSource())
+        {
+            runningField.SetValue(reboundPanel, active);
+            Assert(!reboundPanel.RebindProject(nextProject, root) && nextProject.Load() is null, "A running chat moved projects before its turn ended");
+            runningField.SetValue(reboundPanel, null);
+        }
+        Assert(reboundPanel.RebindProject(nextProject, nextDirectory), "Save As did not rebind the chat");
+        Assert(nextProject.Load()!.Directory == nextDirectory, "Save As retained the former project's working directory");
+        Assert(oldProject.Load()!.SessionId == "old-project-session" && nextProject.Load()!.SessionId is null, "Save As shared a CLI writer between projects");
+        Assert(nextProject.Load()!.Transcript.Contains("Project A history") && draft.Text == "Unsent Save As draft", "Save As lost history or the unsent draft");
+        Console.WriteLine("PASS project rebinding: deferred while running, independent CLI session, history and draft preserved");
         browserProbe.Update(new[]
         {
             new ChatLine("user", "Покажи формулу $A=ab$ и фото", Images: new[] { browserProbe.SaveImage(ChatAttachments.Inspect(path)) }),
