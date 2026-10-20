@@ -32,7 +32,7 @@ public static class CadOperations
         ["cad_steel_catalog", "cad_spds_help", "cad_edit_help", "cad_reference_calibrate", "cad_reference_point", "cad_reference_compare"];
 
     /// <summary>Operations that can change a drawing or write files. They carry an operation_id receipt.</summary>
-    public static bool IsMutation(string operation) => operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish";
+    public static bool IsMutation(string operation) => operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish" or "cad_save";
 
     /// <summary>
     /// Operations that run only in the active editor document, so the worker activates the target first.
@@ -42,6 +42,6 @@ public static class CadOperations
 
     /// <summary>Operations a CAD worker accepts, as advertised by cad_context.</summary>
     public static IReadOnlyList<string> WorkerOperations { get; } = ReadOnly.Where(o => o != "cad_sessions")
-        .Concat(["cad_focus", "cad_cancel", "cad_edit", "cad_lisp", "cad_export", "cad_publish"])
+        .Concat(["cad_focus", "cad_cancel", "cad_edit", "cad_lisp", "cad_export", "cad_publish", "cad_save"])
         .Order(StringComparer.Ordinal).ToArray();
 }

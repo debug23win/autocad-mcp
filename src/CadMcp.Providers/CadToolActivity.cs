@@ -13,6 +13,7 @@ public static class CadToolActivity
         if (eventText.Contains("cad_render", StringComparison.OrdinalIgnoreCase)) return "Проверяю вид чертежа";
         if (eventText.Contains("cad_edit", StringComparison.OrdinalIgnoreCase) ||
             eventText.Contains("cad_lisp", StringComparison.OrdinalIgnoreCase)) return "Изменяю чертёж";
+        if (eventText.Contains("cad_save", StringComparison.OrdinalIgnoreCase)) return "Сохраняю чертёж";
         if (eventText.Contains("cad_export", StringComparison.OrdinalIgnoreCase) ||
             eventText.Contains("cad_publish", StringComparison.OrdinalIgnoreCase)) return "Готовлю файлы";
         if (eventText.Contains("cad_operation_status", StringComparison.OrdinalIgnoreCase) || eventText.Contains("cad_operation_list", StringComparison.OrdinalIgnoreCase)) return "Проверяю завершение операции";

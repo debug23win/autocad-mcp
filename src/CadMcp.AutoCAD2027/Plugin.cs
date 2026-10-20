@@ -63,6 +63,8 @@ public sealed class Plugin : IExtensionApplication
     }
     [CommandMethod("CADMCPLISP", CommandFlags.Session)]
     public static void LispPolicyCommand() => LispPolicyPrompt.Run();
+    [CommandMethod("CADMCPAUTOSAVE", CommandFlags.Session)]
+    public static void AutoSaveCommand() => AutoSavePrompt.Run();
     [LispFunction("CADMCPBEGIN")]
     public static string? Begin(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]

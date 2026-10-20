@@ -14,16 +14,16 @@ internal static class DrawingReview
     {
         try
         {
-            if(!ReferenceEquals(doc,App.DocumentManager.MdiActiveDocument))return new {name=doc.Name,disk_save="unknown",evidence="DBMOD is only reliable for active drawing",automatic_save=false};
+            if(!ReferenceEquals(doc,App.DocumentManager.MdiActiveDocument))return new {name=doc.Name,disk_save="unknown",evidence="DBMOD is only reliable for active drawing",automatic_save=AutoSaver.Summary(doc)};
             int dbmod = Convert.ToInt32(App.GetSystemVariable("DBMOD"));
             var file = new FileInfo(doc.Name);
             bool exists = Path.IsPathRooted(doc.Name) && file.Exists;
             return new { name = doc.Name, dbmod, disk_save = exists && dbmod == 0 ? "saved" : "unsaved",
                 file_exists = exists, bytes = exists ? (long?)file.Length : null,
                 last_write_utc = exists ? (DateTimeOffset?)file.LastWriteTimeUtc : null,
-                evidence = "AutoCAD_DBMOD_and_current_file_metadata", automatic_save = false };
+                evidence = "AutoCAD_DBMOD_and_current_file_metadata", automatic_save = AutoSaver.Summary(doc) };
         }
-        catch (System.Exception error) { return new { name = doc.Name, disk_save = "unknown", error = error.Message, automatic_save = false }; }
+        catch (System.Exception error) { return new { name = doc.Name, disk_save = "unknown", error = error.Message, automatic_save = AutoSaver.Summary(doc) }; }
     }
     public static object Verify(Document doc, Transaction tr, JsonElement options, OperationJournal journal)
     {

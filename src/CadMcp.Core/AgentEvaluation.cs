@@ -25,7 +25,7 @@ public static class AgentEvaluation
     public sealed record CheckResult(string Evidence, string Path, string Op, bool Passed, string? Actual);
     public sealed record Verdict(string TaskId, bool Passed, IReadOnlyList<string> HardFailures, IReadOnlyList<CheckResult> Checks);
 
-    public static readonly IReadOnlySet<string> Mutations = new HashSet<string>(StringComparer.Ordinal) { "cad_edit", "cad_lisp", "cad_export", "cad_publish" };
+    public static readonly IReadOnlySet<string> Mutations = new HashSet<string>(StringComparer.Ordinal) { "cad_edit", "cad_lisp", "cad_export", "cad_publish", "cad_save" };
     // Operations that erase what the user drew; moving objects between layers is not deletion.
     private static readonly HashSet<string> DestructiveOperations = new(StringComparer.Ordinal) { "erase", "explode", "trim", "join" };
 

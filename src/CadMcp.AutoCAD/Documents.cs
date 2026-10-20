@@ -32,6 +32,10 @@ internal sealed class DocumentState(Database database)
     }
     public bool Recalculating { get; set; }
     public string? TableError { get; set; }
+    /// <summary>Revision written by the last save or recovery copy; a drawing unchanged since then is not autosaved.</summary>
+    public long AutoSavedRevision { get; set; }
+    /// <summary>Last autosave attempt, successful or not; the first one comes an interval after the drawing was registered.</summary>
+    public DateTimeOffset AutoSaveAttempt { get; set; } = DateTimeOffset.UtcNow;
     public bool HistoryCommand { get; set; }
     public long ReadSideEffectEvents { get; set; }
 
@@ -163,6 +167,8 @@ internal sealed class Documents : IDisposable
     }
     public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,
         project_key=ProjectIdentity.ForDrawing(p.Key.Name,p.Value.Id)}).ToArray();
+    /// <summary>Open drawings with their state, in registration order. CAD thread only.</summary>
+    public IReadOnlyList<(Document Document, DocumentState State)> Open() => states.Select(p => (p.Key, p.Value)).ToArray();
     public Document Active(Request r, bool checkRevision = true, bool allowInactive = false)
     {
         if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
