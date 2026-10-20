@@ -192,6 +192,8 @@ public static class LispPolicy
             // string built elsewhere) is never run.
             if (token.Text.Contains("CADMCPLISP", StringComparison.OrdinalIgnoreCase))
                 Add("LISP_POLICY_CHANGE", Blocked, "CADMCPLISP: only the user may change the AutoLISP policy");
+            if (token.Text.Contains("CADMCPAUTOSAVE", StringComparison.OrdinalIgnoreCase))
+                Add("LISP_POLICY_CHANGE", Blocked, "CADMCPAUTOSAVE: only the user may change autosave");
             if (token.Kind != TokenKind.Symbol) continue;
             string name = token.Text.TrimStart('\'');
             bool call = i > 0 && tokens[i - 1].Kind == TokenKind.Open;
@@ -390,14 +392,17 @@ public static class CadSettings
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or CadFault or InvalidOperationException) { return LispPolicyMode.Ask; }
     }
 
-    public static void StoreLispPolicy(LispPolicyMode mode, string? path = null)
+    public static void StoreLispPolicy(LispPolicyMode mode, string? path = null) => Store(settings => settings["lisp_policy"] = LispPolicy.Name(mode), path);
+
+    /// <summary>Changes the settings file atomically, keeping the other settings.</summary>
+    internal static void Store(Action<JsonObject> change, string? path = null)
     {
         var file = path ?? DefaultPath;
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         JsonObject settings;
         try { settings = File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? new() : new(); }
         catch (JsonException) { settings = new(); }
-        settings["lisp_policy"] = LispPolicy.Name(mode);
+        change(settings);
         var temp = file + ".tmp";
         File.WriteAllText(temp, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         Portable.ReplaceFile(temp, file);

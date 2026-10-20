@@ -13,6 +13,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private readonly ConcurrentQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source, DateTimeOffset Enqueued)> queue = new();
     private readonly object mutationGate = new();
     private readonly OperationControl control = new();
+    private readonly AutoSaver autoSaver = new(documents);
     private readonly ConcurrentDictionary<string, string> mutationOwners = new();
     private readonly SnapshotStore snapshots = new();
     private readonly OperationJournal journal = new(Wire.DataDirectory("operations", documents.SessionId));
@@ -184,7 +185,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (!queue.TryPeek(out var pending))
         {
             var doc=App.DocumentManager.MdiActiveDocument;
-            if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)RecalculateTables(doc);
+            if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)
+            {
+                RecalculateTables(doc);
+                // Its own catch: a failed autosave is reported in diagnostics and must not stop later Idle work.
+                try { autoSaver.Tick(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP autosave: " + error); }
+            }
             return;
         }
         if (pending.Token.IsCancellationRequested || pending.Request.Deadline <= DateTimeOffset.UtcNow)
@@ -236,7 +242,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         ct.ThrowIfCancellationRequested();
         if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId);
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
-        if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
+        if (MutationRecovery.IsMutation(r.Operation)) return Mutate(r, ct);
         bool readOnly = CadOperations.ReadOnly.Contains(r.Operation);
         var doc = documents.Active(r, checkRevision: !readOnly, allowInactive: readOnly); var state = documents.Register(doc);
         using var reading = readOnly ? documents.ReadScope(doc) : null;
@@ -516,11 +522,13 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (lisp is { } pending) throw new CadFault("BUSY_LISP", pending.AwaitingApproval
             ? "AutoLISP operation " + pending.Id + " waits for the user's confirmation in AutoCAD; no other change runs until the user confirms or declines it or it is withdrawn with cad_cancel"
             : "An AutoLISP operation is queued/running; read its status before another mutation");
-        documents.Active(r);
+        // A save writes whatever the drawing holds now; expected_revision is optional for it.
+        documents.Active(r, checkRevision: r.Operation != "cad_save" || r.ExpectedRevision is not null);
         JsonElement[]? operations = null;
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
+        string? saveMode = null, savePath = null;
         if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
         else if (r.Operation == "cad_export")
         {
@@ -528,6 +536,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             exportPath = EditPlan.RequiredText(r.Data, "path");
             exportLayout = r.Data.Text("layout");
             exportMedia = r.Data.Text("media_name");
+        }
+        else if (r.Operation == "cad_save")
+        {
+            saveMode = r.Data.Text("mode") ?? "save";
+            savePath = r.Data.Text("path");
+            if (saveMode is not ("save" or "save_as" or "copy")) throw new CadFault("INVALID_SAVE_MODE", "mode is save, save_as or copy");
         }
         else if (r.Operation == "cad_publish")
         {
@@ -597,7 +611,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             {
                 using var undo=new UndoGroup(doc);data=new {transaction="map_api_not_atomic",result=VerticalEditing.Map(doc.Database,operations![0]),checkpoint};
             }
-            else data = exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
+            else data = saveMode is not null ? DrawingSaving.Execute(documents, doc, state, saveMode, savePath)
+                : exportFormat is not null ? Exports.Execute(doc, exportFormat, exportPath!, exportLayout, exportMedia, ct)
                 : publishFolder is not null ? Exports.Publish(doc, publishFolder, publishLayouts!, ct)
                 : Edits.Execute(doc, operations!, ct, DrawingVerification.Parse(r.Data.Text("expectations_json")), Progress);
             // A native edit has already refreshed every generated schedule and linked table in its own transaction.
@@ -613,7 +628,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
             if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
-            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
+            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null || saveMode is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
     }
@@ -742,6 +757,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     {
         try
         {
+            if (documents.Open().FirstOrDefault(p => ReferenceEquals(p.Document, doc)).State is { } closing) AutoSaver.Forget(closing.Id);
             if (lisp is { } job && ReferenceEquals(job.Document, doc))
                 FinishLisp(job.Id, false, "The drawing was closed before the AutoLISP operation reported its result; reconcile the drawing", job.Started);
         }

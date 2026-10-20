@@ -108,10 +108,12 @@ public sealed class OperationTests
     [Fact]
     public void Every_tool_is_classified_once_and_mutations_are_never_read_only()
     {
-        foreach (var operation in new[] { "cad_edit", "cad_lisp", "cad_export", "cad_publish", "cad_focus", "cad_cancel" })
+        foreach (var operation in new[] { "cad_edit", "cad_lisp", "cad_export", "cad_publish", "cad_save", "cad_focus", "cad_cancel" })
             Assert.DoesNotContain(operation, CadOperations.ReadOnly);
         Assert.Empty(CadOperations.ReadOnly.Intersect(CadOperations.HostTools));
         Assert.Contains("cad_focus", CadOperations.WorkerOperations);
+        // Saving writes files: it carries an operation receipt and runs in the drawing it saves.
+        Assert.True(CadOperations.IsMutation("cad_save") && CadOperations.ActivatesDocument("cad_save") && CadOperations.WorkerOperations.Contains("cad_save"));
         Assert.DoesNotContain("cad_sessions", CadOperations.WorkerOperations);
         Assert.True(CadOperations.ActivatesDocument("cad_edit") && !CadOperations.ActivatesDocument("cad_vertical_get") && !CadOperations.ActivatesDocument("cad_search"));
         // A preview runs the edit in the drawing it targets, so it activates it like cad_edit; helpers cannot run it.

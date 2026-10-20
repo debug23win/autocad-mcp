@@ -101,6 +101,7 @@ public sealed class LispPolicyTests
     [InlineData("(command \"CADMCPLISP\" \"_Allow\")")]
     [InlineData("(vla-sendcommand doc \"cadmcplisp _Allow \")")]
     [InlineData("(vlax-invoke-method doc 'SendCommand \"CADMCPLISP A \")")]
+    [InlineData("(command \"_.CADMCPAUTOSAVE\" \"_Off\")")]
     public void Scripts_cannot_change_the_users_policy(string code) =>
         Assert.Equal("LISP_POLICY_CHANGE", Assert.Throws<CadFault>(() => LispPolicy.EnsureRunnable(LispPolicy.Scan(code))).Code);
 

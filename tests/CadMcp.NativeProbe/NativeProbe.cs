@@ -159,6 +159,23 @@ public static class NativeProbe
                 Assert(cancelled.GetProperty("result").GetProperty("data").GetProperty("partial_changes_possible").GetBoolean(), "Interrupted AutoLISP reports possible partial changes");
             }
             finally { await OnIdle(() => doc.CommandWillStart -= cancelLine); }
+            // cad_save: the scratch drawing is untitled, so it needs a name before an in-place save.
+            Data(await Call("cad_context", new { }));
+            var untitled = await Call("cad_save", new { operation_id = "save_untitled", mode = "save" });
+            Assert(untitled.Error?.Code == "SAVE_AS_REQUIRED", "Untitled drawing asks for save_as");
+            string copyPath = output + "-copy.dwg", savedPath = output + "-saved.dwg";
+            foreach (var leftover in new[] { copyPath, savedPath, Path.ChangeExtension(savedPath, ".bak") }) File.Delete(leftover);
+            var copied = Data(await Call("cad_save", new { operation_id = "save_copy", mode = "copy", path = copyPath }));
+            Assert(File.Exists(copyPath) && copied.GetProperty("result").Text("dwg_version")?.StartsWith("AC1") == true, "Native copy wrote a DWG");
+            Assert(!string.Equals(doc.Name, copyPath, StringComparison.OrdinalIgnoreCase) && copied.GetProperty("document_state").Text("disk_save") == "unsaved", "Copy left the working drawing untitled and unsaved");
+            Assert((await Call("cad_save", new { operation_id = "save_copy_again", mode = "copy", path = copyPath })).Error?.Code == "OUTPUT_EXISTS", "Existing file is never overwritten");
+            var savedAs = Data(await Call("cad_save", new { operation_id = "save_as", mode = "save_as", path = savedPath }));
+            Assert(string.Equals(doc.Name, savedPath, StringComparison.OrdinalIgnoreCase) && savedAs.GetProperty("document_state").Text("disk_save") == "saved", "save_as renamed the drawing and cleared DBMOD");
+            Data(await Call("cad_edit", new { operation_id = "after_save_as", operations_json = "[{\"op\":\"line\",\"start\":[700,700],\"end\":[710,700]}]" }));
+            long savedBytes = new FileInfo(savedPath).Length;
+            var saved = Data(await Call("cad_save", new { operation_id = "save_in_place", mode = "save" }));
+            Assert(saved.GetProperty("document_state").Text("disk_save") == "saved" && saved.GetProperty("result").GetProperty("saved_revision").GetInt64() == revision, "In-place save wrote the current revision and cleared DBMOD");
+            Assert(saved.GetProperty("result").GetProperty("bytes").GetInt64() > 0 && savedBytes > 0, "Saved DWG has content");
             Data(await Call("cad_context", new { }));
             Document? other = null;
             await OnIdle(() => { other = Autodesk.AutoCAD.ApplicationServices.DocumentCollectionExtension.Add(App.DocumentManager, "acadiso.dwt"); App.DocumentManager.MdiActiveDocument = other; });

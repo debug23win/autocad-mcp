@@ -372,6 +372,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         "-c", "mcp_servers.cad.tools.cad_edit.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_export.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_publish.approval_mode=\"approve\"",
+        "-c", "mcp_servers.cad.tools.cad_save.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_lisp.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"", "app-server"];
     }

@@ -146,3 +146,42 @@ internal static class LispPolicyPrompt
 
     private static int Strictness(LispPolicyMode mode) => mode switch { LispPolicyMode.Deny => 3, LispPolicyMode.Ask => 2, LispPolicyMode.AutoSafe => 1, _ => 0 };
 }
+
+/// <summary>Command CADMCPAUTOSAVE: the user's choice of periodic protection, stored in the CAD MCP settings.</summary>
+internal static class AutoSavePrompt
+{
+    public static void Run()
+    {
+        var editor = App.DocumentManager.MdiActiveDocument?.Editor;
+        if (editor is null) return;
+        if (Dispatcher.RunningLispScript is { } running)
+        {
+            editor.WriteMessage("\nCAD MCP: автосохранение нельзя менять из скрипта агента (операция " + running + ").");
+            return;
+        }
+        var current = AutoSaveSettings.Stored();
+        var options = new EditorInput.PromptKeywordOptions("\nАвтосохранение CAD MCP. Сейчас: " + AutoSaveSettings.Label(current.Mode) +
+            (current.Mode == AutoSaveMode.Off ? "" : ", каждые " + current.Minutes + " мин") +
+            ". Копия — резервная копия в папке CAD MCP, файл DWG не трогается; Сохранять — активный чертёж сохраняется в свой файл, как QSAVE") { AppendKeywordsToMessage = true };
+        options.Keywords.Add("Copy", "Копия", "Копия");
+        options.Keywords.Add("Save", "Сохранять", "Сохранять");
+        options.Keywords.Add("Off", "Выключить", "Выключить");
+        options.Keywords.Default = current.Mode switch { AutoSaveMode.Save => "Save", AutoSaveMode.Off => "Off", _ => "Copy" };
+        var choice = editor.GetKeywords(options);
+        if (choice.Status != EditorInput.PromptStatus.OK) return;
+        var mode = choice.StringResult switch { "Save" => AutoSaveMode.Save, "Off" => AutoSaveMode.Off, _ => AutoSaveMode.Copy };
+        int minutes = current.Minutes;
+        if (mode != AutoSaveMode.Off)
+        {
+            var interval = new EditorInput.PromptIntegerOptions("\nИнтервал, минут (" + AutoSaveSettings.MinMinutes + "–" + AutoSaveSettings.MaxMinutes + ")")
+            { DefaultValue = current.Minutes, UseDefaultValue = true, LowerLimit = AutoSaveSettings.MinMinutes, UpperLimit = AutoSaveSettings.MaxMinutes, AllowNone = true };
+            var answer = editor.GetInteger(interval);
+            if (answer.Status == EditorInput.PromptStatus.OK) minutes = answer.Value;
+            else if (answer.Status != EditorInput.PromptStatus.None) return;
+        }
+        try { AutoSaveSettings.Store(new(mode, minutes)); }
+        catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage("\nCAD MCP: не удалось сохранить настройку: " + error.Message); return; }
+        editor.WriteMessage("\nCAD MCP: автосохранение — " + AutoSaveSettings.Label(mode) + (mode == AutoSaveMode.Off ? "" : ", каждые " + minutes + " мин") +
+            (Environment.GetEnvironmentVariable("CAD_MCP_AUTOSAVE") is { Length: > 0 } environment ? ". Внимание: переменная CAD_MCP_AUTOSAVE=" + environment + " имеет приоритет" : ""));
+    }
+}

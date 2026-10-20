@@ -74,6 +74,9 @@ public sealed class Plugin : IExtensionApplication
     /// <summary>The user's AutoLISP policy for agents. Agents cannot change it; CAD_MCP_LISP_POLICY overrides it for unattended runs.</summary>
     [CommandMethod("CADMCPLISP", CommandFlags.Session)]
     public static void LispPolicyCommand() => LispPolicyPrompt.Run();
+    /// <summary>The user's autosave choice: a recovery copy (default), saving the DWG itself, or off. Agents cannot change it.</summary>
+    [CommandMethod("CADMCPAUTOSAVE", CommandFlags.Session)]
+    public static void AutoSaveCommand() => AutoSavePrompt.Run();
     [LispFunction("CADMCPBEGIN")]
     public static string? BeginLisp(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]

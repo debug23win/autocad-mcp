@@ -422,6 +422,7 @@ public sealed class ProviderTests
     {
         var arguments = new CodexProvider(Options).Arguments();
         Assert.True(arguments.Contains("mcp_servers.cad.enabled=true") && arguments.Contains("mcp_servers.cad.default_tools_approval_mode=\"approve\""), "CAD server permission missing");
+        Assert.Contains("mcp_servers.cad.tools.cad_save.approval_mode=\"approve\"", arguments);
         Assert.DoesNotContain(arguments, a => a.Contains("danger-full-access") || a.Contains("bypass-approvals") || a.StartsWith("apps."));
         var command = arguments.Single(a => a.StartsWith("mcp_servers.cad.command="));
         Assert.Equal(Options.McpExecutable, JsonSerializer.Deserialize<string>(command["mcp_servers.cad.command=".Length..]));
