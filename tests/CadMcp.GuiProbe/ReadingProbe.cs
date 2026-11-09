@@ -43,7 +43,11 @@ public static class ReadingProbe
                     paper.LayoutName="Reading sheet";
                     var ps=(BlockTableRecord)tr.GetObject(paper.BlockTableRecordId,OpenMode.ForWrite);
                     void Add(BlockTableRecord owner,Entity entity){owner.AppendEntity(entity);tr.AddNewlyCreatedDBObject(entity,true);}
-                    Add(model,new Line(new(1000,2000,0),new(5200,2000,0)));
+                    var annotatedLine=new Line(new(1000,2000,0),new(5200,2000,0));Add(model,annotatedLine);
+                    annotatedLine.CreateExtensionDictionary();
+                    var extension=(DBDictionary)tr.GetObject(annotatedLine.ExtensionDictionary,OpenMode.ForWrite);
+                    var record=new Xrecord();extension.SetAt("QA_DICTIONARY",record);tr.AddNewlyCreatedDBObject(record,true);
+                    using(var data=new ResultBuffer(new TypedValue((int)DxfCode.Text,"dictionary fixture")))record.Data=data;
                     Add(model,new Line(new(1000,2000,0),new(1000,2600,0)));
                     Add(model,new Line(new(5200,2000,0),new(5200,2600,0)));
                     Add(model,new Line(new(1000,2600,0),new(5200,2600,0)));
@@ -81,6 +85,13 @@ public static class ReadingProbe
             var context=await Call(fixture,"cad_context",new{});
             Check(!Wire.Element(context.Data!).GetProperty("active").GetBoolean(),"Inactive document context succeeds without an editor view");
             Check(ReferenceEquals(App.DocumentManager.MdiActiveDocument,original),"Context keeps the previously active drawing active");
+            var outline=Result(await Call(fixture,"cad_outline",new{}));
+            Check(outline.GetProperty("model_entities").GetInt32()==8&&outline.GetProperty("sheets").EnumerateArray().Any(s=>s.Text("name")=="Reading sheet"),"Outline enumerates model and paper layout dictionary entries");
+            var allTakeoff=Result(await Call(fixture,"cad_takeoff",new{scope="all",include="lengths"}));
+            Check(allTakeoff.GetProperty("spaces").GetArrayLength()==2,"Takeoff scope all enumerates both layout dictionary entries");
+            var lines=Result(await Call(fixture,"cad_search",new{options_json="{\"scope\":\"model\",\"type\":\"Line\",\"details\":true}"}));
+            var annotated=lines.GetProperty("entities").EnumerateArray().Single(e=>e.TryGetProperty("extension_dictionary",out _));
+            Check(annotated.GetProperty("extension_dictionary").GetProperty("QA_DICTIONARY")[0].Text("value")=="dictionary fixture","Entity read preserves Xrecord values through DictionaryEntry enumeration");
             var search=Result(await Call(fixture,"cad_search",new{options_json="{\"scope\":\"model\",\"type\":\"RotatedDimension\",\"details\":true}"}));
             var dims=search.GetProperty("entities").EnumerateArray().ToArray();
             Check(dims.Length==3,"Model dimension search returns the three fixture dimensions");

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -45,6 +46,8 @@ internal sealed class ChatPanel : UserControl
     private readonly System.Windows.Threading.DispatcherTimer progressTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Response? cadContext;
     private bool readingContext;
+    private bool documentClosed;
+    private bool benchmarkBusy;
     public string? CadDocumentId { get; set; }
     public string? CadSessionId { get; set; }
     public Func<bool>? DarkThemeProvider { get; set; }
@@ -189,7 +192,7 @@ internal sealed class ChatPanel : UserControl
         executable.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
         directory.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
         Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; await RefreshModels(); } };
-        Loaded += async (_, _) => { ApplyTheme(); contextTimer.Start(); await RefreshCad(); };
+        Loaded += async (_, _) => { ApplyTheme(); if (!documentClosed) { contextTimer.Start(); await RefreshCad(); } };
         Unloaded += (_, _) => contextTimer.Stop();
         contextTimer.Tick += async (_, _) => { ApplyTheme(); if (running is null) await RefreshCad(); };
         ApplyProviderChoices();
@@ -225,12 +228,40 @@ internal sealed class ChatPanel : UserControl
         var save = new Button { Content = "Сохранить историю" }; save.Click += (_, _) => SaveHistory(); row.Children.Add(save);
         var saveWord = new Button { Content = "Диалог в Word" }; saveWord.Click += (_, _) => SaveWord(false); row.Children.Add(saveWord);
         var saveAnswer = new Button { Content = "Ответ в Word" }; saveAnswer.Click += (_, _) => SaveWord(true); row.Children.Add(saveAnswer);
+        var copyAnswer = new Button { Content = "Копировать ответ" };
+        copyAnswer.Click += (_, _) =>
+        {
+            int index = selectedAnswer >= 0 ? selectedAnswer : messages.FindLastIndex(m => m.Role == "assistant");
+            activity.Text = transcript.CopyAnswer(index) ? "Ответ скопирован" : "Не удалось скопировать ответ";
+        };
+        row.Children.Add(copyAnswer);
         var load = new Button { Content = "Открыть историю" }; load.Click += (_, _) => LoadHistory(); bottom.Children.Add(load);
         root.Children.Add(transcript);
         ApplyTheme();
         RenderChat();
     }
     internal bool IsWorking=>running is not null;
+    internal void ResetDocumentSession()
+    {
+        if (restored is { } prior && prior.CadSessionId == CadSessionId && prior.CadDocumentId == CadDocumentId) return;
+        adapter = null; adapterKey = null; adapterSelection = null; cadContext = null;
+        if (restored is { } state) restored = state with { SessionId = null, AdapterKey = null, CadSessionId = CadSessionId, CadDocumentId = CadDocumentId };
+        Persist();
+    }
+    internal void SetDocumentAvailable(bool available)
+    {
+        documentClosed = !available;
+        if (!available) { contextTimer.Stop(); cadContext = null; drawing.Text = "Чертёж закрыт; история доступна для чтения и копирования"; }
+        else if (IsLoaded) contextTimer.Start();
+        input.IsEnabled = available; SetBusy(running is not null);
+    }
+    internal void SetBenchmarkBusy(bool busy)
+    { benchmarkBusy = busy; input.IsEnabled = !documentClosed && !busy; SetBusy(running is not null); }
+    internal void AddBenchmarkReport(string text)
+    {
+        messages.Add(new ChatLine("assistant", text)); selectedAnswer = messages.Count - 1; RenderChat(); Persist();
+    }
+    internal void CloseView() { contextTimer.Stop(); transcript.CloseView(); }
     private readonly string operationOwner = Guid.NewGuid().ToString("N");
     public async void Stop()
     {
@@ -406,7 +437,7 @@ internal sealed class ChatPanel : UserControl
     }
     private void SetBusy(bool busy)
     {
-        send.IsEnabled = attach.IsEnabled = !busy || acceptingInput;
+        send.IsEnabled = attach.IsEnabled = !documentClosed && !benchmarkBusy && (!busy || acceptingInput);
         send.Content = acceptingInput ? "Дополнить" : "Отправить";
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
@@ -444,6 +475,7 @@ internal sealed class ChatPanel : UserControl
     }
     private async Task Send()
     {
+        if (documentClosed || benchmarkBusy) return;
         if (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0) return;
         if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
@@ -453,6 +485,9 @@ internal sealed class ChatPanel : UserControl
             try { ClaudeCatalog.Select(claudeCatalog, chosenClaudeModel, chosenClaudeEffort); }
             catch (IOException error) { activity.Text = error.Message; return; }
         running = new(); acceptingInput = true; SetBusy(true);
+        var answerClock = Stopwatch.StartNew();
+        ProviderTokenUsage? tokenUsage = null;
+        bool answerCompleted = false;
         turnStarted = lastSignal = DateTimeOffset.Now;
         currentActivity = "Подключение";
         activity.Text = "Подключение…"; flushTimer.Start(); progressTimer.Start();
@@ -484,22 +519,26 @@ internal sealed class ChatPanel : UserControl
                 restored = null;
             }
             var prompt = initialPrompt;
+            bool quietCodex = adapter is CodexProvider;
+            if (quietCodex) currentActivity = "Codex выполняет задачу";
             if (cadContext is { } target) prompt += "\nPinned project target (verify fresh with cad_context document_id; never use another drawing from cad_sessions): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
                 lastSignal = DateTimeOffset.Now;
+                if (item.Kind == "usage") tokenUsage = item.Usage;
+                if (item.Kind == "completed") answerCompleted = true;
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
                 if (item.Kind == "text") streamedText.Append(item.Text);
-                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); currentActivity = "Модель: " + item.Text; }
+                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); if (!quietCodex) currentActivity = "Модель: " + item.Text; }
                 if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
-                if (item.Kind == "reasoning_summary") UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
+                if (item.Kind == "reasoning_summary" && !quietCodex) UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
-                    currentActivity = CadToolActivity.Describe(item.Text);
+                    if (!quietCodex) currentActivity = CadToolActivity.Describe(item.Text);
                     visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
                 }
-                if (item.Kind == "status") currentActivity = item.Text;
+                if (item.Kind == "status" && !quietCodex) currentActivity = item.Text;
                 if (item.Kind == "session") Persist();
                 UpdateProgress();
             }
@@ -520,7 +559,9 @@ internal sealed class ChatPanel : UserControl
         finally {
             acceptingInput=false;
             while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,"Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно.");
-            progressTimer.Stop(); flushTimer.Stop(); FlushText(); Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+            progressTimer.Stop(); flushTimer.Stop(); FlushText(); answerClock.Stop();
+            UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) });
+            Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
     }
     private async Task AddFollowup()
     {
@@ -588,7 +629,7 @@ internal sealed class ChatPanel : UserControl
                         if(allResult.Error is not null)throw new IOException(allResult.Error.Message);
                         if(allResult.Data is JsonElement allData)allEntities.AddRange(allData.GetProperty("entities").EnumerateArray().Select(e=>e.Clone()));
                     }
-                    liveHandles.AddRange(allEntities.Where(e=>!e.TryGetProperty("erased",out var erased)||erased.ValueKind!=JsonValueKind.True).Select(e=>e.Text("handle")!));
+                    liveHandles.AddRange(CadResultSummary.PreviewHandles(allEntities, Wire.Element(context.Data!).Text("current_space_handle")));
                     if(review is {} latest)
                     {
                         var fields=latest.EnumerateObject().ToDictionary(p=>p.Name,p=>(object?)p.Value.Clone());
@@ -666,7 +707,7 @@ internal sealed class ChatPanel : UserControl
         return new(provider.SelectedIndex, codexExecutable, claudeExecutable, host.Text, directory.Text,
             adapter?.SessionId ?? restored?.SessionId, ChatMarkup.PlainTranscript(messages),
             adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort, messages.ToArray(), maxSubagents,
-            chosenClaudeModel, chosenClaudeEffort);
+            chosenClaudeModel, chosenClaudeEffort, CadSessionId, CadDocumentId);
     }
     private void Persist()
     { try { store.Save(State()); } catch (System.Exception e) { activity.Text = "История не сохранена: " + e.Message; } }

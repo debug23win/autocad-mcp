@@ -6,6 +6,16 @@ namespace CadMcp.Providers;
 
 public static class CadResultSummary
 {
+    /// <summary>Preview accepts top-level entities in one space; definition geometry is still verified, but never framed directly.</summary>
+    public static string[] PreviewHandles(IEnumerable<JsonElement> entities, string? currentSpaceHandle)
+    {
+        var live = entities.Where(e => !e.TryGetProperty("erased", out var erased) || erased.ValueKind != JsonValueKind.True)
+            .Where(e => e.Text("space") is "model" or "paper").ToArray();
+        string? space = live.FirstOrDefault(e => e.Text("owner_handle") == currentSpaceHandle).Text("owner_handle")
+            ?? live.FirstOrDefault().Text("owner_handle");
+        return live.Where(e => e.Text("owner_handle") == space).Select(e => e.Text("handle")).OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToArray();
+    }
     public static string[] ChangedHandles(JsonElement operations) => operations.EnumerateArray()
         .Where(o=>o.Text("state")=="completed"&&o.Text("operation")=="cad_edit")
         .SelectMany(o=>o.TryGetProperty("handles",out var handles)&&handles.ValueKind==JsonValueKind.Array?handles.EnumerateArray().Select(h=>h.GetString()!):[])

@@ -2,11 +2,15 @@
 
 **English** | [Русский](README.ru.md)
 
-Version 0.11.3-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
+Version 0.11.4-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is currently in Russian.
 
-Version 0.11.3 preserves operation receipts in memory when their final disk write fails. Edits whose effects may escape rollback now run singly with a required DWG checkpoint; failure responses retain the checkpoint and flag possible partial changes. **These changes have not yet been run in AutoCAD.** [Changes and validation](CHANGELOG.md#0113-preview).
+Version 0.11.4 adds answer copying, closable drawing chat tabs, automatic reuse of tabs for reopened DWGs, and a built-in eight-case C#/AutoLISP benchmark with timing and actual geometry checks. Read-only polling no longer acquires a write lock; dictionary reads and automatic preview framing are corrected. Native validation of these changes is pending. [Benchmark](docs/in-app-benchmark.md) · [Changes](CHANGELOG.md#0114-preview).
+
+CAD MCP responses end with task duration and provider-reported token counts. [How metrics are counted](docs/chat-metrics.md).
+
+Version 0.11.3 preserves operation receipts in memory when their final disk write fails. Edits whose effects may escape rollback now run singly with a required DWG checkpoint; failure responses retain the checkpoint and flag possible partial changes. [Changes](CHANGELOG.md#0113-preview) · [User tests in AutoCAD 2027](benchmarks/results/2026-11-09-autocad2027-0.11.3.md).
 
 Version 0.11.2 fixes likely causes of AutoCAD FATAL ERROR crashes. Previews no longer leave AutoCAD's graphics cache pointing at a deleted drawing copy. Objects that never reach the drawing are released on AutoCAD's thread instead of the .NET finalizer thread. Exploding a title block no longer gives a multiline attribute's text two owners. A full regeneration after an edit runs only where it is needed, and the operation receipt records the commit before the drawing is redrawn. Claude Code mode offers the models and reasoning levels of the installed CLI, web search and attached files. The installer is built by GitHub Actions. **The crash fixes have not been run in AutoCAD yet**; the `CADMCPSHEETREGEN` probe checks them. [Changes and validation](CHANGELOG.md#0112-preview).
 

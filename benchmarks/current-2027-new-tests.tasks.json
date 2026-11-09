@@ -1,0 +1,200 @@
+{
+  "suite": "current-2027-new-tests",
+  "release": "0.11.3-preview",
+  "execution_status": "not_run",
+  "instructions": "current-2027-new-tests.md",
+  "tasks": [
+    {
+      "id": "T01",
+      "prompt": "Замкнутая полилиния 200x100; отдельные чтения замкнутости, вершин, периметра и площади.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_POLY"
+      ],
+      "allows_deletion": false,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=QA27N_POLY].count",
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=QA27N_POLY].length",
+          "op": "approx",
+          "expected": 600,
+          "tolerance": 1e-06
+        },
+        {
+          "evidence": "takeoff",
+          "path": "areas[layer=QA27N_POLY].count",
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "areas[layer=QA27N_POLY].area",
+          "op": "approx",
+          "expected": 20000,
+          "tolerance": 1e-06
+        }
+      ]
+    },
+    {
+      "id": "T02",
+      "prompt": "Два TEXT и один MTEXT: точная замена Ø108 на Ø114 только в тестовых объектах.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_TEXT"
+      ],
+      "allows_deletion": false,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "old",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 0
+        },
+        {
+          "evidence": "new",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 3
+        }
+      ]
+    },
+    {
+      "id": "T03",
+      "prompt": "Определение блока из двух линий; две вставки, вторая с поворотом 90 градусов; отдельное чтение вложенной геометрии.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_BLOCKS"
+      ],
+      "allows_deletion": false,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "takeoff",
+          "path": "blocks[name=QA27N_BLOCK_DEF].count",
+          "op": "equals",
+          "expected": 2
+        }
+      ]
+    },
+    {
+      "id": "T04",
+      "prompt": "Копия, поворот 90 градусов и масштаб 2: итоговая линия от [4000,200] до [4000,400]. Перемещение и удаление только тестового исходника.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_TRANSFORM"
+      ],
+      "allows_deletion": true,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=QA27N_TRANSFORM].count",
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "evidence": "takeoff",
+          "path": "lengths[layer=QA27N_TRANSFORM].length",
+          "op": "approx",
+          "expected": 200,
+          "tolerance": 1e-06
+        }
+      ]
+    },
+    {
+      "id": "T05",
+      "prompt": "Нативная локальная формула и зависимость другой таблицы; изменение источника и отдельное чтение числовых значений до/после.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_TABLES"
+      ],
+      "allows_deletion": false,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "source_before",
+          "path": "cells[cell=C1].value",
+          "op": "approx",
+          "expected": 10,
+          "tolerance": 1e-06
+        },
+        {
+          "evidence": "dependent_before",
+          "path": "cells[cell=A1].value",
+          "op": "approx",
+          "expected": 20,
+          "tolerance": 1e-06
+        },
+        {
+          "evidence": "source_after",
+          "path": "cells[cell=C1].value",
+          "op": "approx",
+          "expected": 15,
+          "tolerance": 1e-06
+        },
+        {
+          "evidence": "dependent_after",
+          "path": "cells[cell=A1].value",
+          "op": "approx",
+          "expected": 30,
+          "tolerance": 1e-06
+        }
+      ]
+    },
+    {
+      "id": "T06",
+      "prompt": "12 точек DBPoint: expectations_json строго entity_count=12,enforce=true, без type_counts. Поиск по DXF POINT: страницы 5+5+2; проверить множества handles без пропусков и дублей.",
+      "fixture": "Новый тестовый DWG, Model, миллиметры; подготовка и последовательность: current-2027-new-tests.md.",
+      "allowed_layers": [
+        "QA27N_PAGES"
+      ],
+      "allows_deletion": false,
+      "initial_evidence": {},
+      "checks": [
+        {
+          "evidence": "page1",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 5
+        },
+        {
+          "evidence": "page1",
+          "path": "result.pagination.next_offset",
+          "op": "equals",
+          "expected": 5
+        },
+        {
+          "evidence": "page2",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 5
+        },
+        {
+          "evidence": "page2",
+          "path": "result.pagination.next_offset",
+          "op": "equals",
+          "expected": 10
+        },
+        {
+          "evidence": "page3",
+          "path": "result.entities",
+          "op": "count",
+          "expected": 2
+        },
+        {
+          "evidence": "page3",
+          "path": "result.pagination.next_offset",
+          "op": "absent"
+        }
+      ]
+    }
+  ]
+}

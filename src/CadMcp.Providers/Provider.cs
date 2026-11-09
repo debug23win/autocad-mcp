@@ -13,7 +13,7 @@ public sealed record ProviderOptions(string Executable, string McpExecutable, st
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
-public sealed record ChatEvent(string Kind, string Text);
+public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null);
 public interface IChatProvider
 {
     string? SessionId { get; set; }
@@ -285,6 +285,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             }
                     if (type == "result")
                     {
+                        if (main) yield return new("usage", "", AnswerMetrics.Claude(e));
                         if (ProviderJson.Child(e, "is_error").ValueKind == JsonValueKind.True)
                         {
                             string message = ResultError(e);
@@ -380,6 +381,9 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         foreach (var warning in warnings) yield return new("status", warning);
         var models = new List<JsonElement>();
         string? model = null, effort = null;
+        string? activeTurnId = null;
+        var usageTracker = new CodexUsageTracker(SessionId is not null);
+        var answer = new CodexAnswerBuffer();
         int resumeRetries = 0;
         using var writes = new SemaphoreSlim(1,1);
         async Task Send(object data)
@@ -390,6 +394,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         }
         void Activate(string turnId)
         {
+            activeTurnId = turnId;
             live.Open((id,input,token)=> Send(new { id,method="turn/steer",@params=new {threadId=SessionId,expectedTurnId=turnId,input=LiveInput.CodexContent(input)} }));
         }
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
@@ -467,6 +472,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     var parameters = ProviderJson.Child(e, "params");
                     string? eventThread = ProviderJson.Text(parameters, "threadId");
                     bool rootEvent = eventThread is null || eventThread == SessionId;
+                    if (name == "thread/tokenUsage/updated" && usageTracker.Observe(parameters, SessionId, activeTurnId) is { } usage)
+                        yield return new("usage", "", usage);
                     if (e.TryGetProperty("id", out var serverRequest))
                     {
                         // Approvals are disabled and the panel has no UI for interactive requests. Decline the
@@ -477,11 +484,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     }
                     if (name == "turn/started" && rootEvent && ProviderJson.Text(ProviderJson.Child(parameters, "turn"), "id") is { } activeTurn)
                     { Activate(activeTurn);yield return new("input_ready","Дополнения доступны"); }
-                    if (name == "item/agentMessage/delta" && rootEvent) yield return new("text", ProviderJson.Text(parameters, "delta") ?? "");
+                    if (name == "item/agentMessage/delta" && rootEvent) answer.Delta(parameters);
                     // Codex exposes a summary of reasoning, never the private reasoning text.
                     if (name == "item/reasoning/summaryTextDelta" && rootEvent)
                         yield return new("reasoning_summary", ProviderJson.Text(parameters, "delta") ?? "");
                     var item = ProviderJson.Child(parameters, "item");
+                    if (rootEvent && name is "item/started" or "item/completed") answer.Item(item, name == "item/completed");
                     string? itemType = ProviderJson.Text(item, "type");
                     if (name == "item/started" && rootEvent)
                     {
@@ -502,6 +510,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         live.Close();
                         var turn = ProviderJson.Child(parameters, "turn");
                         if (ProviderJson.Text(turn, "status") != "completed") throw new IOException("Codex turn did not complete: " + turn);
+                        yield return new("text", answer.Finish(turn));
                         yield return new("completed", "completed"); yield break;
                     }
                 }

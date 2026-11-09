@@ -43,8 +43,8 @@ internal static class DrawingInsight
 
     /// <summary>Model first, then paper layouts in tab order.</summary>
     private static IEnumerable<(ObjectId Space, string Name)> Layouts(Database db, Transaction tr) =>
-        ((DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead)).Cast<DBDictionaryEntry>()
-            .Select(e => (Layout)tr.GetObject(e.Value, OpenMode.ForRead))
+        ((DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead)).Cast<System.Collections.DictionaryEntry>()
+            .Select(e => (Layout)tr.GetObject((ObjectId)e.Value!, OpenMode.ForRead))
             .OrderBy(l => l.ModelType ? -1 : l.TabOrder).ThenBy(l => l.LayoutName, StringComparer.Ordinal)
             .Select(l => (l.BlockTableRecordId, l.ModelType ? "Model" : l.LayoutName)).ToArray();
 

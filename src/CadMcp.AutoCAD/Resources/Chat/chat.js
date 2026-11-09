@@ -64,8 +64,24 @@ function update(data) {
   restorePosition(); schedulePosition();
 }
 new ResizeObserver(schedulePosition).observe(conversation);
-window.chrome.webview.addEventListener("message", e => update(e.data));
+window.chrome.webview.addEventListener("message", e => {
+  if (e.data.type === "copy-result") {
+    const button = conversation.querySelector(`.copy-answer[data-index="${e.data.index}"]`);
+    if (button) {
+      button.textContent = e.data.success ? "Скопировано" : "Не удалось скопировать";
+      setTimeout(() => { if (button.isConnected) button.textContent = "Копировать"; }, 1800);
+    }
+    return;
+  }
+  update(e.data);
+});
 conversation.addEventListener("click", e => {
+  const copy = e.target.closest(".copy-answer");
+  if (copy) {
+    e.preventDefault();
+    window.chrome.webview.postMessage({type:"copy",index:Number(copy.dataset.index)});
+    return;
+  }
   const link = e.target.closest("a");
   if (link) {
     e.preventDefault();
