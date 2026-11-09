@@ -81,7 +81,11 @@ public static class MdiProbe
             await Task.Delay(700);Check(!documents.Register(a).TablesDirty,"Undo does not schedule an automatic write that destroys Redo");
             await App.DocumentManager.ExecuteInCommandContextAsync(async _=>{await a.Editor.CommandAsync("_.REDO");Check(Value(dependent)==70,"Linked tables survive idle and native Redo");},null);
             App.DocumentManager.MdiActiveDocument=original;
-            var sheet=await Submit(b,"chat-B","sheet","""[{"op":"layout_create","name":"Probe A3"},{"op":"layout_configure","name":"Probe A3","device":"DWG To PDF.pc3","media_name":"ISO_full_bleed_A3_(420.00_x_297.00_MM)","paper_units":"millimeters","paper_rotation":0},{"op":"viewport","layout":"Probe A3","center":[210,148.5,0],"width":370,"height":240,"model_center":[300,0,0],"model_height":300,"locked":true}]""");
+            var createdSheet=await Submit(b,"chat-B","sheet-create","""[{"op":"layout_create","name":"Probe A3"}]""");
+            Check(createdSheet.Error is null,"Sheet creates separately with a checkpoint");
+            var configuredSheet=await Submit(b,"chat-B","sheet-configure","""[{"op":"layout_configure","name":"Probe A3","device":"DWG To PDF.pc3","media_name":"ISO_full_bleed_A3_(420.00_x_297.00_MM)","paper_units":"millimeters","paper_rotation":0}]""");
+            Check(configuredSheet.Error is null,"Sheet configures separately with a checkpoint");
+            var sheet=await Submit(b,"chat-B","sheet-viewport","""[{"op":"viewport","layout":"Probe A3","center":[210,148.5,0],"width":370,"height":240,"model_center":[300,0,0],"model_height":300,"locked":true}]""");
             Check(sheet.Error is null,"A3 print settings and locked paper-space viewport create in project B");
             var rendered=await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),"cad_render",documents.SessionId,sb.Id,Data:Wire.Element(new{width=640,height=480,view_name="top"})),CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
             Check(rendered.Error is null&&Wire.Element(rendered.Data!).Text("image_base64")?.Length>100,"Actual raster preview renders in full AutoCAD");

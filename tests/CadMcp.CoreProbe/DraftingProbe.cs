@@ -27,6 +27,7 @@ public static class DraftingProbe
                 var table=(Table)tr.GetObject(NativeTables.Resolve(doc.Database,handle),OpenMode.ForRead);
                 var (r,c)=DraftingPlan.Address(address);return Convert.ToDouble(table.Cells[r,c].Value,System.Globalization.CultureInfo.InvariantCulture);
             }
+            Edit("""[{"op":"layout_create","name":"SPDS_TEST"}]""");
             var result=Edit("""
               [{"op":"table_create","id":"source","position":[0,100],"rows":3,"columns":3,"cells":[{"cell":"A1","value":4},{"cell":"B1","value":2.5},{"cell":"C1","formula":"=A1*B1"}]},
                {"op":"table_create","id":"dependent","position":[120,100],"rows":3,"columns":2,"cells":[{"cell":"A1","formula":"={{mass}}*2","references":[{"name":"mass","table_target":"source","cell":"C1"}],"precision":3}]},
@@ -34,7 +35,6 @@ public static class DraftingProbe
                {"op":"dimension_rotated","id":"dimension","first":[0,0],"second":[120,0],"position":[0,-15],"style":"CADMCP_SPDS_TEST"},
                {"op":"spds_axis","id":"axis","first":[0,-30],"second":[0,120],"label":"А"},
                {"op":"spds_level","id":"level","position":[120,0],"elevation":1.25},
-               {"op":"layout_create","name":"SPDS_TEST"},
                {"op":"spds_sheet","id":"sheet","layout":"SPDS_TEST","format":"A3","designation":"TEST-КМ","project":"Проверка штатных объектов","building":"Контрольный пример","drawing_title":"Спецификация","organization":"CAD MCP","sheet":"1","sheets":"1"},
                {"op":"spds_table","id":"spec","layout":"SPDS_TEST","position":[100,230],"template":"specification","data":[["1","ГОСТ 8239","Двутавр",4,12.5,""]]}]
               """);

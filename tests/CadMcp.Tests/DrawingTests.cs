@@ -177,13 +177,29 @@ public sealed class EditPlanTests
         var plan = EditPlan.Parse("""
             [{"op":"point","position":[1,2]},
              {"op":"ellipse","center":[0,0],"major_axis":[10,0],"radius_ratio":0.5},
-             {"op":"block_define","name":"STAIRS","base_point":[0,0],"handles":["A","B"]},
-             {"op":"layout_create","name":"План А3"}]
+             {"op":"block_define","name":"STAIRS","base_point":[0,0],"handles":["A","B"]}]
             """);
-        Assert.Equal(4, plan.Length);
+        Assert.Equal(3, plan.Length);
+        Assert.Single(EditPlan.Parse("""[{"op":"layout_create","name":"План А3"}]"""));
         foreach (var invalid in new[] { "[{\"op\":\"ellipse\",\"center\":[0,0],\"major_axis\":[10,0],\"radius_ratio\":2}]",
             "[{\"op\":\"block_define\",\"name\":\"X\",\"base_point\":[0,0],\"handles\":[\"NOT_HEX\"]}]" })
             Assert.Throws<CadFault>(() => EditPlan.Parse(invalid));
+    }
+
+    [Theory]
+    [InlineData("""{"op":"layout_create","name":"A"}""")]
+    [InlineData("""{"op":"layout_copy","source":"A","name":"B"}""")]
+    [InlineData("""{"op":"layout_configure","name":"A"}""")]
+    [InlineData("""{"op":"viewport","layout":"A","center":[0,0],"width":100,"height":100,"model_center":[0,0],"model_height":100}""")]
+    [InlineData("""{"op":"civil_tin_create","name":"TIN","vertices":[[0,0,0],[1,0,0],[0,1,0]]}""")]
+    [InlineData("""{"op":"civil_tin_add_points","handle":"A","vertices":[[0,0,0],[1,0,0],[0,1,0]]}""")]
+    [InlineData("""{"op":"image_attach","path":"image.png","control_points":[{"pixel":[0,0],"world":[0,0,0]},{"pixel":[1,0],"world":[1,0,0]},{"pixel":[0,1],"world":[0,1,0]}]}""")]
+    public void Non_atomic_edits_are_allowed_singly_but_reject_batches_in_either_order(string operation)
+    {
+        Assert.Single(EditPlan.Parse("[" + operation + "]"));
+        const string line = """{"op":"line","start":[0,0],"end":[1,1]}""";
+        foreach (var batch in new[] { "[" + operation + "," + line + "]", "[" + line + "," + operation + "]" })
+            Assert.Equal("SINGLE_OPERATION_REQUIRED", Assert.Throws<CadFault>(() => EditPlan.Parse(batch)).Code);
     }
 
     [Fact]

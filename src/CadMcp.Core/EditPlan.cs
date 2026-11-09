@@ -5,6 +5,12 @@ namespace CadMcp.Core;
 /// <summary>Shared, CAD-independent validation performed before opening a write transaction.</summary>
 public static class EditPlan
 {
+    /// <summary>Effects that cannot be guaranteed to roll back with the edit transaction.
+    /// Run singly, require a DWG checkpoint, and never execute in a rolled-back preview.</summary>
+    public static bool IsNonAtomic(string kind) => kind is "layout_create" or "layout_copy" or "layout_configure" or "viewport" or "image_attach"
+        || kind.StartsWith("civil_", StringComparison.Ordinal) || kind.StartsWith("map_", StringComparison.Ordinal)
+        || ModifyPlan.OutsideTransaction.Contains(kind);
+
     public static readonly IReadOnlyDictionary<string, string> Fields = new Dictionary<string, string>
     {
         ["layer"] = "name color_index locked off",
@@ -129,7 +135,7 @@ public static class EditPlan
         }
         // These change the drawing outside the edit transaction, so a failure of another operation of the same
         // request could not undo them.
-        if (result.Count > 1 && result.FirstOrDefault(op => ModifyPlan.OutsideTransaction.Contains(op.Text("op")!)) is { ValueKind: JsonValueKind.Object } outside)
+        if (result.Count > 1 && result.FirstOrDefault(op => IsNonAtomic(op.Text("op")!)) is { ValueKind: JsonValueKind.Object } outside)
             throw new CadFault("SINGLE_OPERATION_REQUIRED", outside.Text("op") + " changes the drawing outside the edit transaction; send it as the only operation of its request");
         return result.ToArray();
     }

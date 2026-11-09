@@ -73,7 +73,7 @@ public static class DimensionProbe
             for (int i = 0; i < 8; i++)
             {
                 string layout = "DIMENSION_SHEET_" + i;
-                sheets.Add(new { op = "layout_create", name = layout });
+                Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new[] { new { op = "layout_create", name = layout } })), CancellationToken.None);
                 sheets.Add(new { op = "spds_sheet", layout, format = "A3", designation = "DIM-" + i, drawing_title = "Dimension and title-block lifetime test" });
             }
             Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(sheets)), CancellationToken.None);

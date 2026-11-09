@@ -21,8 +21,7 @@ internal static class Edits
     private static void Equal(Point3d a, Point3d b)
     { if (a.DistanceTo(b) < 1e-10) throw new CadFault("DEGENERATE_GEOMETRY", "Points must differ"); }
     /// <summary>Operations that change layouts, files or vendor objects outside the drawing transaction cannot be previewed.</summary>
-    public static bool Previewable(string kind) => kind is not ("layout_create" or "layout_copy" or "layout_configure" or "viewport" or "image_attach") &&
-        !kind.StartsWith("civil_", StringComparison.Ordinal) && !kind.StartsWith("map_", StringComparison.Ordinal) && !ModifyPlan.OutsideTransaction.Contains(kind);
+    public static bool Previewable(string kind) => !EditPlan.IsNonAtomic(kind);
 
     /// <summary>True while a preview runs: work AutoCAD does outside the transaction, which the rollback cannot undo, is skipped.</summary>
     internal static bool Previewing { get; private set; }
@@ -57,6 +56,7 @@ internal static class Edits
     /// </summary>
     public static object Execute(Document doc, JsonElement[] operations, CancellationToken ct, JsonElement expectations = default, Action<string>? progress = null, bool preview = false)
     {
+        bool nonAtomic = operations.Any(o => EditPlan.IsNonAtomic(o.Text("op") ?? ""));
         if (preview && operations.Select(o => o.Text("op") ?? "").FirstOrDefault(k => !Previewable(k)) is { } unsupported)
             throw new CadFault("PREVIEW_UNSUPPORTED", unsupported + " changes layouts, files or vendor objects outside the drawing transaction and cannot be previewed");
         using var undoGroup = preview ? null : new UndoGroup(doc);
@@ -322,7 +322,7 @@ internal static class Edits
         bool enforce = expectations.ValueKind != JsonValueKind.Object || !expectations.TryGetProperty("enforce", out var enforcement) || enforcement.ValueKind != JsonValueKind.False;
         // A preview reports failed checks instead of stopping, so the plan can be corrected before it runs.
         if (enforce && !preview && acceptance.State is "failed" or "unverified")
-            throw new CadFault("ACCEPTANCE_FAILED", "No changes committed: " + JsonSerializer.Serialize(acceptance, Wire.Json));
+            throw new CadFault("ACCEPTANCE_FAILED", (nonAtomic ? "Effects outside the transaction may remain; inspect the drawing and checkpoint: " : "No changes committed: ") + JsonSerializer.Serialize(acceptance, Wire.Json));
         // The review covers up to 250 entities; a larger batch is reported as not reviewed rather than failing the edit.
         var live = touched.Where(id => !id.IsErased).ToArray();
         DrawingQuality.Report quality;
@@ -343,7 +343,8 @@ internal static class Edits
             changed_handles = truncated && listHandles ? allHandles : null, changed_handles_omitted = truncated && !listHandles ? true : (bool?)null, acceptance, table_dependencies,
             schedule_warnings = schedule_warnings.Count == 0 ? null : schedule_warnings,
             undo = preview ? "nothing_to_undo" : undoGroup!.Grouped ? "single_undo_group" : "transaction_only_undo_group_unavailable", verification = "database_readback",
-            limitations = preview ? new[] { "special_objects_require_vendor_API", "preview_handles_are_provisional_and_do_not_exist_after_rollback", "DBMOD_may_report_the_drawing_as_modified" } : new[] { "special_objects_require_vendor_API" } };
+            limitations = preview ? new[] { "special_objects_require_vendor_API", "preview_handles_are_provisional_and_do_not_exist_after_rollback", "DBMOD_may_report_the_drawing_as_modified" }
+                : nonAtomic ? new[] { "special_objects_require_vendor_API", "effects_outside_transaction_not_atomic_restore_checkpoint_separately" } : new[] { "special_objects_require_vendor_API" } };
         var data = Data(readback, false);
         if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024)
         {
@@ -351,7 +352,9 @@ internal static class Edits
             int keep = 0, size = 0, budget = 256 * 1024 - (listHandles ? handleBytes : 0);
             while (keep < readback.Length && (size += readback[keep].GetRawText().Length) < budget) keep++;
             data = Data(readback[..keep], true);
-            if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", "Use a smaller edit batch; no changes were committed");
+            if (JsonSerializer.SerializeToUtf8Bytes(data, Wire.Json).Length > 512 * 1024) throw new CadFault("RESULT_TOO_LARGE", nonAtomic
+                ? "Response too large; effects outside the transaction may remain. Inspect the drawing and checkpoint"
+                : "Use a smaller edit batch; no changes were committed");
         }
         ct.ThrowIfCancellationRequested();
         if (preview) return data;

@@ -34,7 +34,7 @@ public static class StabilityProbe
             for(int i=0;i<8;i++)
             {
                 string layout="STABILITY_"+i;
-                operations.Add(new{op="layout_create",name=layout});
+                Edits.Execute(doc,EditPlan.Parse(JsonSerializer.Serialize(new[]{new{op="layout_create",name=layout}})),CancellationToken.None);
                 operations.Add(new{op="spds_sheet",layout,format="A1",designation="TEST-КЖ-"+i,project="Проверка многолистового комплекта",building="Тест",drawing_title="Планы и разрезы",organization="CAD MCP",sheet=(i+1).ToString(),sheets="8"});
             }
             Edits.Execute(doc,EditPlan.Parse(JsonSerializer.Serialize(operations)),CancellationToken.None);

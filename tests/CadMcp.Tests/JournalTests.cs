@@ -108,6 +108,41 @@ public sealed class JournalTests
         Assert.Equal("committed", journal.Find("sheet")!.Phase);
     }
 
+    [Theory]
+    [InlineData(null, "completed")]
+    [InlineData("CAD_ERROR", "failed")]
+    [InlineData("CANCELLED", "cancelled")]
+    public void Unpersisted_terminal_receipts_survive_cache_pressure(string? errorCode, string expectedState)
+    {
+        using var directory = new TempFolder();
+        var journal = new OperationJournal(directory.Path);
+        var request = Edit() with { OwnerId = "origin" };
+        journal.Begin("one", request); journal.Running("one"); journal.Phase("one", "committed");
+        // Force only the final write to fail, leaving the durable running receipt intact.
+        Directory.CreateDirectory(directory.File("one.json.tmp"));
+        var response = journal.Complete("one", new("r", errorCode is null ? "completed" : "failed",
+            new { transaction = "committed" }, "s", "d", 2,
+            errorCode is null ? null : new(errorCode, "after commit")));
+        Directory.Delete(directory.File("one.json.tmp"));
+        for (int i = 0; i < 300; i++)
+        {
+            string id = "later" + i;
+            journal.Begin(id, request with { OwnerId = "other" });
+            journal.Complete(id, new("r", "completed", new { }, "s", "d", 2));
+        }
+        var replay = journal.Begin("one", request with { RequestId = "retry" })!;
+        Assert.Equal(expectedState, replay.State);
+        Assert.Equal("committed", replay.Phase);
+        Assert.Equal(response, replay.Result);
+        Assert.NotNull(Wire.Element(replay.Result!.Data!).Text("journal_warning"));
+        Assert.Equal(expectedState, Assert.Single(journal.Recent("d", DateTimeOffset.MinValue, owner: "origin")).Entry.State);
+        // A new process cannot recover an unwritten result; it must see uncertainty, never a fresh operation.
+        var reloaded = new OperationJournal(directory.Path).Begin("one", request)!;
+        Assert.Equal("running", reloaded.State);
+        Assert.Equal("committed", reloaded.Phase);
+        Assert.Null(reloaded.Result);
+    }
+
     [Fact]
     public void Listing_skips_an_unreadable_receipt_and_reports_it()
     {

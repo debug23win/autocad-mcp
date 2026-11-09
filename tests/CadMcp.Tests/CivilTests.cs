@@ -99,7 +99,7 @@ public sealed class CivilTests
     [Fact]
     public void Civil_operations_accept_names_instead_of_handles()
     {
-        var plan = EditPlan.Parse("""
+        using var operations = System.Text.Json.JsonDocument.Parse("""
             [{"op":"civil_alignment_create","name":"Ось 1","layer":"C-ROAD","style":"Basic","label_set":"Major","points":[[0,0],[100,0],[100,100]],"radii":[20]},
              {"op":"civil_profile_create","name":"П1","alignment_handle":"2A","layer":"C-PROF","style":"Design","label_set":"Complete","points":[[0,10],[100,12]]},
              {"op":"civil_profile_from_surface","name":"Земля","alignment_handle":"2A","surface_handle":"3B","layer_handle":"1F","style":"Existing","label_set_handle":"20"},
@@ -108,7 +108,10 @@ public sealed class CivilTests
              {"op":"civil_network_add_structure","handle":"4C","family_handle":"5D","size":"Ø1000","position":[0,0,12]},
              {"op":"map_coordinate_system","code":"EPSG:2154","force":false}]
             """);
-        Assert.Equal(7, plan.Length);
+        Assert.Equal(7, operations.RootElement.GetArrayLength());
+        foreach (var operation in operations.RootElement.EnumerateArray())
+            Assert.Single(EditPlan.Parse("[" + operation.GetRawText() + "]"));
+        Assert.Equal("SINGLE_OPERATION_REQUIRED", Assert.Throws<CadFault>(() => EditPlan.Parse(operations.RootElement.GetRawText())).Code);
         // An empty site makes a siteless alignment.
         EditPlan.Parse("""[{"op":"civil_alignment_create","name":"A","layer":"L","style":"S","label_set":"M","site":"","points":[[0,0],[100,0]]}]""");
         var many = string.Join(",", Enumerable.Range(0, 501).Select(i => "[" + i + "," + (i % 2) + "]"));

@@ -78,9 +78,19 @@ public static class NativeProbe
             var native = Data(await Call("cad_edit", new { operation_id = "native_extended", operations_json = JsonSerializer.Serialize(new object[] {
                 new { op = "point", position = new[] { 310, 10, 0 } },
                 new { op = "ellipse", center = new[] { 330, 10, 0 }, major_axis = new[] { 12, 0, 0 }, radius_ratio = 0.5 },
-                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } },
-                new { op = "layout_create", name = "CADMCP_A3" } }) }));
+                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } } }) }));
             Assert(native.GetProperty("result").GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Ellipse"), "Native C# ellipse read back");
+            var layoutReceipt = Data(await Call("cad_edit", new { operation_id = "native_layout", operations_json = """[{"op":"layout_create","name":"CADMCP_A3"}]""" }));
+            var checkpoint = layoutReceipt.GetProperty("checkpoint");
+            string checkpointPath = checkpoint.Text("path")!;
+            Assert(File.Exists(checkpointPath) && Portable.Hash(File.ReadAllBytes(checkpointPath)) == checkpoint.Text("sha256"), "Non-atomic edit has a readable checkpoint with matching SHA-256");
+            using (var backup = new Database(false, true))
+            {
+                backup.ReadDwgFile(checkpointPath, FileShare.Read, true, null); backup.CloseInput(true);
+                using var backupRead = backup.TransactionManager.StartOpenCloseTransaction();
+                var layouts = (DBDictionary)backupRead.GetObject(backup.LayoutDictionaryId, OpenMode.ForRead);
+                Assert(!layouts.Contains("CADMCP_A3"), "Checkpoint opens separately and precedes the layout edit");
+            }
             var nativeCatalog = Data(await Call("cad_catalog", new { }));
             Assert(nativeCatalog.GetProperty("layouts").EnumerateArray().Any(x => x.Text("name") == "CADMCP_A3") &&
                 nativeCatalog.GetProperty("blocks").EnumerateArray().Any(x => x.Text("name") == "CADMCP_NATIVE_BLOCK"), "Native C# block definition and layout created");

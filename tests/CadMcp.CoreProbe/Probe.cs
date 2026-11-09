@@ -147,8 +147,8 @@ public static class Probe
             var extended = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
                 new { op = "point", position = new[] { 300, 0, 0 } },
                 new { op = "ellipse", center = new[] { 320, 0, 0 }, major_axis = new[] { 20, 0, 0 }, radius_ratio = 0.5 },
-                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } },
-                new { op = "layout_create", name = "CADMCP_A3" } })), default));
+                new { op = "block_define", name = "CADMCP_NATIVE_BLOCK", base_point = new[] { 0, 0, 0 }, handles = new[] { line, circle } } })), default));
+            Edits.Execute(doc, EditPlan.Parse("""[{"op":"layout_create","name":"CADMCP_A3"}]"""), default);
             Assert(extended.GetProperty("entities").EnumerateArray().Any(e => e.Text("type") == "Ellipse"), "Native ellipse and point created with structured readback");
             var spatial = Wire.Element(Edits.Execute(doc, EditPlan.Parse("""
                 [{"op":"polyline3d","points":[[400,100,0],[420,100,20],[440,100,0]]},
@@ -240,12 +240,14 @@ public static class Probe
                 a3 = validator.GetCanonicalMediaNameList(paper).Cast<string>()
                     .First(x => x.Contains("A3", StringComparison.OrdinalIgnoreCase));
             }
-            var sheet = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new object[] {
-                new { op = "layout_configure", name = "CADMCP_A3", media_name = a3, paper_rotation = 90, paper_units = "millimeters" },
+            Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new[] {
+                new { op = "layout_configure", name = "CADMCP_A3", media_name = a3, paper_rotation = 90, paper_units = "millimeters" } })), default);
+            var sheet = Wire.Element(Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new[] {
                 new { op = "viewport", layout = "CADMCP_A3", center = new[] { 150, 100, 0 }, width = 200, height = 150,
-                    model_center = new[] { 50, 50, 0 }, model_height = 75, locked = true },
-                new { op = "block", name = "CADMCP_NATIVE_BLOCK", layout = "CADMCP_A3", position = new[] { 10, 10, 0 } }
+                    model_center = new[] { 50, 50, 0 }, model_height = 75, locked = true }
             })), default));
+            Edits.Execute(doc, EditPlan.Parse(JsonSerializer.Serialize(new[] {
+                new { op = "block", name = "CADMCP_NATIVE_BLOCK", layout = "CADMCP_A3", position = new[] { 10, 10, 0 } } })), default);
             var viewportResult = sheet.GetProperty("entities").EnumerateArray().FirstOrDefault(e => e.Text("type") == "Viewport");
             Assert(viewportResult.ValueKind == JsonValueKind.Object && Math.Abs(viewportResult.GetProperty("custom_scale").GetDouble() - 2) < 1e-8 &&
                 viewportResult.GetProperty("locked").GetBoolean(),
@@ -363,13 +365,13 @@ public static class Probe
             try
             {
                 Edits.Execute(doc, EditPlan.Parse("[{\"op\":\"layout_create\",\"name\":\"CADMCP_ROLLBACK_LAYOUT\"},{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1],\"layer\":\"MISSING_LAYER\"}]"), default);
-                throw new System.Exception("Expected layout rollback fault");
+                throw new System.Exception("Expected rejection of a mixed non-atomic batch");
             }
-            catch (CadFault error) when (error.Code == "LAYER_NOT_FOUND") { }
+            catch (CadFault error) when (error.Code == "SINGLE_OPERATION_REQUIRED") { }
             using (var rollbackTransaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
             {
                 var layoutDictionary = (DBDictionary)rollbackTransaction.GetObject(doc.Database.LayoutDictionaryId, OpenMode.ForRead);
-                Assert(!layoutDictionary.Contains("CADMCP_ROLLBACK_LAYOUT"), "Failed batch rolls back native layout creation");
+                Assert(!layoutDictionary.Contains("CADMCP_ROLLBACK_LAYOUT"), "Mixed non-atomic batch is rejected before native layout creation");
             }
             try { documents.Active(new("stale", "cad_edit", documents.SessionId, state.Id, state.Revision - 1)); throw new System.Exception("Expected revision conflict"); }
             catch (CadFault error) when (error.Code == "REVISION_CONFLICT") { checks.Add("Stale document revision rejected by actual worker registry"); }

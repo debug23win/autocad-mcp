@@ -13,6 +13,9 @@ public sealed class OperationJournal
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly string? directory;
     private readonly HashSet<string> recorded = new(StringComparer.Ordinal);
+    // A failed final write leaves an older running receipt on disk. Its only terminal
+    // result must stay in memory regardless of cache pressure.
+    private readonly HashSet<string> unpersisted = new(StringComparer.Ordinal);
     // Listing metadata, so cad_operation_list does not re-read every receipt on each call.
     private readonly record struct Listing(string DocumentId, string? OwnerId, DateTimeOffset? CreatedAt);
     private readonly Dictionary<string, Listing> listings = new(StringComparer.Ordinal);
@@ -48,9 +51,9 @@ public sealed class OperationJournal
             ?? throw new JsonException("Empty operation receipt");
     private void Cache(string id, Entry entry)
     {
-        if (directory is not null && entries.Count >= 128)
+        if (directory is not null && entries.Count >= 128 && !entries.ContainsKey(id))
         {
-            var terminal = entries.FirstOrDefault(p => p.Value.State is "completed" or "failed" or "cancelled");
+            var terminal = entries.FirstOrDefault(p => !unpersisted.Contains(p.Key) && (p.Value.State is "completed" or "failed" or "cancelled"));
             if (terminal.Key is not null) entries.Remove(terminal.Key);
         }
         entries[id] = entry;
@@ -65,6 +68,7 @@ public sealed class OperationJournal
             using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
             { JsonSerializer.Serialize(stream, entry, Wire.Json); stream.Flush(true); }
             Portable.ReplaceFile(temp, path);
+            unpersisted.Remove(id);
         }
         Cache(id, entry); recorded.Add(id);
     }
@@ -103,6 +107,7 @@ public sealed class OperationJournal
             var fields = Wire.Element(result.Data ?? new { }).EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
             fields["journal_warning"] = "Receipt could not be persisted; inspect drawing after restarting before retrying: " + error.Message;
             result = result with { Data = fields };
+            unpersisted.Add(id);
             Cache(id, entry with { Result = result });
         }
         return result;

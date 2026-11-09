@@ -148,6 +148,7 @@ jobs:
             }
             limits = @(
               'AutoCAD Core Console and GUI checks were not run for this release'
+              'DWG safety changes require native rollback, checkpoint recovery and Undo/Redo validation; see docs/validation.md'
               'The AutoCAD crash fixes require the CADMCPSHEETREGEN probe in AutoCAD 2025 or 2026'
               'Full GUI checks in Map 3D and Civil 3D are pending'
             )

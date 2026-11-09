@@ -533,9 +533,10 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         bool mapOperation=operations?.Any(p=>p.Text("op")?.StartsWith("map_",StringComparison.Ordinal)==true)==true;
         if(mapOperation && operations!.Length!=1)throw new CadFault("MAP_SINGLE_OPERATION","Map API operations must run singly with a checkpoint");
-        bool outsideTransaction=operations?.Any(p=>ModifyPlan.OutsideTransaction.Contains(p.Text("op")!))==true;
+        bool outsideTransaction=operations?.Any(p=>EditPlan.IsNonAtomic(p.Text("op")!))==true;
         journal.Begin(id, r);
         bool committed = false;
+        object? checkpoint = null;
         // The commit is written to the receipt and the recovery record, flushed, before the drawing is redrawn:
         // if AutoCAD fails after it, both show that the change was committed in memory.
         void Progress(string phase)
@@ -552,7 +553,6 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             using var locked = doc.LockDocument();
             ct.ThrowIfCancellationRequested();
             control.Phase(id, "checkpoint");
-            object? checkpoint=null;
             if(WorkSafety.Required(r,operations)){using var reading=documents.ReadScope(doc);checkpoint=WorkSafety.Checkpoint(doc,documents.SessionId,state.Id,id);}
             WorkSafety.Start(documents.SessionId, r, checkpoint);
             if (code is not null)
@@ -596,7 +596,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (lisp?.Id == id) { Unsubscribe(doc); lisp = null; }
             if (state.Author == id) state.Author = null;
             var fault = error is CadFault f ? f.Code : error is OperationCanceledException ? "CANCELLED" : "CAD_ERROR";
-            var response = new Response(r.RequestId, "failed", new { operation_id = id, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
+            var response = new Response(r.RequestId, "failed", new { operation_id = id, checkpoint, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
     }

@@ -11,7 +11,8 @@ Editing
 - When the user refers to selected objects, state the selection count from cad_context before editing them.
 - Preview bulk or destructive plans (text_replace, text_translate, layer_merge, explode, trim, large batches) with cad_edit_preview, then run cad_edit with the same plan and its preview_hash.
 - To translate or rewrite drawing text, read units with cad_text_units, translate each unit's text whole (a paragraph unit is one sentence across lines), and write them with text_translate, giving the text you read as source; report units that overflow their frame.
-- Put measurable requirements into expectations_json; a failed enforced check rolls the whole edit back.
+- Put measurable requirements into expectations_json; a failed enforced check rolls back transactional edits.
+- layout_create, layout_copy, layout_configure, viewport, image_attach, xref_attach, block_import and all civil_*/map_* edits run singly with a required DWG checkpoint and cannot be previewed. Effects outside the transaction may survive failure, including a failed acceptance check. Inspect partial_changes_possible and checkpoint in the receipt; open the checkpoint separately for recovery and never overwrite the working drawing automatically. A DWG checkpoint does not back up external files or services.
 - Verify each write by a different mechanism than the edit response: cad_verify, cad_entity_get, cad_takeoff or a render.
 - Give every mutation a unique operation_id. After a timeout read cad_operation_status; never retry an unknown mutation with a new id.
 - cad_lisp is a last resort for operations missing from cad_edit_help. Use global command and option names with an underscore prefix ("_.-LAYER", "_C"), which also work in localized AutoCAD. It may wait for the user's confirmation in AutoCAD: tell the user and poll cad_operation_status. LISP_DENIED and LISP_DISABLED are the user's decision; do not work around them.
