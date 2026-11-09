@@ -114,6 +114,18 @@ internal static class FakeCodex
                 Console.WriteLine(JsonSerializer.Serialize(new { method = "turn/completed", @params = new { threadId = "test-thread", turn = new { status = "completed" } } }));
                 return;
             }
+            if (prompt == "FINAL_ONLY")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "final-turn" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/started", @params = new { threadId = "test-thread", item = new { type = "agentMessage", id = "comment", phase = "commentary", text = "" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/agentMessage/delta", @params = new { threadId = "test-thread", itemId = "comment", delta = "План работ" } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/completed", @params = new { threadId = "child", item = new { type = "agentMessage", id = "helper", phase = "final_answer", text = "Помощник" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/started", @params = new { threadId = "test-thread", item = new { type = "agentMessage", id = "final", phase = "final_answer", text = "" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/agentMessage/delta", @params = new { threadId = "test-thread", itemId = "final", delta = "Итог" } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/completed", @params = new { threadId = "test-thread", item = new { type = "agentMessage", id = "final", phase = "final_answer", text = "Итог ✓" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "turn/completed", @params = new { threadId = "test-thread", turn = new { status = "completed" } } }));
+                return;
+            }
             Console.WriteLine("{\"id\":3,\"result\":{}}");
             if (prompt == "REQUEST")
             {

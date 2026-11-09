@@ -519,6 +519,8 @@ internal sealed class ChatPanel : UserControl
                 restored = null;
             }
             var prompt = initialPrompt;
+            bool quietCodex = adapter is CodexProvider;
+            if (quietCodex) currentActivity = "Codex выполняет задачу";
             if (cadContext is { } target) prompt += "\nPinned project target (verify fresh with cad_context document_id; never use another drawing from cad_sessions): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
@@ -528,15 +530,15 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
                 if (item.Kind == "text") streamedText.Append(item.Text);
-                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); currentActivity = "Модель: " + item.Text; }
+                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); if (!quietCodex) currentActivity = "Модель: " + item.Text; }
                 if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
-                if (item.Kind == "reasoning_summary") UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
+                if (item.Kind == "reasoning_summary" && !quietCodex) UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
-                    currentActivity = CadToolActivity.Describe(item.Text);
+                    if (!quietCodex) currentActivity = CadToolActivity.Describe(item.Text);
                     visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
                 }
-                if (item.Kind == "status") currentActivity = item.Text;
+                if (item.Kind == "status" && !quietCodex) currentActivity = item.Text;
                 if (item.Kind == "session") Persist();
                 UpdateProgress();
             }

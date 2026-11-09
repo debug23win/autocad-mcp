@@ -383,6 +383,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         string? model = null, effort = null;
         string? activeTurnId = null;
         var usageTracker = new CodexUsageTracker(SessionId is not null);
+        var answer = new CodexAnswerBuffer();
         int resumeRetries = 0;
         using var writes = new SemaphoreSlim(1,1);
         async Task Send(object data)
@@ -483,11 +484,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     }
                     if (name == "turn/started" && rootEvent && ProviderJson.Text(ProviderJson.Child(parameters, "turn"), "id") is { } activeTurn)
                     { Activate(activeTurn);yield return new("input_ready","Дополнения доступны"); }
-                    if (name == "item/agentMessage/delta" && rootEvent) yield return new("text", ProviderJson.Text(parameters, "delta") ?? "");
+                    if (name == "item/agentMessage/delta" && rootEvent) answer.Delta(parameters);
                     // Codex exposes a summary of reasoning, never the private reasoning text.
                     if (name == "item/reasoning/summaryTextDelta" && rootEvent)
                         yield return new("reasoning_summary", ProviderJson.Text(parameters, "delta") ?? "");
                     var item = ProviderJson.Child(parameters, "item");
+                    if (rootEvent && name is "item/started" or "item/completed") answer.Item(item, name == "item/completed");
                     string? itemType = ProviderJson.Text(item, "type");
                     if (name == "item/started" && rootEvent)
                     {
@@ -508,6 +510,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         live.Close();
                         var turn = ProviderJson.Child(parameters, "turn");
                         if (ProviderJson.Text(turn, "status") != "completed") throw new IOException("Codex turn did not complete: " + turn);
+                        yield return new("text", answer.Finish(turn));
                         yield return new("completed", "completed"); yield break;
                     }
                 }
