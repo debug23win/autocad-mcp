@@ -64,6 +64,9 @@ public static class ChatMarkup
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
                 html.Append("<section class='reasoning'><strong>Краткий ход рассуждений</strong>")
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
+            if (message.Role == "assistant")
+                html.Append("<div class='message-actions'><button type='button' class='copy-answer' data-index='").Append(index)
+                    .Append("' title='Копировать ответ' aria-label='Копировать ответ'>Копировать</button></div>");
             html.Append("</article>");
         }
         return html.ToString();
@@ -83,4 +86,7 @@ public static class ChatMarkup
         }
         return value.ToString();
     }
+
+    public static string? AnswerText(IReadOnlyList<ChatLine> messages, int index) =>
+        index >= 0 && index < messages.Count && messages[index].Role == "assistant" && messages[index].Text is { Length: > 0 } text ? text : null;
 }

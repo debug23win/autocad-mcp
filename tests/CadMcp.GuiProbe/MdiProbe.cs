@@ -33,10 +33,33 @@ public static class MdiProbe
             using var dispatcher=new CadMcp.AutoCAD.Dispatcher(documents);dispatcher.Start();
             var a=owned[0];var b=owned[1];var sa=documents.Register(a);var sb=documents.Register(b);
             Check(sa.Id!=sb.Id,"MDI documents have independent stable live identities");
+            string benchmarkRun=Guid.NewGuid().ToString("N");
+            var benchmarkFixture=await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),"benchmark_create",documents.SessionId,
+                Data:Wire.Element(new{run_id=benchmarkRun}),OwnerId:"benchmark-"+benchmarkRun),CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            Check(benchmarkFixture.Error is null&&benchmarkFixture.DocumentId!=sa.Id&&benchmarkFixture.DocumentId!=sb.Id,"Benchmark creates its own new drawing identity");
+            var benchmarkDoc=App.DocumentManager.Cast<Document>().Single(d=>documents.Register(d).Id==benchmarkFixture.DocumentId);owned.Add(benchmarkDoc);
+            try
+            {
+                await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),"cad_edit",documents.SessionId,sa.Id,sa.Revision,
+                    Wire.Element(new{operation_id="scope-guard",operations_json="[{\"op\":\"point\",\"position\":[0,0]}]"}),OwnerId:"benchmark-"+benchmarkRun),CancellationToken.None);
+                Check(false,"Benchmark scope guard accepted another drawing");
+            }
+            catch(CadFault error) when(error.Code=="BENCHMARK_SCOPE_MISMATCH"){Check(true,"Benchmark scope guard rejects writes outside its own fixture before enqueueing");}
             string pipe="cadmcp-gui-probe-"+Guid.NewGuid().ToString("N");using var worker=new PipeServer(pipe,(request,ct)=>request.Operation=="broker_ping"?Task.FromResult(new Response(request.RequestId,"completed",Wire.Element(new{ready=true}))):dispatcher.Enqueue(request,ct));worker.Start();
             var workspace=new ChatWorkspace(pipeName:pipe,historyRoot:Path.Combine(root,"chat")){CadSessionId=documents.SessionId};
             await workspace.Refresh();
             Check(workspace.ProjectPanels.TryGetValue(sa.Id,out var panelA)&&workspace.ProjectPanels.TryGetValue(sb.Id,out var panelB)&&!ReferenceEquals(panelA,panelB),"Real WPF workspace creates distinct panels for the two MDI DWGs");
+            int tabCount=workspace.TabCount;
+            workspace.CloseProject(sa.Id);await workspace.Refresh();
+            Check(!workspace.ProjectPanels.ContainsKey(sa.Id)&&!a.IsDisposed&&workspace.TabCount==tabCount-1,"Closing a chat tab keeps its DWG open and does not reappear on automatic refresh");
+            await workspace.Refresh(revealHidden:true);
+            Check(workspace.ProjectPanels.ContainsKey(sa.Id)&&workspace.TabCount==tabCount,"Explicit drawing refresh restores a manually hidden chat tab");
+            // Reopen a separate saved fixture: its new document id must replace the old tab, not duplicate its history.
+            string reopenedPath=benchmarkDoc.Name;string oldBenchmarkId=benchmarkFixture.DocumentId!;
+            benchmarkDoc.CloseAndDiscard();owned.Remove(benchmarkDoc);await workspace.Refresh();
+            var reopenedBenchmark=DocumentCollectionExtension.Open(App.DocumentManager,reopenedPath,false);owned.Add(reopenedBenchmark);
+            await workspace.Refresh();string reopenedBenchmarkId=documents.Register(reopenedBenchmark).Id;
+            Check(!workspace.ProjectPanels.ContainsKey(oldBenchmarkId)&&workspace.ProjectPanels.ContainsKey(reopenedBenchmarkId)&&workspace.TabCount==tabCount,"Reopened DWG replaces the old binding without adding a duplicate chat slot");
             for(int n=0;n<20;n++){workspace.SelectProject(n%2==0?sa.Id:sb.Id);App.DocumentManager.MdiActiveDocument=n%2==0?a:b;await workspace.Refresh();}
             Check(workspace.ProjectPanels[sa.Id].CadDocumentId==sa.Id&&workspace.ProjectPanels[sb.Id].CadDocumentId==sb.Id,"Twenty real DWG/chat tab switches preserve the document bindings");workspace.Stop();App.DocumentManager.MdiActiveDocument=original;
             async Task<Response> Submit(Document doc,string owner,string id,string json)
@@ -54,10 +77,30 @@ public static class MdiProbe
                 Check(ReferenceEquals(App.DocumentManager.MdiActiveDocument,original),"Background CAD actions restore the user's active DWG in cycle "+n);
             }
             int Count(Document doc){using var tr=doc.Database.TransactionManager.StartOpenCloseTransaction();return ((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Count();}
+            async Task PollReads(Document doc)
+            {
+                var state=documents.Register(doc);
+                // Exercise the same idle/pipe path as the open chat. A Redo in the
+                // same command callback as Undo never allows those polls to run.
+                for(int poll=0;poll<3;poll++)
+                {
+                    await workspace.Refresh();
+                    foreach(string operation in new[]{"cad_context","cad_catalog","cad_snapshot"})
+                    {
+                        var response=await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),operation,documents.SessionId,state.Id,
+                            Data:Wire.Element(new{})),CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                        Check(response.Error is null,"Read-only polling succeeds between Undo and Redo: "+operation);
+                    }
+                    await Task.Delay(100);
+                }
+            }
             Check(Count(a)==30&&Count(b)==30,"Parallel edits remain in their assigned drawings");
             App.DocumentManager.MdiActiveDocument=a;
             await App.DocumentManager.ExecuteInCommandContextAsync(async _=>{
                 await a.Editor.CommandAsync("_.UNDO","1");Check(Count(a)==29&&Count(b)==30,"Native Undo affects only one batch in project A");
+            },null);
+            await PollReads(a);
+            await App.DocumentManager.ExecuteInCommandContextAsync(async _=>{
                 await a.Editor.CommandAsync("_.REDO");Check(Count(a)==30,"Native Redo remains available after Undo");
             },null);
             App.DocumentManager.MdiActiveDocument=original;
@@ -78,7 +121,7 @@ public static class MdiProbe
             Check(update.Error is null&&Value(dependent)==70,"Editing the source updates linked table to 70 atomically");
             App.DocumentManager.MdiActiveDocument=a;
             await App.DocumentManager.ExecuteInCommandContextAsync(async _=>{await a.Editor.CommandAsync("_.UNDO","1");Check(Value(dependent)==40,"Native Undo restores linked table value");},null);
-            await Task.Delay(700);Check(!documents.Register(a).TablesDirty,"Undo does not schedule an automatic write that destroys Redo");
+            await PollReads(a);Check(!documents.Register(a).TablesDirty,"Undo and read-only polling do not schedule an automatic write that destroys Redo");
             await App.DocumentManager.ExecuteInCommandContextAsync(async _=>{await a.Editor.CommandAsync("_.REDO");Check(Value(dependent)==70,"Linked tables survive idle and native Redo");},null);
             App.DocumentManager.MdiActiveDocument=original;
             var createdSheet=await Submit(b,"chat-B","sheet-create","""[{"op":"layout_create","name":"Probe A3"}]""");

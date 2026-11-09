@@ -72,6 +72,12 @@ internal sealed class ChatBrowser : Grid
                     var root = json.RootElement;
                     if (root.GetProperty("type").GetString() == "select") Selected?.Invoke(root.GetProperty("index").GetInt32());
                     else if (root.GetProperty("type").GetString() == "link") OpenLink?.Invoke(root.GetProperty("url").GetString() ?? "");
+                    else if (root.GetProperty("type").GetString() == "copy")
+                    {
+                        int index = root.GetProperty("index").GetInt32();
+                        bool success = CopyAnswer(index);
+                        browser.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "copy-result", index, success }));
+                    }
                 }
                 catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { }
             };
@@ -106,6 +112,18 @@ internal sealed class ChatBrowser : Grid
         }
         catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException)
         { return new ChatImage(file.Name, destination); }
+    }
+    internal bool CopyAnswer(int index)
+    {
+        if (ChatMarkup.AnswerText(messages, index) is not { } text) return false;
+        try { System.Windows.Clipboard.SetText(text); return true; }
+        catch (System.Runtime.InteropServices.COMException error) { Debug.WriteLine("CAD MCP clipboard: " + error.Message); return false; }
+    }
+    internal void CloseView()
+    {
+        ready = false;
+        try { browser.Dispose(); }
+        catch (Exception error) { Debug.WriteLine("CAD MCP browser close: " + error.Message); }
     }
     public ChatImage SavePreview(string base64, int width, int height)
     {

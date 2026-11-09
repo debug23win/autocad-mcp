@@ -14,6 +14,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private readonly object mutationGate = new();
     private readonly OperationControl control = new();
     private readonly ConcurrentDictionary<string, string> mutationOwners = new();
+    private readonly ConcurrentDictionary<string, string> benchmarkDocuments = new();
     private readonly SnapshotStore snapshots = new();
     private readonly OperationJournal journal = new(Wire.DataDirectory("operations", documents.SessionId));
     private readonly ResultArchive archive = new(Wire.DataDirectory("results", documents.SessionId));
@@ -95,6 +96,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     }
     public async Task<Response> Enqueue(Request r, CancellationToken ct)
     {
+        if (r.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true && r.Operation is not ("benchmark_create" or "cad_documents"))
+        {
+            string run = r.OwnerId["benchmark-".Length..];
+            if (r.SessionId != documents.SessionId || !benchmarkDocuments.TryGetValue(run, out var target) || r.DocumentId != target)
+                throw new CadFault("BENCHMARK_SCOPE_MISMATCH", "Benchmark requests may access only their own isolated test drawing");
+        }
         // Receipts use no AutoCAD API and remain readable while its UI thread is building geometry.
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_cancel" or "cad_runtime_status" or "cad_diagnostics")
@@ -232,13 +239,20 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private Response Execute(Request r, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (r.Operation == "benchmark_create") return CreateBenchmark(r);
         if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId);
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
         bool readOnly = CadOperations.ReadOnly.Contains(r.Operation);
         var doc = documents.Active(r, checkRevision: !readOnly, allowInactive: readOnly); var state = documents.Register(doc);
         using var reading = readOnly ? documents.ReadScope(doc) : null;
-        using var locked = doc.LockDocument();
+        // A write lock is itself an AutoCAD command/undo boundary, even if this
+        // request only opens objects ForRead. The chat polls cad_context every
+        // three seconds: locking it for write can invalidate the user's Redo.
+        // ObjectARX permits ForRead access without locking the document. These
+        // reads run synchronously on the CAD thread while the editor is quiescent.
+        // Preview is the exception: its rolled-back transaction still writes.
+        using var locked = !readOnly || r.Operation == "cad_edit_preview" ? doc.LockDocument() : null;
         using var tr = doc.Database.TransactionManager.StartOpenCloseTransaction();
         object data; string status = "completed";
         switch (r.Operation)
@@ -469,6 +483,35 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             detachedData = Wire.Element(new { archive_id = archiveId, captured_revision = state.Revision, detail = "Result archived; use cad_result_get to read bounded JSON text pages" }); status = "partial";
         }
         return new(r.RequestId, status, detachedData, documents.SessionId, state.Id, state.Revision);
+    }
+    private Response CreateBenchmark(Request request)
+    {
+#if CORE_CONSOLE
+        throw new CadFault("GUI_REQUIRED", "The built-in benchmark creates an isolated drawing in interactive AutoCAD");
+#else
+        if (request.SessionId != documents.SessionId) throw new CadFault("SESSION_MISMATCH", "AutoCAD session changed");
+        string run = EditPlan.RequiredText(request.Data, "run_id");
+        if (!Guid.TryParseExact(run, "N", out _) || request.OwnerId != "benchmark-" + run)
+            throw new CadFault("INVALID_BENCHMARK_RUN", "Expected a fresh benchmark run identifier");
+        if (benchmarkDocuments.ContainsKey(run)) throw new CadFault("BENCHMARK_RUN_EXISTS", "The test drawing for this run already exists; do not create it again");
+        var original = App.DocumentManager.MdiActiveDocument;
+        string folder = Wire.DataDirectory("benchmarks", documents.SessionId, run);
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, "CADMCP_Benchmark_" + run[..8] + ".dwg");
+        try
+        {
+            using (var seed = new Database(true, true))
+            { seed.Insunits = UnitsValue.Millimeters; seed.SaveAs(path, DwgVersion.Current); }
+            var doc = DocumentCollectionExtension.Open(App.DocumentManager, path, false);
+            var state = documents.Register(doc);
+            benchmarkDocuments[run] = state.Id;
+            return new(request.RequestId, "completed", new { benchmark_fixture = true, run_id = run, path, units = "Millimeters" }, documents.SessionId, state.Id, state.Revision);
+        }
+        finally
+        {
+            if (original is not null && !original.IsDisposed) App.DocumentManager.MdiActiveDocument = original;
+        }
+#endif
     }
     private static object SnapshotMetadata(Snapshot snapshot, string units, bool cached) => new { snapshot_id = snapshot.Id, captured = snapshot.Entities.Count,
         truncated = snapshot.Truncated, coverage = snapshot.Entities.GroupBy(x => x.Text("access") ?? "unsupported").ToDictionary(x => x.Key, x => x.Count()),

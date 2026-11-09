@@ -188,11 +188,11 @@ internal static class Reader
     private static Dictionary<string, object?> Entries(DBDictionary dictionary, Transaction tr, int depth)
     {
         var entries = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (DBDictionaryEntry entry in dictionary)
+        foreach (System.Collections.DictionaryEntry entry in dictionary)
         {
             if (entries.Count >= 30) { entries["..."] = "truncated"; break; }
-            var value = tr.GetObject(entry.Value, OpenMode.ForRead);
-            entries[entry.Key] = value switch
+            var value = tr.GetObject((ObjectId)entry.Value!, OpenMode.ForRead);
+            entries[(string)entry.Key] = value switch
             {
                 Xrecord record => RecordValues(record),
                 DBDictionary nested when depth < 1 => Entries(nested, tr, depth + 1),

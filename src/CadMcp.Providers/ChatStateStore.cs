@@ -7,7 +7,8 @@ public sealed record ChatState(int Provider, string CodexExecutable, string Clau
     string? SessionId, string Transcript, string? AdapterKey = null,
     string? CodexModel = null, string? CodexReasoningEffort = null,
     IReadOnlyList<ChatLine>? Messages = null, int MaxSubagents = 3,
-    string? ClaudeModel = null, string? ClaudeReasoningEffort = null);
+    string? ClaudeModel = null, string? ClaudeReasoningEffort = null,
+    string? CadSessionId = null, string? CadDocumentId = null);
 
 // Atomic-save approach adapted from debug23win/ClaudeRevit HistoryStore.cs (MIT).
 // Copyright (c) 2026 Alexandre Roubaud. See licenses/ClaudeRevit-MIT.txt.

@@ -2,63 +2,165 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using UserControl=System.Windows.Controls.UserControl;
-using TabControl=System.Windows.Controls.TabControl;
-using Button=System.Windows.Controls.Button;
 using CadMcp.Core;
 using CadMcp.Providers;
+using UserControl = System.Windows.Controls.UserControl;
+using TabControl = System.Windows.Controls.TabControl;
+using Button = System.Windows.Controls.Button;
+
 namespace CadMcp.AutoCAD;
 
-public sealed class ChatWorkspace:UserControl
+public sealed class ChatWorkspace : UserControl
 {
-    private readonly TabControl tabs=new();private readonly TextBlock status=new();private readonly Dictionary<string,(TabItem Tab,ChatPanel Panel)> projects=new();
-    private readonly string host;
-    private readonly string brokerPipe;
-    private readonly string? projectStoreRoot;
-    public string? CadSessionId{get;set;}
-    public Func<bool>? DarkThemeProvider{get;set;}
-    private bool refreshing,darkTheme=true;
-    private readonly System.Windows.Threading.DispatcherTimer timer=new(){Interval=TimeSpan.FromSeconds(5)};
-    public ChatWorkspace(string? hostExecutable=null,string? pipeName=null,string? historyRoot=null)
+    private sealed class Entry(TabItem tab, ChatPanel panel, DrawingTabSlot slot)
     {
-        host=hostExecutable??Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(ChatWorkspace).Assembly.Location)!,"..","Host","CadMcp.Host.exe"));
-        brokerPipe=pipeName??Wire.BrokerPipe;projectStoreRoot=historyRoot;
-        var root=new DockPanel();var header=new StackPanel{Orientation=System.Windows.Controls.Orientation.Horizontal};var refresh=new Button{Content="Открытые DWG",Margin=new Thickness(4)};
-        refresh.Click+=async(_,_)=>await Refresh();header.Children.Add(refresh);header.Children.Add(status);DockPanel.SetDock(header,Dock.Top);root.Children.Add(header);root.Children.Add(tabs);Content=root;
-        Loaded+=async(_,_)=>{timer.Start();await Refresh();};Unloaded+=(_,_)=>timer.Stop();timer.Tick+=async(_,_)=>await Refresh();
+        public TabItem Tab = tab;
+        public ChatPanel Panel = panel;
+        public DrawingTabSlot Slot = slot;
+        public TextBlock Label = new();
     }
-    public async Task Refresh()
+    private readonly TabControl tabs = new();
+    private readonly TextBlock status = new();
+    private readonly DrawingTabs tabState = new();
+    private readonly Dictionary<string, Entry> projects = new();
+    private readonly List<Entry> retiring = [];
+    private readonly string host, brokerPipe;
+    private readonly string? projectStoreRoot;
+    private readonly Button benchmark = new() { Content = "Бенчмарк", Margin = new Thickness(4), ToolTip = "Проверки C# и AutoLISP в отдельном новом тестовом DWG" };
+    private readonly Button stopBenchmark = new() { Content = "Остановить бенчмарк", Margin = new Thickness(4), IsEnabled = false };
+    private CancellationTokenSource? benchmarkCancellation;
+    private string? benchmarkDocument;
+    private bool refreshing, darkTheme = true;
+    private readonly System.Windows.Threading.DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(5) };
+    public string? CadSessionId { get; set; }
+    public Func<bool>? DarkThemeProvider { get; set; }
+
+    public ChatWorkspace(string? hostExecutable = null, string? pipeName = null, string? historyRoot = null)
     {
-        if(refreshing)return;refreshing=true;
+        host = hostExecutable ?? Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(ChatWorkspace).Assembly.Location)!, "..", "Host", "CadMcp.Host.exe"));
+        brokerPipe = pipeName ?? Wire.BrokerPipe; projectStoreRoot = historyRoot;
+        var root = new DockPanel(); var header = new WrapPanel();
+        var refresh = new Button { Content = "Открытые DWG", Margin = new Thickness(4), ToolTip = "Обновить список и вернуть закрытые вкладки чатов" };
+        refresh.Click += async (_, _) => await Refresh(revealHidden: true);
+        benchmark.Click += async (_, _) => await RunBenchmark();
+        stopBenchmark.Click += (_, _) => benchmarkCancellation?.Cancel();
+        header.Children.Add(refresh); header.Children.Add(benchmark); header.Children.Add(stopBenchmark); header.Children.Add(status);
+        DockPanel.SetDock(header, Dock.Top); root.Children.Add(header); root.Children.Add(tabs); Content = root;
+        Loaded += async (_, _) => { timer.Start(); await Refresh(); };
+        Unloaded += (_, _) => timer.Stop(); timer.Tick += async (_, _) => await Refresh();
+    }
+
+    private ChatPanel Panel(DrawingTabSlot slot)
+    {
+        string storeRoot = projectStoreRoot is null ? Wire.DataDirectory("chat", "projects", slot.Document.ProjectKey) : Path.Combine(projectStoreRoot, slot.Document.ProjectKey);
+        var panel = new ChatPanel(new ChatStateStore(storeRoot), Path.IsPathFullyQualified(slot.Document.Name) ? Path.GetDirectoryName(slot.Document.Name) : null, brokerPipe)
+        { CadSessionId = CadSessionId, CadDocumentId = slot.Document.DocumentId, DarkThemeProvider = () => DarkThemeProvider?.Invoke() ?? darkTheme };
+        panel.ResetDocumentSession(); return panel;
+    }
+
+    public async Task Refresh(bool revealHidden = false)
+    {
+        if (refreshing) return; refreshing = true;
         try
         {
-            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));await BrokerBootstrap.EnsureAsync(host,timeout.Token,brokerPipe);
-            if(CadSessionId is null){var workers=new Broker(Wire.WorkerRoot).Discover();if(workers.Count!=1)throw new IOException("Откройте чат из нужного AutoCAD");CadSessionId=workers[0].SessionId;}
-            var reply=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_documents",CadSessionId),timeout.Token);
-            if(reply.Error is {} error)throw new IOException(error.Message);
-            var data=Wire.Element(reply.Data!);var present=new HashSet<string>();TabItem? active=null;
-            foreach(var drawing in data.EnumerateArray())
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            await BrokerBootstrap.EnsureAsync(host, timeout.Token, brokerPipe);
+            if (CadSessionId is null)
             {
-                string id=drawing.Text("document_id")!,name=drawing.Text("name")!,project=drawing.Text("project_key")!;present.Add(id);darkTheme=drawing.GetProperty("dark_theme").GetBoolean();
-                if(!projects.TryGetValue(id,out var entry))
-                {
-                    string root=projectStoreRoot is null?Wire.DataDirectory("chat","projects",project):Path.Combine(projectStoreRoot,project);
-                    var panel=new ChatPanel(new ChatStateStore(root),Path.IsPathFullyQualified(name)?Path.GetDirectoryName(name):null,brokerPipe){CadSessionId=CadSessionId,CadDocumentId=id,DarkThemeProvider=()=>DarkThemeProvider?.Invoke()??darkTheme};
-                    var tab=new TabItem{Content=panel};entry=(tab,panel);projects.Add(id,entry);tabs.Items.Add(tab);
-                }
-                bool dark=DarkThemeProvider?.Invoke()??darkTheme;var background=dark?new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(36,40,46)):System.Windows.Media.Brushes.White;var foreground=dark?System.Windows.Media.Brushes.Gainsboro:System.Windows.Media.Brushes.Black;
-                Background=tabs.Background=background;Foreground=tabs.Foreground=foreground;entry.Tab.Background=background;entry.Tab.Foreground=foreground;
-                entry.Tab.Header=Path.GetFileName(name)+(entry.Panel.IsWorking?" · выполняется":"");entry.Tab.ToolTip=name;entry.Tab.IsEnabled=true;
-                if(drawing.GetProperty("active").GetBoolean())active=entry.Tab;
+                var workers = new Broker(Wire.WorkerRoot).Discover();
+                if (workers.Count != 1) throw new IOException("Откройте чат из нужного AutoCAD"); CadSessionId = workers[0].SessionId;
             }
-            foreach(var entry in projects.Where(p=>!present.Contains(p.Key))){if(entry.Value.Tab.IsEnabled){entry.Value.Panel.Stop();entry.Value.Tab.IsEnabled=false;entry.Value.Tab.Header+=" (закрыт)";}}
-            if(tabs.SelectedItem is null&&active is not null)tabs.SelectedItem=active;
-            status.Text="Каждая вкладка работает со своим DWG";
+            var reply = await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_documents", CadSessionId), timeout.Token);
+            if (reply.Error is { } error) throw new IOException(error.Message);
+            var data = Wire.Element(reply.Data!);
+            var drawings = data.EnumerateArray().Select(d => new DrawingTabDocument(d.Text("document_id")!, d.Text("project_key")!, d.Text("name")!, d.GetProperty("active").GetBoolean())).ToArray();
+            if (data.GetArrayLength() > 0) darkTheme = data[0].GetProperty("dark_theme").GetBoolean();
+            TabItem? active = null;
+            retiring.RemoveAll(p => !p.Panel.IsWorking);
+            foreach (var slot in tabState.Refresh(drawings, revealHidden))
+            {
+                if (!projects.TryGetValue(slot.Key, out var entry))
+                {
+                    if (retiring.Any(p => p.Slot.Document.ProjectKey == slot.Document.ProjectKey && p.Panel.IsWorking))
+                    { status.Text = "Дожидаюсь остановки прежнего чата"; continue; }
+                    var panel = Panel(slot); entry = new(new TabItem { Content = panel }, panel, slot);
+                    var tabHeader = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal }; tabHeader.Children.Add(entry.Label);
+                    var close = new Button { Content = "×", Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(7, 0, 0, 0), ToolTip = "Закрыть вкладку чата; DWG останется открыт в AutoCAD" };
+                    string key = slot.Key; close.Click += (_, e) => { e.Handled = true; CloseTab(key); };
+                    tabHeader.Children.Add(close); entry.Tab.Header = tabHeader; projects.Add(slot.Key, entry); tabs.Items.Add(entry.Tab);
+                }
+                else if (entry.Slot.Document.DocumentId != slot.Document.DocumentId)
+                {
+                    if (entry.Panel.IsWorking) { entry.Panel.Stop(); status.Text = "Завершаю прежний чат перед перепривязкой DWG"; continue; }
+                    entry.Panel.Stop(); entry.Panel.CloseView(); entry.Panel = Panel(slot); entry.Tab.Content = entry.Panel;
+                }
+                if (entry.Slot.Open && !slot.Open) entry.Panel.Stop();
+                entry.Slot = slot; entry.Panel.SetDocumentAvailable(slot.Open);
+                entry.Panel.SetBenchmarkBusy(benchmarkCancellation is not null && slot.Document.DocumentId == benchmarkDocument);
+                entry.Label.Text = Path.GetFileName(slot.Document.Name) + (!slot.Open ? " (закрыт)" : entry.Panel.IsWorking ? " · выполняется" : "");
+                entry.Tab.ToolTip = slot.Document.Name;
+                bool dark = DarkThemeProvider?.Invoke() ?? darkTheme;
+                var background = dark ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(36, 40, 46)) : System.Windows.Media.Brushes.White;
+                var foreground = dark ? System.Windows.Media.Brushes.Gainsboro : System.Windows.Media.Brushes.Black;
+                Background = tabs.Background = entry.Tab.Background = background; Foreground = tabs.Foreground = entry.Tab.Foreground = foreground;
+                if (slot.Open && slot.Document.Active) active = entry.Tab;
+            }
+            if (tabs.SelectedItem is null || projects.Values.Any(p => ReferenceEquals(p.Tab, tabs.SelectedItem) && !p.Slot.Open))
+                if (active is not null) tabs.SelectedItem = active;
+            if (benchmarkCancellation is null) status.Text = "Каждая вкладка работает со своим DWG";
         }
-        catch(System.Exception e){status.Text=e.Message;}
-        finally{refreshing=false;}
+        catch (System.Exception e) { status.Text = e.Message; }
+        finally { refreshing = false; }
     }
-    public void Stop(){timer.Stop();foreach(var entry in projects.Values)entry.Panel.Stop();}
-    internal IReadOnlyDictionary<string,ChatPanel> ProjectPanels=>projects.ToDictionary(p=>p.Key,p=>p.Value.Panel);
-    internal void SelectProject(string document){if(projects.TryGetValue(document,out var entry))tabs.SelectedItem=entry.Tab;}
+
+    private void CloseTab(string key)
+    {
+        if (!projects.Remove(key, out var entry)) return;
+        if (entry.Slot.Document.DocumentId == benchmarkDocument) benchmarkCancellation?.Cancel();
+        entry.Panel.Stop(); entry.Panel.CloseView();
+        if (entry.Panel.IsWorking) retiring.Add(entry);
+        tabState.Close(key); tabs.Items.Remove(entry.Tab);
+    }
+
+    private async Task RunBenchmark()
+    {
+        if (benchmarkCancellation is not null) return;
+        if (projects.Values.Any(p => p.Panel.IsWorking)) { status.Text = "Сначала дождитесь завершения задач в чатах"; return; }
+        using var cancellation = new CancellationTokenSource(); benchmarkCancellation = cancellation;
+        benchmark.IsEnabled = false; stopBenchmark.IsEnabled = true;
+        try
+        {
+            await Refresh(); if (CadSessionId is null) throw new IOException("AutoCAD не подключён");
+            var runner = new CadBenchmark((r, ct) => PipeClient.CallAsync(brokerPipe, r, ct));
+            var result = await runner.RunAsync(CadSessionId, progress => { benchmarkDocument = progress.DocumentId ?? benchmarkDocument; status.Text = progress.Message; }, cancellation.Token);
+            string folder = Wire.DataDirectory("benchmarks", result.RunId);
+            string path = Path.Combine(folder, "report.json");
+            string summary = result.Markdown();
+            try
+            {
+                Directory.CreateDirectory(folder);
+                File.WriteAllText(path, JsonSerializer.Serialize(result, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
+                summary += "\n\nJSON-отчёт: `" + path + "`";
+            }
+            catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)
+            { summary += "\n\nJSON-отчёт не сохранён: " + error.Message; }
+            summary += AnswerMetrics.Footer(TimeSpan.FromMilliseconds(result.ElapsedMs), new ProviderTokenUsage(0, 0, 0, "модели не вызывались"));
+            await Refresh(); var target = projects.Values.FirstOrDefault(p => p.Slot.Document.DocumentId == result.DocumentId);
+            if (target is not null) { target.Panel.AddBenchmarkReport(summary); tabs.SelectedItem = target.Tab; }
+            else System.Windows.MessageBox.Show(summary, "Результат бенчмарка");
+            status.Text = $"Бенчмарк: {result.Passed}/{result.Total}, {result.ElapsedMs / 1000.0:0.0} с";
+        }
+        catch (System.Exception error) { status.Text = "Бенчмарк не завершён: " + error.Message; }
+        finally
+        {
+            benchmarkCancellation = null; benchmarkDocument = null; benchmark.IsEnabled = true; stopBenchmark.IsEnabled = false;
+            foreach (var entry in projects.Values) entry.Panel.SetBenchmarkBusy(false);
+        }
+    }
+
+    public void Stop() { timer.Stop(); benchmarkCancellation?.Cancel(); foreach (var entry in projects.Values) entry.Panel.Stop(); }
+    internal IReadOnlyDictionary<string, ChatPanel> ProjectPanels => projects.Values.Where(p => p.Slot.Open).ToDictionary(p => p.Slot.Document.DocumentId, p => p.Panel);
+    internal int TabCount => projects.Count;
+    internal void CloseProject(string document) { var entry = projects.Values.FirstOrDefault(p => p.Slot.Document.DocumentId == document); if (entry is not null) CloseTab(entry.Slot.Key); }
+    internal void SelectProject(string document) { var entry = projects.Values.FirstOrDefault(p => p.Slot.Document.DocumentId == document); if (entry is not null) tabs.SelectedItem = entry.Tab; }
 }

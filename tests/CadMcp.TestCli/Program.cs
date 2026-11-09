@@ -107,6 +107,13 @@ internal static class FakeCodex
                 return;
             }
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
+            if (prompt == "USAGE")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "usage-turn" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "thread/tokenUsage/updated", @params = new { threadId = "test-thread", turnId = "usage-turn", tokenUsage = new { total = new { totalTokens = 100, inputTokens = 80, outputTokens = 20, cachedInputTokens = 10, reasoningOutputTokens = 5 } } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "turn/completed", @params = new { threadId = "test-thread", turn = new { status = "completed" } } }));
+                return;
+            }
             Console.WriteLine("{\"id\":3,\"result\":{}}");
             if (prompt == "REQUEST")
             {
@@ -174,6 +181,9 @@ internal static class FakeClaude
         }
         switch (prompt)
         {
+            case "USAGE":
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "result", is_error = false, result = "Готово", usage = new { input_tokens = 10, output_tokens = 5, cache_read_input_tokens = 100, cache_creation_input_tokens = 20 } }));
+                return 0;
             case "ATTACHMENT":
             {
                 // Each attached file may be read wherever it is: one exact rule per file, in settings JSON.

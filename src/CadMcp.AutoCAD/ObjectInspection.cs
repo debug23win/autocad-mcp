@@ -290,7 +290,7 @@ internal static class ObjectInspection
         try
         {
             if (obj.OwnerId.IsNull || tr.GetObject(obj.OwnerId, OpenMode.ForRead) is not DBDictionary dictionary) return null;
-            foreach (DBDictionaryEntry entry in dictionary) if (entry.Value == obj.ObjectId) return entry.Key;
+            foreach (System.Collections.DictionaryEntry entry in dictionary) if ((ObjectId)entry.Value! == obj.ObjectId) return (string)entry.Key;
         }
         catch (Autodesk.AutoCAD.Runtime.Exception) { }
         return null;
