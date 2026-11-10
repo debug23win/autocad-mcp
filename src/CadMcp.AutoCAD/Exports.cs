@@ -227,6 +227,7 @@ internal static class Exports
         using var infoValidator = new PlotInfoValidator { MediaMatchingPolicy = MatchingPolicy.MatchEnabled };
         infoValidator.Validate(info);
         ct.ThrowIfCancellationRequested();
+        using var page = new PlotPageInfo(); // Outlive the engine, including its failure-path disposal.
         using var engine = PlotFactory.CreatePublishEngine();
         // How far the plot got: a failure part way still ends what was begun, in reverse order, before the engine is
         // destroyed, so AutoCAD is not left inside a plot.
@@ -235,7 +236,7 @@ internal static class Exports
         {
             engine.BeginPlot(null, null); stage = 1;
             engine.BeginDocument(info, document.Name, null, 1, true, path); stage = 2;
-            using (var page = new PlotPageInfo()) engine.BeginPage(page, info, true, null);
+            engine.BeginPage(page, info, true, null);
             stage = 3;
             engine.BeginGenerateGraphics(null); stage = 4;
             engine.EndGenerateGraphics(null); stage = 3;

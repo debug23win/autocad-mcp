@@ -267,7 +267,7 @@ public sealed partial class CadBenchmarkTests
         private readonly Dictionary<string, string> aliases = [];
         private readonly HashSet<string> erased = [];
         private int nextHandle = 100;
-        private bool tableChanged;
+        private bool tableChanged, fixtureCreated;
         private Request? lisp;
         private Response Reply(Request r, object data, string status = "completed", string? doc = "fixture") =>
             new(r.RequestId, status, data, "session", doc, 1);
@@ -276,9 +276,10 @@ public sealed partial class CadBenchmarkTests
         {
             Requests.Add(r);
             if (Override?.Invoke(r) is { } overridden) return Task.FromResult(overridden);
-            if (r.Operation == "cad_documents") return Task.FromResult(Reply(r, new[] { new { document_id = "user-drawing" } }, doc: null));
+            if (r.Operation == "cad_documents") return Task.FromResult(Reply(r, fixtureCreated ? new[] { new { document_id = "fixture" } } : mode == "existing_document" ? new[] { new { document_id = "user-drawing" } } : Array.Empty<object>(), doc: fixtureCreated ? "fixture" : null));
             if (r.Operation == "benchmark_create")
             {
+                fixtureCreated = true;
                 var data = new { benchmark_fixture = mode != "missing_fixture_marker", run_id = mode == "wrong_run_id" ? "wrong" : r.Data.Text("run_id"), path = FixturePath };
                 var reply = Reply(r, data, doc: mode == "existing_document" ? "user-drawing" : "fixture");
                 return Task.FromResult(mode == "wrong_fixture_session" ? reply with { SessionId = "foreign" } : reply);

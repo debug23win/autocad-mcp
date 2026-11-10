@@ -34,7 +34,7 @@ public sealed record CadBenchmarkResult(string RunId, string SessionId, string? 
             text.AppendLine($"| {item.Name} | {item.Status.ToUpperInvariant()} | {item.ElapsedMs / 1000:0.000} | {item.ApprovalWaitMs / 1000:0.000} |");
             if (item.ErrorCode is not null) text.AppendLine($"\n`{item.Id}`: `{item.ErrorCode}` — {item.Message?.Replace('\n', ' ')}\n");
         }
-        text.AppendLine("\nВремя включает обращения к AutoCAD и ожидание AutoLISP; это фиксированная функциональная проверка, без вызовов моделей. Пропуски и неизвестные исходы не считаются успехом. Тестовый DWG оставлен открытым; рабочие чертежи не используются. Остановка ожидания не отменяет уже принятые CAD-операции.");
+        text.AppendLine("\nВремя включает обращения к AutoCAD и ожидание AutoLISP; это фиксированная функциональная проверка, без вызовов моделей. Пропуски и неизвестные исходы не считаются успехом. Создание отдельного тестового DWG отражено в разделе подготовки; его текущее наличие, геометрия и сохранение после сбоя не подтверждены. Другие DWG в этой сессии не допускаются. Остановка ожидания не отменяет уже принятые CAD-операции.");
         return text.ToString();
     }
 }
@@ -93,13 +93,19 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
         private static void Success(Response response)
         {
             if (response.Error is { } error)
-                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN",
+                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN" or "BENCHMARK_SESSION_CHANGED" or "INTERNAL_ERROR" or "WORKER_UNAVAILABLE" or "TIMEOUT" or "TRANSPORT_ERROR",
                     error.Code is "LISP_DISABLED" or "LISP_DENIED" or "LISP_APPROVAL_UNAVAILABLE");
             if (response.Status != "completed") throw new Fault("INCOMPLETE_RESPONSE", "Expected completed response, got " + response.Status);
         }
+        private async Task<Response> ReadCall(string operation, object data, CancellationToken ct)
+        {
+            var context = await Call("cad_context", new { }, ct); Success(context);
+            if (context.Revision is null) throw new Fault("SCOPE_MISMATCH", "Fresh context has no revision", true);
+            return await Call(operation, data, ct, context.Revision);
+        }
         private async Task<JsonElement> Read(string operation, object data, CancellationToken ct)
         {
-            var response = await Call(operation, data, ct); Success(response);
+            var response = await ReadCall(operation, data, ct); Success(response);
             var value = Data(response);
             foreach (var node in new[] { value, value.TryGetProperty("result", out var nested) && nested.ValueKind == JsonValueKind.Object ? nested : value })
                 if (node.TryGetProperty("partial", out var partial) && partial.ValueKind == JsonValueKind.True ||
@@ -203,6 +209,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                 progress?.Invoke(new("Создаю отдельный тестовый DWG"));
                 var before = await Call("cad_documents", new { }, ct); Success(before);
                 var oldIds = Data(before).EnumerateArray().Select(d => d.Text("document_id")).ToHashSet();
+                BenchmarkIsolation.RequireEmpty(oldIds.Count);
                 var fixture = await Call("benchmark_create", new { run_id = id }, ct); Success(fixture);
                 var data = Data(fixture);
                 if (fixture.SessionId != session || string.IsNullOrWhiteSpace(fixture.DocumentId) || oldIds.Contains(fixture.DocumentId) ||
@@ -216,7 +223,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             foreach (var definition in Definitions)
             {
                 if (stopped || ct.IsCancellationRequested)
-                { results.Add(new(definition.Id, definition.Name, definition.Language, "skipped", 0, 0, "NOT_RUN", setupError ?? "Stopped after cancellation or unknown operation outcome", [], [])); continue; }
+                { results.Add(new(definition.Id, definition.Name, definition.Language, "skipped", 0, 0, "NOT_RUN", setupError ?? "Stopped after a preceding failure, cancellation or unknown operation outcome", [], [])); continue; }
                 progress?.Invoke(new("Бенчмарк: " + definition.Name, document));
                 var caseWatch = Stopwatch.StartNew(); checks.Clear(); calls.Clear(); approvalMs = 0;
                 string status = "passed"; string? errorCode = null, message = null;
@@ -234,9 +241,9 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                         case "lisp": await Generate(true, ct); break;
                     }
                 }
-                catch (Fault error) { status = error.Unknown ? "unknown" : error.Skipped ? "skipped" : "failed"; errorCode = error.Code; message = error.Message; stopped = error.Unknown; }
+                catch (Fault error) { status = error.Unknown ? "unknown" : error.Skipped ? "skipped" : "failed"; errorCode = error.Code; message = error.Message; stopped = error.Unknown || !error.Skipped; }
                 catch (OperationCanceledException error) { status = "unknown"; errorCode = "CANCELLED_WAIT"; message = error.Message; stopped = true; }
-                catch (Exception error) { status = "failed"; errorCode = "BENCHMARK_ERROR"; message = error.Message; }
+                catch (Exception error) { bool uncertain = Wire.IsTransportFailure(error); status = uncertain ? "unknown" : "failed"; errorCode = uncertain ? "BENCHMARK_TRANSPORT_UNCERTAIN" : error is CadFault fault ? fault.Code : "BENCHMARK_ERROR"; message = error.Message; stopped = true; }
                 results.Add(new(definition.Id, definition.Name, definition.Language, status, caseWatch.Elapsed.TotalMilliseconds, approvalMs, errorCode, message, checks.ToArray(), calls.ToArray()));
             }
             if (toolInventory is not null)
@@ -301,7 +308,8 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             await Edit([new { op = "erase", handle = original }], ct);
             var e = await Read("cad_entity_get", new { handle = Handle(made, "copy") }, ct);
             Number("copy.length", 200, e.GetProperty("length").GetDouble()); Point("copy.start", e.GetProperty("start"), 4000, 200); Point("copy.end", e.GetProperty("end"), 4000, 400);
-            var removed = await Call("cad_entity_get", new { handle = original }, ct);
+            var removed = await ReadCall("cad_entity_get", new { handle = original }, ct);
+            if (removed.Error?.Code != "ENTITY_NOT_FOUND") Success(removed);
             Check("source erased", removed.Error?.Code == "ENTITY_NOT_FOUND", "ENTITY_NOT_FOUND", removed.Error?.Code);
         }
         private async Task Tables(CancellationToken ct)

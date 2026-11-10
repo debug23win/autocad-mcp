@@ -150,6 +150,7 @@ jobs:
             }
             limits = @(
               'AutoCAD Core Console and GUI checks were not run for this release'
+              'Native benchmark requires a dedicated AutoCAD process with no open DWGs; the reported AutoCAD 2027 native crash is not yet reproduced or proven resolved'
               'DWG safety changes require native rollback, checkpoint recovery and Undo/Redo validation; see docs/validation.md'
               'The AutoCAD crash fixes require the CADMCPSHEETREGEN probe in AutoCAD 2025 or 2026'
               'Full GUI checks in Map 3D and Civil 3D are pending'

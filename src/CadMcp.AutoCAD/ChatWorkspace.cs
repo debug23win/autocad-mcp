@@ -26,7 +26,7 @@ public sealed class ChatWorkspace : UserControl
     private readonly List<Entry> retiring = [];
     private readonly string host, brokerPipe;
     private readonly string? projectStoreRoot;
-    private readonly Button benchmark = new() { Content = "Бенчмарк", Margin = new Thickness(4), ToolTip = "Проверки C# и AutoLISP в отдельном новом тестовом DWG" };
+    private readonly Button benchmark = new() { Content = "Бенчмарк", Margin = new Thickness(4), ToolTip = "Полный нативный прогон в отдельном AutoCAD без открытых DWG; при первой неожиданной ошибке останавливается" };
     private readonly Button stopBenchmark = new() { Content = "Остановить бенчмарк", Margin = new Thickness(4), IsEnabled = false };
     private CancellationTokenSource? benchmarkCancellation;
     private string? benchmarkDocument;
@@ -133,6 +133,7 @@ public sealed class ChatWorkspace : UserControl
         try
         {
             await Refresh(); if (CadSessionId is null) throw new IOException("AutoCAD не подключён");
+            status.Text = "Нативный бенчмарк: только отдельный AutoCAD без открытых DWG. Не открывайте файлы во время прогона.";
             string runId = Guid.NewGuid().ToString("N");
             var benchmarkClock = System.Diagnostics.Stopwatch.StartNew();
             await using var mcp = await BenchmarkMcpSession.StartAsync(host, brokerPipe, runId, cancellation.Token);
@@ -146,7 +147,7 @@ public sealed class ChatWorkspace : UserControl
             {
                 Directory.CreateDirectory(folder);
                 File.WriteAllText(path, JsonSerializer.Serialize(new { result, mcp_inventory = mcp.Tools, mcp_calls = mcp.Evidence }, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
-                summary += "\n\nJSON-отчёт: `" + path + "`";
+                summary += "\n\nJSON-отчёт: `" + path + "`\nНативная трассировка: `" + Path.Combine(folder, "native-trace.jsonl") + "` (если worker начал выполнение).";
             }
             catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)
             { summary += "\n\nJSON-отчёт не сохранён: " + error.Message; }
