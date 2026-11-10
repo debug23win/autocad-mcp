@@ -1,11 +1,11 @@
-# Дополнения во время работы
+# Follow-ups during execution
 
-Пока агент выполняет задание, поле ввода и вложения доступны. Enter или «Дополнить» отправляют уточнение; Shift+Enter вставляет новую строку. Первоначальная задача продолжает выполняться. Совместимые требования сохраняются, исправления учитываются в дальнейших действиях. Уже выполненные изменения DWG не отменяются автоматически.
+Input and attachments remain available while the agent works. Enter or Add follow-up sends an update; Shift+Enter inserts a newline. The original task continues. Compatible requirements are retained and corrections guide subsequent actions. Already completed DWG edits are not automatically undone.
 
-Codex использует официальный `turn/steer` с идентификатором текущего хода. Новый процесс-писатель или новый ход для дополнения не создаются. Claude получает сообщения через открытый `stream-json` вход в том же процессе/сеансе и подтверждает их через `--replay-user-messages`; обработка очереди зависит от Claude Code и может начаться после текущего ответа. Новые изображения передаются как изображения, текстовые вложения — вместе с содержимым.
+Codex uses official `turn/steer` with the current turn ID, without creating another writer process or turn. Claude receives messages through the same process/session's open `stream-json` input and acknowledges them through `--replay-user-messages`; queue processing depends on Claude Code and may begin after the current answer. New images are sent as images; text attachments include their contents.
 
-В истории остаётся отметка: ожидание соединения, отправка, принято, отклонено или доставка не подтверждена. Подтверждение означает приём провайдером, а не доказательство, что модель уже исправила геометрию. Пока соединение запускается, сообщение ждёт в очереди. При завершении/остановке неподанные сообщения остаются видны в истории; их можно отправить заново. Неоднозначно доставленные сообщения не повторяются автоматически, чтобы не дублировать CAD-изменения.
+History records delivery states: waiting for connection, sending, accepted, rejected, or delivery unconfirmed. Acceptance proves provider receipt, not that the model has corrected geometry. Messages queue during connection startup. Unsent messages remain visible after completion/cancellation and can be resent manually. Ambiguous deliveries are never retried automatically, avoiding duplicate CAD edits.
 
-Выбор модели, провайдера и настроек остаётся заблокированным во время работы; кнопка «Стоп» доступна. Дополнение не прерывает текущую CAD-транзакцию: оно применяется моделью при следующей возможности. История и отметки доставки сохраняются.
+Model, provider, and settings remain locked during execution; Stop stays available. A follow-up does not interrupt the current CAD transaction: the model applies it at the next opportunity. History and delivery markers persist.
 
-Источники: [Codex App Server: turn/steer](https://learn.chatgpt.com/docs/app-server), [Claude Code: stream-json и replay-user-messages](https://code.claude.com/docs/en/cli-reference).
+Sources: [Codex App Server: turn/steer](https://learn.chatgpt.com/docs/app-server), [Claude Code: stream-json and replay-user-messages](https://code.claude.com/docs/en/cli-reference).

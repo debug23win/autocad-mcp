@@ -1,12 +1,12 @@
-# Штатные таблицы, формулы и оформление СПДС
+# Native tables, formulas, and SPDS drafting
 
-В 0.8.0 все перечисленные операции выполняет нативный C# адаптер AutoCAD. Таблицы остаются `Table`, формулы — штатными формулами/полями DWG, размеры — `Dimension`, рамки, оси и отметки — блоками из обычных объектов. СПДС GraphiCS для новых объектов не требуется. Контракт одинаков для Codex и Claude: `cad_spds_help`, `cad_edit_help`, `cad_table_get`, `cad_edit`.
+Since 0.8.0, the native C# adapter performs these operations. Tables remain `Table`, formulas remain native DWG formulas/fields, dimensions remain `Dimension`, and frames/axes/levels are blocks of ordinary entities. New entities do not require SPDS GraphiCS. Codex and Claude share `cad_spds_help`, `cad_edit_help`, `cad_table_get`, and `cad_edit`.
 
-## Таблицы
+## Tables
 
-`table_create` создаёт матрицу, `table_cells` меняет значения/формулы, `table_merge` объединяет или разъединяет ячейки, `table_rows`/`table_columns` вставляют и удаляют строки/столбцы, `table_recalculate` пересчитывает зависимую таблицу. Адреса ячеек — A1; индексы диапазонов и вставки — с нуля. `cad_table_get` возвращает значения, формулы, коды полей, объединения, размеры и имя листа, до 500 ячеек за страницу. Правка выполняется в текущем пространстве; для таблицы на другом бумажном листе явно передайте `layout`.
+`table_create` creates a matrix; `table_cells` edits values/formulas; `table_merge` merges/unmerges cells; `table_rows`/`table_columns` insert/delete rows/columns; `table_recalculate` recalculates dependents. Cell addresses use A1; range/insertion indices are zero-based. `cad_table_get` returns values, formulas, field codes, merged ranges, sizes, and layout name, up to 500 cells per page. Edits target current space; explicitly pass `layout` for another paper layout.
 
-Пример пакета `operations_json`:
+Example `operations_json` batch:
 
 ```json
 [
@@ -18,31 +18,31 @@
 ]
 ```
 
-Вторая таблица получает 20 через штатное поле `AcExpr`, а не копию числа. Для уже существующей таблицы вместо `table_target` передают `table_handle`. После изменения исходной ячейки выполните `table_recalculate` для зависимых таблиц и прочитайте фактические значения. Не создавайте циклические зависимости. После вставки/удаления строк или столбцов проверяйте адреса межтабличных ссылок: ссылка хранит адрес ячейки в таблице, а не смысл строки. Удалённый источник делает ссылку недействительной. Плагин не заменяет проверку этих зависимостей.
+The second table receives 20 through a native `AcExpr` field, not a copied value. Existing sources use `table_handle` instead of `table_target`. After source changes, run `table_recalculate` for dependents and reread actual values. Avoid cycles. After row/column insertion/deletion, verify cross-table references: they store cell addresses, not row meaning. Deleted sources invalidate references; the plugin does not replace dependency review.
 
-Ограничения одного объекта: до 500 строк, 50 столбцов и 5000 ячеек. До 1000 изменений ячеек в действии; до 100 действий и 65536 символов в пакете. При ошибке до commit откатывается пакет. Содержимое подчинённой ячейки объединённого диапазона изменяют через верхнюю левую ячейку. Нативные формулы могут возвращать выражение с дополнительными скобками при чтении — это нормализация AutoCAD.
+Per-object limits: 500 rows, 50 columns, 5000 cells. Up to 1000 cell changes per action; 100 actions/65536 characters per batch. Pre-commit failure rolls back the batch. Edit a merged range through its upper-left cell. AutoCAD may normalize formulas with additional parentheses on readback.
 
-## Формы и листы
+## Forms and sheets
 
-`spds_table` принимает `template`, `position`, массив строк `data`, необязательные `title`, `scale`, `style`, `layout`. На бумажном листе размеры задаются в миллиметрах бумаги; в модели `scale` переводит эти размеры в единицы чертежа. AutoCAD увеличивает высоту строки при длинном содержимом: 8 мм — минимальная, а не принудительная высота с обрезкой текста.
+`spds_table` accepts `template`, `position`, row array `data`, and optional `title`, `scale`, `style`, `layout`. Paper-space sizes are paper millimeters; model-space `scale` converts them into DWG units. AutoCAD increases row height for long content: 8 mm is a minimum, not a forced clipping height.
 
-| Шаблон | Назначение | Статус формы |
+| Template | Purpose | Form status |
 |---|---|---|
-| `sheet_register` | Ведомость рабочих чертежей | Форма 1: 185 мм, графы 15/140/30 |
-| `document_register` | Ведомость документов | Форма 2: те же графы; первая — «Обозначение» |
-| `specification` | Спецификация | Форма 7: 15/60/65/10/15/20 мм, заголовок 15 мм |
-| `rebar_schedule` | Ведомость арматуры КЖ | Проектный шаблон, `VerifiedForm=false` |
-| `steel_consumption` | Ведомость расхода стали КЖ | Проектный шаблон, `VerifiedForm=false` |
-| `km_members` | Ведомость элементов КМ | Проектный шаблон, `VerifiedForm=false` |
+| `sheet_register` | Working-drawing register | Form 1: 185 mm, columns 15/140/30. |
+| `document_register` | Document register | Form 2: same columns; first is Designation. |
+| `specification` | Specification | Form 7: 15/60/65/10/15/20 mm; header 15 mm. |
+| `rebar_schedule` | Reinforcement schedule (RC) | Project template, `VerifiedForm=false`. |
+| `steel_consumption` | Steel consumption (RC) | Project template, `VerifiedForm=false`. |
+| `km_members` | Steel-member schedule | Project template, `VerifiedForm=false`. |
 
-Формы 1/2/7 сверены с опубликованным ГОСТ Р 21.101-2026. Для формы 2 использовано название графы «Обозначение» по пункту Б.5; расхождение печатного заголовка разъяснено письмом Росстандарта от 24.08.2026. Это не означает, что все возможные формы и требования стандарта реализованы.
+Forms 1/2/7 were checked against published GOST R 21.101-2026. Form 2 uses the Designation heading per B.5; Rosstandart's August 24, 2026 letter explains the printed-heading discrepancy. This does not establish implementation of every form or standard requirement.
 
-`spds_sheet` размещает рамку и основную надпись формы 3 (185×55 мм) на существующем бумажном листе A0–A4. Рамка имеет отступ 20 мм слева и 5 мм с остальных сторон. Обозначение, наименование, организация, стадия, номера листов и подписи — редактируемые атрибуты. Для изменения атрибутов на другом листе используйте `set` с `layout` и `attributes`. Автоматическое обрезание текста не применяется; проверяйте длинные наименования и дополнительные графы. Создание листа, настройку носителя/печати, видовые экраны и выпуск PDF выполняют отдельными нативными действиями.
+`spds_sheet` places a frame and Form 3 title block (185×55 mm) on an existing A0–A4 paper layout. Margins: 20 mm left, 5 mm elsewhere. Designation, title, organization, stage, sheet numbers, and signatures are editable attributes. Edit attributes on another layout with `set`, `layout`, and `attributes`. Text is not automatically clipped; check long titles and additional columns. Layout creation, media/plot settings, viewports, and PDF publishing are separate native actions.
 
-## Размеры и геометрия КЖ/КМ
+## Dimensions and RC/steel geometry
 
-`spds_dimstyle` создаёт новый стиль. `drawing_scale` — знаменатель масштаба; множитель миллиметров выводится из `INSUNITS` для мм/см/м или задаётся явно `measurement_factor`. Линейные размеры — без указания единицы, с засечками; радиальные/диаметральные используют стрелки. Дополнительно доступны `dimension_rotated`, `dimension_radius`, `dimension_diameter` вместе с ранее реализованным `dimension_aligned`. `spds_axis` строит ось со штрихпунктирной линией и маркерами; `spds_level` — отметку в метрах с тремя десятичными знаками.
+`spds_dimstyle` creates a new style. `drawing_scale` is the scale denominator; the millimeter factor derives from `INSUNITS` for mm/cm/m or explicit `measurement_factor`. Linear dimensions omit unit suffixes and use ticks; radial/diameter dimensions use arrows. `dimension_rotated`, `dimension_radius`, and `dimension_diameter` complement `dimension_aligned`. `spds_axis` builds a chain-line axis with markers; `spds_level` reports meter elevations to three decimals.
 
-Для КЖ/КМ агент использует существующую геометрию C# (линии, полилинии, блоки, штриховки, тела), новые размеры/обозначения, спецификации, ведомости, рамки и выпуск листов. Профили, марки, армирование, узлы и расчётные исходные данные берутся из задания/чертежа. Шаблоны не рассчитывают автоматически несущую способность и не подтверждают нормативное соответствие проекта. Шрифт по ГОСТ 2.304, дополнительные графы, узлы и комплектность требуют проверки по конкретному проекту.
+For RC/steel work, use existing C# geometry (lines, polylines, blocks, hatches, solids), dimensions/symbols, specifications/schedules, frames, and layouts. Profiles, marks, reinforcement, details, and design inputs come from the task/drawing. Templates neither calculate structural capacity nor certify project compliance. GOST 2.304 fonts, additional columns, details, and completeness require project-specific review.
 
-Источники: [ГОСТ Р 21.101-2026 — Росстандарт](https://protect.gost.ru/gost/details/17bc12e8-6579-4145-b141-56855e772e7f), [разъяснение Росстандарта](https://base.garant.ru/414842117/), [ГОСТ 21.501-2018](https://protect.gost.ru/gost/details/a241e289-aac3-4ee2-ad44-3259f9774799), [формулы со ссылкой на другую таблицу — Autodesk](https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/Using-cell-references-from-other-tables-in-table-formulas.html).
+Sources: [GOST R 21.101-2026 — Rosstandart](https://protect.gost.ru/gost/details/17bc12e8-6579-4145-b141-56855e772e7f), [Rosstandart clarification](https://base.garant.ru/414842117/), [GOST 21.501-2018](https://protect.gost.ru/gost/details/a241e289-aac3-4ee2-ad44-3259f9774799), [Autodesk cross-table formulas](https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/Using-cell-references-from-other-tables-in-table-formulas.html).

@@ -1,43 +1,43 @@
-# Возможности CAD MCP 0.10.0 и ориентиры развития
+# CAD MCP 0.10.0 capabilities and roadmap
 
 ```mermaid
 flowchart LR
-    U[Пользователь] --> R[Кнопка CAD MCP в ленте]
-    R --> C[Вкладки DWG: отдельные чаты, HTML, вложения, формулы, Word]
-    C --> P[Codex / Claude Code по подписке]
-    P --> H[Помощники: чтение, расчёты, проверка]
+    U[User] --> R[CAD MCP ribbon button]
+    R --> C[DWG tabs: separate chats, HTML, attachments, math, Word]
+    C --> P[Codex / Claude Code subscriptions]
+    P --> H[Assistants: reading, calculation, review]
     H --> P
-    P --> M[MCP host: 46 инструментов]
-    M --> B[Локальный broker и журнал операций]
-    B --> A[C# адаптер внутри AutoCAD]
-    A --> Q[Чтение: DWG, Civil/Map, снимок и привязка пикселей]
-    A --> T[Штатные таблицы, формулы и межтабличные ссылки]
-    A --> G[СПДС: размеры, оси, отметки, рамки и ведомости КЖ/КМ]
-    A --> S[Уточнения и вложения во время работы]
-    A --> E[Правка: 98 действий, просмотр, транзакция, Undo, readback]
-    A --> X[Вывод: листы, PDF комплект, DXF и ведомость]
-    A --> F[AutoLISP только для непокрытых команд, с подтверждением пользователя]
-    M --> V[Фото: калибровка, точки, сравнение силуэта]
-    A --> K[Приёмка по размерам, свежая проверка и состояние сохранения]
-    B --> J[Квитанции при занятом CAD и восстановление потерянного ответа]
-    Q --> D[(Текущий DWG)]
+    P --> M[MCP host: 46 tools]
+    M --> B[Local broker and operation journal]
+    B --> A[C# adapter inside AutoCAD]
+    A --> Q[Reading: DWG, Civil/Map, images and pixel registration]
+    A --> T[Native tables, formulas and cross-table links]
+    A --> G[SPDS: dimensions, axes, levels, frames and RC/steel schedules]
+    A --> S[Follow-ups and attachments during execution]
+    A --> E[Editing: 98 actions, preview, transaction, Undo, readback]
+    A --> X[Output: layouts, PDF set, DXF and manifest]
+    A --> F[AutoLISP for missing operations with user approval]
+    M --> V[Photos: calibration, points, silhouette comparison]
+    A --> K[Dimensional acceptance, fresh verification and save state]
+    B --> J[Receipts while CAD is busy and lost-response recovery]
+    Q --> D[(Current DWG)]
     E --> D
     X --> O[(PDF / DXF)]
     F --> D
 ```
 
-В 0.7.0 измеряемые критерии проверяются до commit с откатом неверного пакета; после выполнения объекты можно перечитать через `cad_verify`. Статус операции доступен вне очереди DWG, потерянный ответ не приводит к повторной отправке изменения. Фото калибруются по известным точкам, а заданные агентом контуры сравниваются с итоговым видом. Это не автоматическая реконструкция полной 3D-модели. [Контракт, примеры и ограничения](result-verification.md).
+Since 0.7.0, measurable acceptance checks run before commit and roll back invalid ordinary batches; `cad_verify` rereads objects afterward. Operation status is available outside the DWG queue, and lost replies do not trigger duplicate edits. Photos can be calibrated using known points and agent-supplied outlines compared with final views. This is not automatic full 3D reconstruction. See [contracts, examples, and limits](result-verification.md).
 
-Код C# работает в процессе AutoCAD; MCP и провайдер общаются с ним через локальный broker. Правка возвращает созданные объекты и ревизию. Нативные операции включают произвольные многоугольные 3D-сетки, пространственные кривые, выдавливание, sweep, вращение профиля и булевы операции над телами. Листы получают видовые экраны, параметры печати и блоки оформления; пакетный выпуск создаёт несколько PDF и ведомость. Растры привязываются к WCS по опорным точкам, а снимки вида калибруются отдельно. Для Civil доступны ограниченный каталог и TIN-операции; для Map — чтение системы координат и объектных данных. Специальные функции Civil/Map пока не проверены в работающих вертикальных продуктах. СПДС/ГОСТ и содержание PDF-комплекта требуют отдельной проверки.
+C# runs inside AutoCAD; MCP/providers connect through a local broker. Edits return entities and revision. Native operations include arbitrary polygonal 3D meshes, spatial curves, extrusion, sweep, revolve, and solid Booleans. Layouts support viewports, plot settings, and title blocks; batch publishing produces PDFs/manifests. Rasters use WCS control points; view captures are calibrated separately. Civil has a limited catalog/TIN operations; Map reads coordinate systems/object data. Special Civil/Map functions had not been validated in live vertical products. SPDS/GOST and published PDF contents require separate checks.
 
-| Реализация | Полезная идея из опубликованного кода и описания | Состояние у нас |
+| Implementation | Useful published idea | Our status |
 |---|---|---|
-| [beiming183-cloud/AutoCAD-MCP](https://github.com/beiming183-cloud/AutoCAD-MCP) | Проверка геометрии после записи, топологические проверки, более широкий набор 3D-операций и подтверждение итоговых файлов | Есть транзакция, readback, 3D sweep и булевы операции, топологическая проверка `cad_review`, повторное чтение PDF/DXF |
-| [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP) | Листы, шаблоны, проверки стандартов, критикующий проход после построения, ведомости и специализированные инструментальные пакеты | Видовые экраны и ведомости реализованы; проверки размеров, шрифтов, полей и нумерации листов добавлены. Контракт правил ГОСТ/СПДС ещё нужен |
-| [Slacker-LLC/autocad-mcp](https://github.com/Slacker-LLC/autocad-mcp) | Явные единицы, проверка параметров, захват настоящего вида из AutoCAD | Есть единицы DWG, валидация, реальный preview и калибровка пикселей по опорным точкам |
-| [zymorel/autocad-mcp-community](https://github.com/zymorel/autocad-mcp-community) | Заявлены Civil 3D поверхности/трассы/профили, Map 3D и геоданные | По разбору кода (октябрь 2026) модули Civil и Map неработоспособны, лицензии нет; код не используется. Наши Civil-операции сверены с дампами сигнатур Civil 3D 2024–2027 |
-| [HorizunGroup/horizun-civil3d-mcp](https://github.com/HorizunGroup/horizun-civil3d-mcp) | Типизированный Civil-плагин с живыми находками и дампами сигнатур | Дампы использованы для офлайн-проверки наших вызовов; кривые трассы и имена стилей/деталей реализованы |
+| [beiming183-cloud/AutoCAD-MCP](https://github.com/beiming183-cloud/AutoCAD-MCP) | Geometry readback, topology, broader 3D operations, final-file verification | Transactions/readback, sweep/Booleans, `cad_review` topology, PDF/DXF rereading. |
+| [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP) | Layouts/templates/standards, critique pass, schedules, specialized tool packs | Viewports/schedules and dimension/font/field/sheet-number checks implemented; a GOST/SPDS rules contract remains needed. |
+| [Slacker-LLC/autocad-mcp](https://github.com/Slacker-LLC/autocad-mcp) | Explicit units, parameter checks, actual AutoCAD capture | DWG units/validation, real previews, control-point pixel calibration. |
+| [zymorel/autocad-mcp-community](https://github.com/zymorel/autocad-mcp-community) | Advertised Civil surfaces/alignments/profiles, Map/geodata | October 2026 source review found Civil/Map modules nonfunctional and no license; no code used. Our Civil calls are checked against 2024–2027 signatures. |
+| [HorizunGroup/horizun-civil3d-mcp](https://github.com/HorizunGroup/horizun-civil3d-mcp) | Typed Civil plugin, live findings, signature dumps | Dumps support offline call checks; alignment curves and named styles/parts implemented. |
 
-Обзор 77 репозиториев и 379 форков (октябрь 2026) добавил: подтверждение AutoLISP пользователем, пробный прогон правок, повседневные 2D-операции, топологию и проверки выпуска, сводки и ведомости объёмов, ленту изменений, кривые трасс Civil и стенд оценки агентов (`benchmarks/`). Всё это собрано и покрыто модульными тестами, но в работающем AutoCAD ещё не проверено.
+An October 2026 review of 77 repositories and 379 forks led to user-approved Lisp, edit previews, everyday 2D operations, topology/release checks, outlines/takeoff, change feeds, Civil alignment curves, and agent evaluation (`benchmarks/`). These additions were built/unit-tested; that review did not establish live AutoCAD validation.
 
-Следующие проверки: визуальное сравнение PDF с листами DWG, независимые контрольные точки для растра и живые Civil/Map DWG с объектными данными, трассами и сетями. После этого — точные C# операции для редактирования трасс, профилей, сетей и Map OD. AutoLISP остаётся запасным способом там, где Autodesk не предоставляет подходящий managed API. [Autodesk описывает построение блоков и листов через .NET](https://help.autodesk.com/cloudhelp/2027/PLK/OARX-DevGuide-Managed/files/GUID-DF67671C-101D-4917-808B-DD2C5BE3C7E9.htm); [для Civil 3D требуются отдельные библиотеки AeccDbMgd/AecBaseMgd](https://help.autodesk.com/cloudhelp/2025/ENU/Civil3D-DevGuide/files/GUID-267E68C8-AD2D-4F7F-87DF-831018D56CDB.htm).
+Next validation: compare PDFs with DWG layouts, independent raster checkpoints, and live Civil/Map DWGs with OD, alignments, and networks. Then extend precise C# editing for alignments/profiles/networks/Map OD. AutoLISP remains a fallback where Autodesk lacks a suitable managed API. [Autodesk .NET blocks/layouts guide](https://help.autodesk.com/cloudhelp/2027/PLK/OARX-DevGuide-Managed/files/GUID-DF67671C-101D-4917-808B-DD2C5BE3C7E9.htm); [Civil requires AeccDbMgd/AecBaseMgd](https://help.autodesk.com/cloudhelp/2025/ENU/Civil3D-DevGuide/files/GUID-267E68C8-AD2D-4F7F-87DF-831018D56CDB.htm).

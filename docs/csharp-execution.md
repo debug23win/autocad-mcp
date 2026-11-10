@@ -1,10 +1,10 @@
-# Произвольный C#
+# Arbitrary C# execution
 
-`cad_csharp` компилирует C# 12 и выполняет его в закреплённом документе. Готовые операции `cad_edit` предпочтительны для обычной геометрии. Компилятор поставляется с MCP host; SDK .NET и Visual Studio не требуются. References берутся из framework/AutoCAD/загруженных managed-сборок текущего CAD-процесса, компиляция проходит вне AutoCAD.
+`cad_csharp` compiles C# 12 and executes it in the pinned document. Prefer built-in `cad_edit` operations for ordinary geometry. The compiler ships with the MCP host; neither the .NET SDK nor Visual Studio is required. References come from framework/AutoCAD/loaded managed assemblies in the current CAD process; compilation happens outside AutoCAD.
 
-С версии 0.11.6 кандидаты references проверяются по CLR-метаданным: native DLL без .NET metadata, повреждённые и недоступные файлы пропускаются. Они больше не вызывают общий сбой «PE image does not have metadata». Если управляемых ссылок нет, инструмент останавливается до отправки CAD-операции.
+Since 0.11.6, reference candidates are checked for CLR metadata: native DLLs without .NET metadata and corrupt/inaccessible files are skipped. They no longer cause the generic "PE image does not have metadata" failure. If no managed references remain, the tool stops before submitting a CAD operation.
 
-Параметры: `session_id`, `document_id`, свежая `expected_revision`, уникальный `operation_id`, полный `code`:
+Parameters: `session_id`, `document_id`, fresh `expected_revision`, unique `operation_id`, and complete `code`:
 
 ```csharp
 using System.Threading;
@@ -26,10 +26,10 @@ public static class CadMcpScript
 }
 ```
 
-Работайте в переданных database/transaction, возвращайте DTO/handles, не живые DBObjects. Не вызывайте CAD API на фоновых потоках, не выдавайте запланированную `SendStringToExecute` команду за завершённую. Вызов синхронный; отмена кооперативная. Проверяйте токен в длинных циклах: нативный kernel нельзя безопасно прервать принудительно.
+Use the supplied database/transaction and return DTOs/handles, never live DBObjects. Do not call CAD APIs on background threads or present a queued `SendStringToExecute` command as completed. Execution is synchronous; cancellation is cooperative. Check the token in long loops: the native kernel cannot be safely interrupted forcibly.
 
-До загрузки сборки обязательна DWG-копия; при ошибке checkpoint код не запускается. Ответ/квитанция содержат checkpoint, SHA-256 исходника и изменённые handles. Ошибка компиляции не запускает код. Неопределённый исход проверяется по исходному operation_id, без повтора с новым id. Результат перечитывается через cad_entity_get/search/verify.
+A DWG checkpoint is required before loading the assembly; checkpoint failure prevents execution. Responses/receipts include the checkpoint, source SHA-256, and changed handles. Compilation failure does not execute code. Resolve uncertain outcomes using the original operation_id, without retrying under a new ID. Read results back with cad_entity_get/search/verify.
 
-Код работает с полным доверием процесса. Ошибка откатывает предоставленную host-транзакцию, но не гарантирует откат собственных commit, файлов, внешних API и обработчиков событий. Checkpoint сохраняет базу DWG, а не все внешние файлы. Не закрывайте/сохраняйте посторонние документы. Readonly-помощники не могут вызывать cad_csharp.
+Code runs with full process trust. Failure rolls back the supplied host transaction, but cannot guarantee rollback of independent commits, files, external APIs, or event handlers. Checkpoints preserve the DWG database, not every external file. Never close/save unrelated documents. Read-only assistants cannot call cad_csharp.
 
-Основная сессия Codex получает workspace-write в выбранной рабочей папке и сетевой доступ; readonly-профили помощников сохранены. Права папки позволяют хранить исходники, но выполнение внутри CAD обеспечивает именно cad_csharp.
+The primary Codex session receives workspace-write in the chosen working directory and network access; assistant profiles remain read-only. Directory permissions allow source-file storage; cad_csharp provides execution inside CAD.
