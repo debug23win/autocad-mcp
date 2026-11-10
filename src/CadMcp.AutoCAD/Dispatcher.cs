@@ -743,10 +743,14 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             var method = assembly.GetType("CadMcpScript")?.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
                 null, [typeof(Database), typeof(Transaction), typeof(CancellationToken)], null)
                 ?? throw new CadFault("CSHARP_ENTRYPOINT", "Expected public static object CadMcpScript.Run(Database, Transaction, CancellationToken)");
+            if (method.ReturnType != typeof(object))
+                throw new CadFault("CSHARP_ENTRYPOINT", "Run must return object synchronously, not Task or ValueTask; return a completed serializable DTO");
             object? result;
             try { result = method.Invoke(null, [doc.Database, transaction, ct]); }
             catch (System.Reflection.TargetInvocationException error) { throw error.InnerException ?? error; }
             ct.ThrowIfCancellationRequested();
+            if (result is Task or ValueTask || result is not null && result.GetType().IsGenericType && result.GetType().GetGenericTypeDefinition() == typeof(ValueTask<>))
+                throw new CadFault("CSHARP_ASYNC_RESULT", "Run returned an asynchronous operation. Return a completed DTO; do not schedule CAD work outside the supplied transaction");
             var detached = Wire.Element(result ?? new { });
             transaction.Commit(); committed = true;
             journal.Phase(id, "committed");
