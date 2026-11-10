@@ -185,6 +185,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         bool completed = false, streamed = false, initialized = false, thinking = false;
         string? limitWarning = null;
         var pendingTools = new Dictionary<string, string>(StringComparer.Ordinal);
+        var pendingArguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         try
         {
             var turns = new ClaudeTurns(Guid.NewGuid().ToString());
@@ -269,7 +270,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                         foreach (var block in blocks.EnumerateArray())
                             if (ProviderJson.Text(block, "type") == "tool_use" && ProviderJson.Text(block, "name") is { } toolName)
                             {
-                                if (ProviderJson.Text(block, "id") is { } id) pendingTools[id] = toolName;
+                                if (ProviderJson.Text(block, "id") is { } id) { pendingTools[id] = toolName; var input = ProviderJson.Child(block, "input"); pendingArguments[id] = input.ValueKind == JsonValueKind.Undefined ? default : input.Clone(); }
                                 yield return toolName is "Agent" or "Task"
                                     ? new("status", "Помощники анализируют задачу") : new("step", "Выполняю " + toolName);
                             }
@@ -279,6 +280,11 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                                 ProviderJson.Text(resultBlock, "tool_use_id") is { } id && pendingTools.Remove(id, out var toolName))
                             {
                                 bool failed = ProviderJson.Child(resultBlock, "is_error").ValueKind == JsonValueKind.True;
+                                pendingArguments.Remove(id, out var toolArguments);
+                                var problem = main && toolName is not ("Agent" or "Task") ? ToolDiagnostics.Describe(toolName,
+                                    CadMcp.Core.Wire.Element(new { content = ProviderJson.Child(resultBlock, "content").ValueKind == JsonValueKind.Undefined ? CadMcp.Core.Wire.Element("") : ProviderJson.Child(resultBlock, "content"), isError = failed }), failed, toolArguments) : null;
+                                failed |= problem is not null;
+                                if (problem is not null) yield return new("problem", problem);
                                 yield return toolName is "Agent" or "Task"
                                     ? new("status", "Объединяю результаты помощников")
                                     : new("step", (failed ? "Ошибка: " : "Завершено: ") + toolName);
@@ -509,7 +515,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         // Approvals are disabled and the panel has no UI for interactive requests. Decline the
                         // request and let Codex continue: the model sees the refusal instead of losing the turn.
                         await Send(new { id = serverRequest.Clone(), error = new { code = -32000, message = "CAD MCP declined " + name + ": interactive requests are disabled in this chat" } });
-                        yield return new("status", "Codex запросил интерактивное действие (" + name + "); CAD MCP его отклонил");
+                        yield return new("problem", "Этап: интерактивное действие Codex\nКод: INTERACTIVE_REQUEST_DISABLED\nЗапрос: " + name + "\nВ этом чате интерактивные запросы отключены; Codex получил отказ. Результат CAD-операций требует отдельной проверки.");
                         continue;
                     }
                     if (name == "turn/started" && rootEvent && ProviderJson.Text(ProviderJson.Child(parameters, "turn"), "id") is { } activeTurn)
@@ -530,8 +536,13 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         if (itemType == "mcpToolCall") yield return new("step", "Выполняю " + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
                         if (itemType == "collabAgentToolCall") yield return new("progress", "Помощники проверяют выбранные данные");
                     }
-                    if (name == "item/completed" && rootEvent && itemType == "mcpToolCall")
-                        yield return new("step", (ProviderJson.Text(item, "status") == "failed" ? "Ошибка: " : "Завершено: ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
+                    if (name == "item/completed" && itemType == "mcpToolCall")
+                    {
+                        var problem = ToolDiagnostics.Describe(ProviderJson.Text(item, "tool") ?? "MCP", ProviderJson.Child(item, "result"),
+                            ProviderJson.Text(item, "status") == "failed", ProviderJson.Child(item, "arguments"), ProviderJson.Child(item, "error"));
+                        if (rootEvent) yield return new("step", (problem is not null ? "Ошибка: " : "Завершено: ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
+                        if (problem is not null) yield return new("problem", (rootEvent ? "" : "Проблема у помощника\n") + problem);
+                    }
                     if (name == "item/completed" && rootEvent && itemType == "collabAgentToolCall")
                         yield return new("progress", "Проверяю результаты помощников");
                     if (name == "error")

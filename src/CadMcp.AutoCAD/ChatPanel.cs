@@ -40,6 +40,8 @@ internal sealed class ChatPanel : UserControl
     private readonly ChatBrowser transcript = new();
     private readonly List<ChatLine> messages = new();
     private readonly Button send = new() { Content = "Отправить" };
+    private readonly Button stop = new() { Content = "Стоп", IsEnabled = false };
+    private readonly HashSet<string> reportedProblems = new(StringComparer.Ordinal);
     private readonly TextBlock activity = new() { Text = "Готово", TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock drawing = new() { Text = "Чертёж: подключение ещё не проверено", TextWrapping = TextWrapping.Wrap };
     private readonly System.Windows.Threading.DispatcherTimer contextTimer = new() { Interval = TimeSpan.FromSeconds(3) };
@@ -242,7 +244,7 @@ internal sealed class ChatPanel : UserControl
             if (dialog.ShowDialog() == true) AddAttachments(dialog.FileNames);
         };
         row.Children.Add(send); send.Click += async (_, _) => await Send();
-        var stop = new Button { Content = "Стоп" }; stop.Click += (_, _) => Stop(); row.Children.Add(stop);
+        stop.Click += (_, _) => Stop(); row.Children.Add(stop);
         var clear = new Button { Content = "Новый диалог" }; clear.Click += (_, _) => { if (running is null) { adapter = null; restored = null; messages.Clear(); selectedAnswer = -1; RenderChat(); attachments.Clear(); RefreshAttachments(); Persist(); } }; row.Children.Add(clear);
         var save = new Button { Content = "Сохранить историю" }; save.Click += (_, _) => SaveHistory(); row.Children.Add(save);
         var saveWord = new Button { Content = "Диалог в Word" }; saveWord.Click += (_, _) => SaveWord(false); row.Children.Add(saveWord);
@@ -466,12 +468,23 @@ internal sealed class ChatPanel : UserControl
     }
     private void SetBusy(bool busy)
     {
+        stop.IsEnabled = busy;
         send.IsEnabled = attach.IsEnabled = !documentClosed && !benchmarkBusy && (!busy || acceptingInput);
         send.Content = acceptingInput ? "Дополнить" : "Отправить";
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy;
         agentCount.IsEnabled = !busy;
+    }
+    private void ProviderCompleted()
+    {
+        acceptingInput = false;
+        SetBusy(true); // CAD verification is still running; the provider can no longer accept steering.
+    }
+    private void FinishTurn(string status)
+    {
+        progressTimer.Stop(); flushTimer.Stop(); currentActivity = status; activity.Text = status;
+        SetBusy(false);
     }
     private async Task RefreshModels()
     {
@@ -514,6 +527,8 @@ internal sealed class ChatPanel : UserControl
             try { ClaudeCatalog.Select(claudeCatalog, chosenClaudeModel, chosenClaudeEffort); }
             catch (IOException error) { activity.Text = error.Message; return; }
         running = new(); acceptingInput = true; SetBusy(true);
+        reportedProblems.Clear();
+        string completionStatus = "Готово";
         var answerClock = Stopwatch.StartNew();
         ProviderTokenUsage? tokenUsage = null;
         CodexRateLimits? rateLimits = null;
@@ -561,7 +576,8 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "usage") tokenUsage = item.Usage;
                 if (item.Kind == "rate_limits") { rateLimits = item.RateLimits; quota.Text = rateLimits?.Display() ?? "Лимиты Codex: нет данных"; }
                 if (item.Kind == "progress") RecordProgress(item.Text);
-                if (item.Kind == "completed") answerCompleted = true;
+                if (item.Kind == "problem") RecordProblem(item.Text);
+                if (item.Kind == "completed") { answerCompleted = true; ProviderCompleted(); }
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
                 if (item.Kind == "text") streamedText.Append(item.Text);
@@ -584,12 +600,14 @@ internal sealed class ChatPanel : UserControl
         }
         catch (OperationCanceledException)
         {
+            completionStatus = "Остановлено";
             FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Проверяю результат отмены и состояние чертежа." }); activity.Text = "Остановлено";
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         catch (System.Exception e)
         {
-            LogError(e); FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОшибка: " + e.Message }); activity.Text = "Ошибка; подробности в журнале";
+            completionStatus = "Ошибка; подробности в чате и журнале";
+            LogError(e); RecordProblem("Этап: " + currentActivity + "\nКод/тип: " + (e is CadFault fault ? fault.Code : e.GetType().Name) + "\nОшибка: " + e.Message + "\nЖурнал: " + LogPath() + "\nИсход ранее принятых CAD-операций проверяется отдельно; автоматического повтора нет."); activity.Text = completionStatus;
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         finally {
@@ -597,7 +615,7 @@ internal sealed class ChatPanel : UserControl
             while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,"Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно.");
             progressTimer.Stop(); flushTimer.Stop(); FlushText(); answerClock.Stop();
             UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) + (codexTurn ? "\n" + (rateLimits?.Display() ?? "Лимиты Codex: нет данных") : "") });
-            Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
+            running.Dispose(); running = null; currentAssistantIndex = -1; FinishTurn(completionStatus); Persist(); }
     }
     private async Task AddFollowup()
     {
@@ -607,6 +625,8 @@ internal sealed class ChatPanel : UserControl
             var prompt=string.IsNullOrWhiteSpace(input.Text)?"Учти также приложенные файлы.":input.Text;
             int line=messages.Count;
             FlushText();var previous=currentAssistantIndex>=0?messages[currentAssistantIndex]:null;
+            if (previous is not null && string.IsNullOrWhiteSpace(previous.Text))
+                messages[currentAssistantIndex] = previous with { Delivery = "Продолжение задачи — ниже." };
             messages.Add(new ChatLine("user",prompt,Images:files.Where(f=>f.Kind==AttachmentKind.Image).Select(transcript.SaveImage).ToArray(),Delivery:"Ожидает подключения"));
             currentAssistantIndex=messages.Count;messages.Add(new ChatLine("assistant","",Model:previous?.Model,Effort:previous?.Effort));
             followups.Enqueue((line,new(prompt,files)));input.Clear();attachments.Clear();RefreshAttachments();RenderChat();Persist();
@@ -643,7 +663,7 @@ internal sealed class ChatPanel : UserControl
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var response=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_operation_list",session,document,
                 Data:Wire.Element(new{since=turnStarted.ToString("O"),limit=100}),OwnerId:operationOwner),timeout.Token);
-            if(response.Error is not null)throw new IOException(response.Error.Message);
+            if(response.Error is not null)throw new CadFault(response.Error.Code, response.Error.Message);
             if(response.Data is not JsonElement data || !data.TryGetProperty("operations",out var ops) || ops.GetArrayLength()==0)
             { if(preview)await AttachPreview(document); return; }
             var records=ops.EnumerateArray().ToArray(); JsonElement? review=null;
@@ -662,7 +682,7 @@ internal sealed class ChatPanel : UserControl
                     {
                         var allResult=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
                             Wire.Element(new{handles_json=JsonSerializer.Serialize(chunk)})),timeout.Token);
-                        if(allResult.Error is not null)throw new IOException(allResult.Error.Message);
+                        if(allResult.Error is not null)throw new CadFault(allResult.Error.Code, allResult.Error.Message);
                         if(allResult.Data is JsonElement allData)allEntities.AddRange(allData.GetProperty("entities").EnumerateArray().Select(e=>e.Clone()));
                     }
                     liveHandles.AddRange(CadResultSummary.PreviewHandles(allEntities, Wire.Element(context.Data!).Text("current_space_handle")));
@@ -687,7 +707,7 @@ internal sealed class ChatPanel : UserControl
         // Verification is best effort and runs from UI event handlers: no failure may escape to the dispatcher.
         catch(System.Exception error)
         {
-            LogError(error); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
+            LogError(error); RecordProblem("Этап: проверка результата DWG\nКод/тип: " + (error is CadFault fault ? fault.Code : error.GetType().Name) + "\nОшибка: " + error.Message + "\nЖурнал: " + LogPath()); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
         }
     }
     private async Task AttachPreview(string? initialDocumentId,string viewName="current",IReadOnlyList<string>? handles=null)
@@ -704,7 +724,7 @@ internal sealed class ChatPanel : UserControl
             var result = await PipeClient.CallAsync(brokerPipe,
                 new(Guid.NewGuid().ToString("N"), "cad_render", context.SessionId, context.DocumentId,
                     context.Revision, Wire.Element(new { width = 1024, height = 768,view_name=viewName,handles_json=handles is null?null:JsonSerializer.Serialize(handles) })), timeout.Token);
-            if (result.Error is not null) throw new IOException(result.Error.Message);
+            if (result.Error is not null) throw new CadFault(result.Error.Code, result.Error.Message);
             if (result.Data is not JsonElement data) throw new IOException("AutoCAD не вернул изображение");
             var preview = transcript.SavePreview(data.Text("image_base64") ?? throw new IOException("изображение пусто"),
                 data.Number("width", 1024), data.Number("height", 768));
@@ -712,7 +732,7 @@ internal sealed class ChatPanel : UserControl
         }
         catch (System.Exception error)
         {
-            LogError(error);
+            LogError(error); RecordProblem("Этап: получение итогового вида\nКод/тип: " + (error is CadFault fault ? fault.Code : error.GetType().Name) + "\nОшибка: " + error.Message + "\nЖурнал: " + LogPath());
             UpdateAssistant(line => line with { Text = line.Text + "\n\nИтоговый вид не получен: " + error.Message + ". Проверьте открытый чертёж перед сохранением." });
         }
     }
@@ -756,6 +776,15 @@ internal sealed class ChatPanel : UserControl
         catch (System.Exception e) { activity.Text = "История или выбор модели не сохранены: " + e.Message; }
     }
     private ChatPreferences Preferences() => new(provider.SelectedIndex, chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort, showProgress.IsChecked == true);
+    private void RecordProblem(string diagnostic)
+    {
+        if (string.IsNullOrWhiteSpace(diagnostic) || !reportedProblems.Add(diagnostic)) return;
+        FlushText();
+        currentActivity = "Возникла проблема; диагностика в чате";
+        string bounded = diagnostic.Length <= 4000 ? diagnostic : diagnostic[..4000] + "…";
+        UpdateAssistant(line => line with { Text = line.Text + "\n\n**Проблема при выполнении**\n\n```text\n" + bounded.Replace("```", "'''") + "\n```\n\n" });
+        Persist();
+    }
     private void RecordProgress(string text)
     {
         if (showProgress.IsChecked != true || string.IsNullOrWhiteSpace(text)) return;

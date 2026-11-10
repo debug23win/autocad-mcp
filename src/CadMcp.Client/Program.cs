@@ -10,7 +10,7 @@ internal static class Program
         var panel = new ChatWorkspace();
         int session = Array.IndexOf(args, "--session");
         if (session >= 0 && session + 1 < args.Length) panel.CadSessionId = args[session + 1];
-        var window = new Window { Title = "CAD MCP — ассистент чертежей", Width = 620, Height = 880, MinWidth = 430, MinHeight = 600, Content = panel };
+        var window = new ChatWindow(panel) { Width = 620, Height = 880, MinWidth = 430, MinHeight = 600 };
         window.Closed += (_, _) => panel.Stop();
         app.Run(window);
     }

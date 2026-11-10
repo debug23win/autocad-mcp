@@ -10,4 +10,5 @@
     <Compile Include="../../src/CadMcp.AutoCAD/GlobalUsings.cs" Link="GlobalUsings.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="../../src/CadMcp.AutoCAD/ChatTheme.cs" Link="ChatTheme.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../src/CadMcp.AutoCAD/ChatWindow.cs" Link="ChatWindow.cs" /></ItemGroup>
 </Project>
