@@ -43,6 +43,10 @@ internal static class Program
         Assert(saved.CodexModel == "gpt-6-sol" && saved.CodexReasoningEffort == "high" && saved.SessionId == "kept-session", "Selection discarded history/settings");
         var restored = new ChatPanel(store, preferences: preferences); restored.ApplyModels(models);
         Assert((string)((ComboBox)typeof(ChatPanel).GetField("model", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(restored)!).SelectedValue == "gpt-6-sol", "Reopened panel lost model");
+        string projectDirectory = Path.Combine(root, "project"); Directory.CreateDirectory(projectDirectory);
+        var newProject = new ChatPanel(new ChatStateStore(Path.Combine(root, "new-project-history")), projectDirectory, preferences: preferences);
+        var projectPath = (System.Windows.Controls.TextBox)typeof(ChatPanel).GetField("directory", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(newProject)!;
+        Assert(projectPath.Text == projectDirectory, "Global model preferences displaced the new drawing working directory");
         Field("provider").SelectedIndex = 1;
         int Items(ComboBox box) => ((System.Collections.IEnumerable)box.ItemsSource).Cast<object>().Count();
         string Label(ComboBox box, int index) => (string)box.Items[index].GetType().GetProperty("Label")!.GetValue(box.Items[index])!;

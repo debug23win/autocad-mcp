@@ -98,6 +98,7 @@ internal sealed class ChatPanel : UserControl
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
         catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
+        bool hadProjectHistory = restored is not null;
         if (this.preferences.Load() is { } choices)
         {
             showProgress.IsChecked = choices.ShowProgress;
@@ -106,7 +107,7 @@ internal sealed class ChatPanel : UserControl
                 ClaudeModel = choices.ClaudeModel, ClaudeReasoningEffort = choices.ClaudeEffort }, imported: false);
         }
         lastPreferences = Preferences();
-        if(restored is null && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
+        if(!hadProjectHistory && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
         InstallThemeStyles();
         var root = new DockPanel { Margin = new Thickness(8), AllowDrop = true }; Content = root;
         root.PreviewDragOver += (_, e) =>
