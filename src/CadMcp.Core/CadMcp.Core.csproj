@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <EmbeddedResource Include="Resources/ui.en.json" LogicalName="CadMcp.Core.Resources.ui.en.json" WithCulture="false" />
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <InternalsVisibleTo Include="CadMcp.Tests" />
   </ItemGroup>

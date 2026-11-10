@@ -41,7 +41,7 @@ public static class ToolDiagnostics
             { failed = true; payload = candidate; error = Wire.Element(new { code = "PDF_RENDER_FAILED", message = renderError }); break; }
         }
         if (!failed) return null;
-        string message = error.ValueKind == JsonValueKind.String ? error.GetString()! : Text(error, "message") ?? plain ?? "Инструмент не передал подробности ошибки.";
+        string message = error.ValueKind == JsonValueKind.String ? error.GetString()! : Text(error, "message") ?? plain ?? UiText.T("Инструмент не передал подробности ошибки.");
         // Only an explicit false confirms no write began. A failed full-trust operation may have side effects.
         var data = Child(payload, "data");
         var started = Child(payload, "changes_started"); if (started.ValueKind == JsonValueKind.Undefined) started = Child(data, "changes_started");
@@ -50,15 +50,15 @@ public static class ToolDiagnostics
         string code = Text(error, "code") ?? (Child(error, "code").ValueKind == JsonValueKind.Number ? Child(error, "code").GetRawText() : "TOOL_ERROR");
         string normalized = tool.Contains("mcp__", StringComparison.Ordinal) ? tool[(tool.LastIndexOf("__", StringComparison.Ordinal) + 2)..] : tool;
         string state = !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
-            ? "Инструмент чтения; состояние DWG этим сообщением не подтверждается."
-            : started.ValueKind == JsonValueKind.False ? "Этот вызов не начал запись в DWG."
-            : "Исход записи не подтверждён. Проверить квитанцию и DWG; автоматически повторять правку нельзя.";
+            ? UiText.T("Инструмент чтения; состояние DWG этим сообщением не подтверждается.")
+            : started.ValueKind == JsonValueKind.False ? UiText.T("Этот вызов не начал запись в DWG.")
+            : UiText.T("Исход записи не подтверждён. Проверить квитанцию и DWG; автоматически повторять правку нельзя.");
         // Password-like arguments are never shown, even if an error echoed their value.
         if (arguments.ValueKind == JsonValueKind.Object)
             foreach (var field in arguments.EnumerateObject().Where(p => p.Name.Contains("password", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("secret", StringComparison.OrdinalIgnoreCase)))
-                if (field.Value.ValueKind == JsonValueKind.String && field.Value.GetString() is { Length: > 0 } secret) message = message.Replace(secret, "[скрыто]", StringComparison.Ordinal);
+                if (field.Value.ValueKind == JsonValueKind.String && field.Value.GetString() is { Length: > 0 } secret) message = message.Replace(secret, UiText.T("[скрыто]"), StringComparison.Ordinal);
         static string Limit(string value, int length) => value.Length <= length ? value : value[..length] + "…";
-        return "Инструмент/этап: " + Limit(tool, 120) + "\nКод: " + Limit(code, 120) + "\nОшибка: " + Limit(message, 1600)
-            + (operation is null ? "" : "\nОперация: " + Limit(operation, 160)) + (request is null ? "" : "\nЗапрос: " + Limit(request, 160)) + "\n" + state;
+        return UiText.T("Инструмент/этап: ") + Limit(tool, 120) + UiText.T("\nКод: ") + Limit(code, 120) + UiText.T("\nОшибка: ") + Limit(message, 1600)
+            + (operation is null ? "" : UiText.T("\nОперация: ") + Limit(operation, 160)) + (request is null ? "" : UiText.T("\nЗапрос: ") + Limit(request, 160)) + "\n" + state;
     }
 }

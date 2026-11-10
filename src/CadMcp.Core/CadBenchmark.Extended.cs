@@ -111,7 +111,7 @@ public static class CadMcpScript {
             {
                 string caseId = "tool_" + tool;
                 if (stopped || ct.IsCancellationRequested) { results.Add(new(caseId, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Stopped after a preceding failure, unknown outcome or cancellation", [], [])); continue; }
-                progress?.Invoke(new("Полный бенчмарк: " + tool, document));
+                progress?.Invoke(new(UiText.T("Полный бенчмарк: ") + tool, document));
                 checks.Clear(); calls.Clear(); approvalMs = 0; var watch = Stopwatch.StartNew();
                 string status = "passed"; string? errorCode = null, message = null;
                 try

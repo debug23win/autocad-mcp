@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -21,19 +22,19 @@ public static class ChatAttachments
     {
         string fullPath = System.IO.Path.GetFullPath(path);
         var file = new FileInfo(fullPath);
-        if (!file.Exists) throw new FileNotFoundException("Файл не найден", fullPath);
+        if (!file.Exists) throw new FileNotFoundException(UiText.T("Файл не найден"), fullPath);
         string ext = file.Extension;
         var kind = Images.Contains(ext) ? AttachmentKind.Image : ext.Equals(".pdf", StringComparison.OrdinalIgnoreCase) ? AttachmentKind.Pdf :
             ext.Equals(".dwg", StringComparison.OrdinalIgnoreCase) || ext.Equals(".dxf", StringComparison.OrdinalIgnoreCase) ? AttachmentKind.Drawing :
             TextFiles.Contains(ext) && file.Length <= MaximumTextBytes ? AttachmentKind.Text : AttachmentKind.File;
-        if (kind == AttachmentKind.Image && file.Length > MaximumImageBytes) throw new InvalidDataException("Изображение больше 7 МиБ: " + file.Name);
-        if (kind == AttachmentKind.Image && !ValidImageHeader(fullPath, ext)) throw new InvalidDataException("Файл не является изображением указанного формата: " + file.Name);
+        if (kind == AttachmentKind.Image && file.Length > MaximumImageBytes) throw new InvalidDataException(UiText.T("Изображение больше 7 МиБ: ") + file.Name);
+        if (kind == AttachmentKind.Image && !ValidImageHeader(fullPath, ext)) throw new InvalidDataException(UiText.T("Файл не является изображением указанного формата: ") + file.Name);
         return new(fullPath, file.Name, file.Length, kind);
     }
 
     public static IReadOnlyList<ChatAttachment> Capture(IReadOnlyList<ChatAttachment> files)
     {
-        if (files.Count > MaximumCount) throw new InvalidDataException("Можно приложить не более 10 файлов");
+        if (files.Count > MaximumCount) throw new InvalidDataException(UiText.T("Можно приложить не более 10 файлов"));
         long textBytes = 0, imageBytes = 0;
         var result = new List<ChatAttachment>(files.Count);
         foreach (var file in files)
@@ -42,7 +43,7 @@ public static class ChatAttachments
             if (current.Kind == AttachmentKind.Text)
             {
                 textBytes += current.Size;
-                if (textBytes > 1024 * 1024) throw new InvalidDataException("Суммарный текст вложений больше 1 МБ");
+                if (textBytes > 1024 * 1024) throw new InvalidDataException(UiText.T("Суммарный текст вложений больше 1 МБ"));
                 var bytes = ReadBounded(current.Path, MaximumTextBytes, current.Name);
                 string value;
                 if (bytes.Length >= 2 && bytes[0] == 255 && bytes[1] == 254) value = Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
@@ -53,13 +54,13 @@ public static class ChatAttachments
                     Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
                     value = Encoding.GetEncoding(1251).GetString(bytes);
                 }
-                if (value.Contains('\0')) throw new InvalidDataException("Текстовый файл содержит двоичные данные: " + current.Name);
+                if (value.Contains('\0')) throw new InvalidDataException(UiText.T("Текстовый файл содержит двоичные данные: ") + current.Name);
                 current = current with { Text = value };
             }
             else if (current.Kind == AttachmentKind.Image)
             {
                 imageBytes += current.Size;
-                if (imageBytes > 21 * 1024 * 1024) throw new InvalidDataException("Суммарный размер изображений больше 21 МиБ");
+                if (imageBytes > 21 * 1024 * 1024) throw new InvalidDataException(UiText.T("Суммарный размер изображений больше 21 МиБ"));
             }
             result.Add(current);
         }
@@ -87,7 +88,7 @@ public static class ChatAttachments
         int read;
         while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
         {
-            if (buffer.Length + read > limit) throw new InvalidDataException("Текстовый файл изменился и стал слишком большим: " + name);
+            if (buffer.Length + read > limit) throw new InvalidDataException(UiText.T("Текстовый файл изменился и стал слишком большим: ") + name);
             buffer.Write(chunk, 0, read);
         }
         return buffer.ToArray();
@@ -96,15 +97,15 @@ public static class ChatAttachments
     public static string ImageMediaType(string path) => System.IO.Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".png" => "image/png", ".jpg" or ".jpeg" => "image/jpeg", ".webp" => "image/webp", ".gif" => "image/gif",
-        _ => throw new InvalidDataException("Неподдерживаемый формат изображения")
+        _ => throw new InvalidDataException(UiText.T("Неподдерживаемый формат изображения"))
     };
 
     public static byte[] ImageBytes(ChatAttachment file)
     {
         var current = Inspect(file.Path);
-        if (current.Kind != AttachmentKind.Image) throw new InvalidDataException("Изображение было изменено: " + file.Name);
+        if (current.Kind != AttachmentKind.Image) throw new InvalidDataException(UiText.T("Изображение было изменено: ") + file.Name);
         using var stream = File.OpenRead(file.Path);
-        if (stream.Length > MaximumImageBytes) throw new InvalidDataException("Изображение больше 7 МиБ: " + file.Name);
+        if (stream.Length > MaximumImageBytes) throw new InvalidDataException(UiText.T("Изображение больше 7 МиБ: ") + file.Name);
         var bytes = new byte[checked((int)stream.Length)];
         stream.ReadExactly(bytes);
         return bytes;

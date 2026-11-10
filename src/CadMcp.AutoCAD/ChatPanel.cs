@@ -25,25 +25,25 @@ internal sealed class ChatPanel : UserControl
     private sealed record Choice(string Id, string Label);
     private readonly ComboBox model = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox reasoning = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
-    private readonly ComboBox agentCount = new() { ItemsSource = new[] { "Выключены", "До 2 помощников", "До 3 помощников", "До 4 помощников" }, SelectedIndex = 2 };
+    private readonly ComboBox agentCount = new() { ItemsSource = new[] { UiText.T("Выключены"), UiText.T("До 2 помощников"), UiText.T("До 3 помощников"), UiText.T("До 4 помощников") }, SelectedIndex = 2 };
     // One user-wide AutoLISP policy (same order as LispPolicyMode); agents cannot change it.
-    private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { "Спрашивать перед каждым запуском", "Без вопросов, если нет опасных функций", "Разрешать без вопросов", "Запретить" } };
+    private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { UiText.T("Спрашивать перед каждым запуском"), UiText.T("Без вопросов, если нет опасных функций"), UiText.T("Разрешать без вопросов"), UiText.T("Запретить") } };
     private bool loadingLispPolicy;
-    private readonly Button refreshModels = new() { Content = "Обновить список моделей", Margin = new Thickness(0, 4, 0, 4) };
+    private readonly Button refreshModels = new() { Content = UiText.T("Обновить список моделей"), Margin = new Thickness(0, 4, 0, 4) };
     private readonly TextBox executable = new() { Text = "codex.exe" };
-    private readonly TextBox host = new() { Text = "Полный путь к CadMcp.Host.exe" };
+    private readonly TextBox host = new() { Text = UiText.T("Полный путь к CadMcp.Host.exe") };
     private readonly TextBox directory = new() { Text = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) };
     private readonly TextBox input = new() { AcceptsReturn = true, Height = 80, TextWrapping = TextWrapping.Wrap };
     private readonly List<ChatAttachment> attachments = new();
     private readonly WrapPanel attachmentItems = new();
-    private readonly Button attach = new() { Content = "Прикрепить файл" };
+    private readonly Button attach = new() { Content = UiText.T("Прикрепить файл") };
     private readonly ChatBrowser transcript = new();
     private readonly List<ChatLine> messages = new();
-    private readonly Button send = new() { Content = "Отправить" };
-    private readonly Button stop = new() { Content = "Стоп", IsEnabled = false };
+    private readonly Button send = new() { Content = UiText.T("Отправить") };
+    private readonly Button stop = new() { Content = UiText.T("Стоп"), IsEnabled = false };
     private readonly HashSet<string> reportedProblems = new(StringComparer.Ordinal);
-    private readonly TextBlock activity = new() { Text = "Готово", TextWrapping = TextWrapping.Wrap };
-    private readonly TextBlock drawing = new() { Text = "Чертёж: подключение ещё не проверено", TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock activity = new() { Text = UiText.T("Готово"), TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock drawing = new() { Text = UiText.T("Чертёж: подключение ещё не проверено"), TextWrapping = TextWrapping.Wrap };
     private readonly System.Windows.Threading.DispatcherTimer contextTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly System.Windows.Threading.DispatcherTimer progressTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Response? cadContext;
@@ -57,9 +57,9 @@ internal sealed class ChatPanel : UserControl
     private int selectedAnswer = -1;
     private int currentAssistantIndex = -1;
     private DateTimeOffset turnStarted, lastSignal;
-    private string currentActivity = "Готово";
-    private readonly TextBlock quota = new() { Text = "Лимиты Codex: нет данных", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3) };
-    private readonly System.Windows.Controls.CheckBox showProgress = new() { Content = "Показывать ход работы", IsChecked = true, Margin = new Thickness(0, 4, 0, 4) };
+    private string currentActivity = UiText.T("Готово");
+    private readonly TextBlock quota = new() { Text = UiText.T("Лимиты Codex: нет данных"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3) };
+    private readonly System.Windows.Controls.CheckBox showProgress = new() { Content = UiText.T("Показывать ход работы"), IsChecked = true, Margin = new Thickness(0, 4, 0, 4) };
     private readonly SolidColorBrush panelBrush = new(), controlBrush = new(), foregroundBrush = new(), borderBrush = new();
     private readonly ChatStateStore store;
     private readonly ChatPreferencesStore preferences;
@@ -99,7 +99,7 @@ internal sealed class ChatPanel : UserControl
         if (File.Exists(claudePath)) claudeExecutable = claudePath;
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
-        catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
+        catch (System.Exception e) { activity.Text = UiText.T("История не восстановлена: ") + e.Message; }
         bool hadProjectHistory = restored is not null;
         if (this.preferences.Load() is { } choices)
         {
@@ -125,29 +125,29 @@ internal sealed class ChatPanel : UserControl
         var settings = new StackPanel(); DockPanel.SetDock(settings, Dock.Top); root.Children.Add(settings);
         settings.Children.Add(drawing);
         var cadButtons = new WrapPanel(); settings.Children.Add(cadButtons);
-        var connect = new Button { Content = "Проверить подключение" }; connect.Click += async (_, _) => await RefreshCad(); cadButtons.Children.Add(connect);
-        var selection = new Button { Content = "Использовать выделение" }; selection.Click += async (_, _) =>
+        var connect = new Button { Content = UiText.T("Проверить подключение") }; connect.Click += async (_, _) => await RefreshCad(); cadButtons.Children.Add(connect);
+        var selection = new Button { Content = UiText.T("Использовать выделение") }; selection.Click += async (_, _) =>
         {
             await RefreshCad();
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
-                input.AppendText("\nИспользуй текущее выделение в чертеже «" + data.Text("name") + "»: " + selected.GetRawText() + ". Перед работой перечитай актуальный контекст.");
+                input.AppendText(UiText.T("\nИспользуй текущее выделение в чертеже «") + data.Text("name") + "»: " + selected.GetRawText() + UiText.T(". Перед работой перечитай актуальный контекст."));
         }; cadButtons.Children.Add(selection);
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Провайдер", provider), ("Модель", model), ("Глубина рассуждений", reasoning), ("Помощники", agentCount), ("AutoLISP по запросу агента", lispPolicy) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Провайдер"), provider), (UiText.T("Модель"), model), (UiText.T("Глубина рассуждений"), reasoning), (UiText.T("Помощники"), agentCount), (UiText.T("AutoLISP по запросу агента"), lispPolicy) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
         var connection = new StackPanel();
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("Официальный CLI (.exe)", executable), ("MCP host (.exe)", host), ("Рабочая папка", directory) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Официальный CLI (.exe)"), executable), ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
         { connection.Children.Add(new TextBlock { Text = pair.Label }); connection.Children.Add(pair.Control); }
-        settings.Children.Add(new Expander { Header = "Настройки подключения", Content = connection, Margin = new Thickness(0, 4, 0, 4) });
+        settings.Children.Add(new Expander { Header = UiText.T("Настройки подключения"), Content = connection, Margin = new Thickness(0, 4, 0, 4) });
         var accountButtons = new StackPanel { Orientation = Orientation.Horizontal };
-        var login = new Button { Content = "Войти" }; login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
-        var diagnose = new Button { Content = "Диагностика" }; diagnose.Click += async (_, _) => await RunAccount(true); accountButtons.Children.Add(diagnose);
-        var log = new Button { Content = "Журнал ошибок" }; log.Click += (_, _) =>
+        var login = new Button { Content = UiText.T("Войти") }; login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
+        var diagnose = new Button { Content = UiText.T("Диагностика") }; diagnose.Click += async (_, _) => await RunAccount(true); accountButtons.Children.Add(diagnose);
+        var log = new Button { Content = UiText.T("Журнал ошибок") }; log.Click += (_, _) =>
         {
-            var path = LogPath(); if (!File.Exists(path)) { activity.Text = "Журнал ошибок пуст"; return; }
+            var path = LogPath(); if (!File.Exists(path)) { activity.Text = UiText.T("Журнал ошибок пуст"); return; }
             // A UI handler inside AutoCAD: a missing file association must not escape to the dispatcher.
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (System.Exception error) { LogError(error); activity.Text = "Не удалось открыть журнал: " + path; }
+            catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Не удалось открыть журнал: ") + path; }
         }; accountButtons.Children.Add(log); settings.Children.Add(accountButtons);
         int previousProvider = provider.SelectedIndex;
         provider.SelectionChanged += (_, _) =>
@@ -200,7 +200,7 @@ internal sealed class ChatPanel : UserControl
             // Storing also ends a "do not ask until restart" relaxation, which AutoCAD notices by the settings
             // file changing even when this panel runs in another process.
             try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; activity.Text = "AutoLISP: " + LispPolicy.Label(mode); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = "Не удалось сохранить настройку AutoLISP: " + error.Message; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { activity.Text = UiText.T("Не удалось сохранить настройку AutoLISP: ") + error.Message; }
         }
         lispPolicy.SelectionChanged += (_, _) => StoreLispPolicy();
         // The policy may have been changed elsewhere (CADMCPLISP, another panel): show the stored one before the user picks.
@@ -221,14 +221,14 @@ internal sealed class ChatPanel : UserControl
         activity.TextWrapping = TextWrapping.Wrap;
         flushTimer.Tick += (_, _) => FlushText();
         progressTimer.Tick += (_, _) => UpdateProgress();
-        transcript.Selected += index => { selectedAnswer = index; activity.Text = "Ответ выбран для сохранения в Word"; };
+        transcript.Selected += index => { selectedAnswer = index; activity.Text = UiText.T("Ответ выбран для сохранения в Word"); };
         transcript.OpenLink += url =>
         {
             if (Uri.TryCreate(url, UriKind.Absolute, out var address) && address.Scheme is "http" or "https")
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(address.AbsoluteUri) { UseShellExecute = true });
         };
         var bottom = new StackPanel(); DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
-        bottom.Children.Add(new TextBlock { Text = "Перетащите файлы в это окно или нажмите «Прикрепить файл»" });
+        bottom.Children.Add(new TextBlock { Text = UiText.T("Перетащите файлы в это окно или нажмите «Прикрепить файл»") });
         bottom.Children.Add(new ScrollViewer { Content = attachmentItems, MaxHeight = 85, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         bottom.Children.Add(input);
         input.PreviewKeyDown += async (_, e) =>
@@ -236,27 +236,27 @@ internal sealed class ChatPanel : UserControl
             if (e.Key == System.Windows.Input.Key.Enter && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
             { e.Handled = true; await Send(); }
         };
-        bottom.Children.Add(new TextBlock { Text = "Enter — отправить; Shift+Enter — новая строка" });
+        bottom.Children.Add(new TextBlock { Text = UiText.T("Enter — отправить; Shift+Enter — новая строка") });
         var row = new WrapPanel(); bottom.Children.Add(row);
         row.Children.Add(attach); attach.Click += (_, _) =>
         {
-            var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Приложить файлы", Filter = "Все файлы (*.*)|*.*", Multiselect = true };
+            var dialog = new Microsoft.Win32.OpenFileDialog { Title = UiText.T("Приложить файлы"), Filter = UiText.T("Все файлы (*.*)|*.*"), Multiselect = true };
             if (dialog.ShowDialog() == true) AddAttachments(dialog.FileNames);
         };
         row.Children.Add(send); send.Click += async (_, _) => await Send();
         stop.Click += (_, _) => Stop(); row.Children.Add(stop);
-        var clear = new Button { Content = "Новый диалог" }; clear.Click += (_, _) => { if (running is null) { adapter = null; restored = null; messages.Clear(); selectedAnswer = -1; RenderChat(); attachments.Clear(); RefreshAttachments(); Persist(); } }; row.Children.Add(clear);
-        var save = new Button { Content = "Сохранить историю" }; save.Click += (_, _) => SaveHistory(); row.Children.Add(save);
-        var saveWord = new Button { Content = "Диалог в Word" }; saveWord.Click += (_, _) => SaveWord(false); row.Children.Add(saveWord);
-        var saveAnswer = new Button { Content = "Ответ в Word" }; saveAnswer.Click += (_, _) => SaveWord(true); row.Children.Add(saveAnswer);
-        var copyAnswer = new Button { Content = "Копировать ответ" };
+        var clear = new Button { Content = UiText.T("Новый диалог") }; clear.Click += (_, _) => { if (running is null) { adapter = null; restored = null; messages.Clear(); selectedAnswer = -1; RenderChat(); attachments.Clear(); RefreshAttachments(); Persist(); } }; row.Children.Add(clear);
+        var save = new Button { Content = UiText.T("Сохранить историю") }; save.Click += (_, _) => SaveHistory(); row.Children.Add(save);
+        var saveWord = new Button { Content = UiText.T("Диалог в Word") }; saveWord.Click += (_, _) => SaveWord(false); row.Children.Add(saveWord);
+        var saveAnswer = new Button { Content = UiText.T("Ответ в Word") }; saveAnswer.Click += (_, _) => SaveWord(true); row.Children.Add(saveAnswer);
+        var copyAnswer = new Button { Content = UiText.T("Копировать ответ") };
         copyAnswer.Click += (_, _) =>
         {
             int index = selectedAnswer >= 0 ? selectedAnswer : messages.FindLastIndex(m => m.Role == "assistant");
-            activity.Text = transcript.CopyAnswer(index) ? "Ответ скопирован" : "Не удалось скопировать ответ";
+            activity.Text = transcript.CopyAnswer(index) ? UiText.T("Ответ скопирован") : UiText.T("Не удалось скопировать ответ");
         };
         row.Children.Add(copyAnswer);
-        var load = new Button { Content = "Открыть историю" }; load.Click += (_, _) => LoadHistory(); bottom.Children.Add(load);
+        var load = new Button { Content = UiText.T("Открыть историю") }; load.Click += (_, _) => LoadHistory(); bottom.Children.Add(load);
         root.Children.Add(transcript);
         ApplyTheme();
         RenderChat();
@@ -272,7 +272,7 @@ internal sealed class ChatPanel : UserControl
     internal void SetDocumentAvailable(bool available)
     {
         documentClosed = !available;
-        if (!available) { contextTimer.Stop(); cadContext = null; drawing.Text = "Чертёж закрыт; история доступна для чтения и копирования"; }
+        if (!available) { contextTimer.Stop(); cadContext = null; drawing.Text = UiText.T("Чертёж закрыт; история доступна для чтения и копирования"); }
         else if (IsLoaded) contextTimer.Start();
         input.IsEnabled = available; SetBusy(running is not null);
     }
@@ -293,9 +293,9 @@ internal sealed class ChatPanel : UserControl
             {
                 using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_cancel", target.SessionId, target.DocumentId, Data: Wire.Element(new { }), OwnerId: operationOwner), cancel.Token);
-                activity.Text = "Отмена запрошена; текущая CAD-операция остановится на безопасной границе";
+                activity.Text = UiText.T("Отмена запрошена; текущая CAD-операция остановится на безопасной границе");
             }
-            catch (System.Exception e) { LogError(e); activity.Text = "Не удалось подтвердить отмену CAD; проверьте состояние операции"; }
+            catch (System.Exception e) { LogError(e); activity.Text = UiText.T("Не удалось подтвердить отмену CAD; проверьте состояние операции"); }
         }
         // async void inside AutoCAD: a cancellation callback that throws must not reach the dispatcher.
         try { if(ReferenceEquals(stopping,running))stopping?.Cancel(); FlushText(); Persist(); }
@@ -311,14 +311,14 @@ internal sealed class ChatPanel : UserControl
             {
                 var item = ChatAttachments.Inspect(path);
                 if (attachments.Any(a => string.Equals(a.Path, item.Path, StringComparison.OrdinalIgnoreCase))) continue;
-                if (attachments.Count >= ChatAttachments.MaximumCount) throw new InvalidDataException("Можно приложить не более 10 файлов");
+                if (attachments.Count >= ChatAttachments.MaximumCount) throw new InvalidDataException(UiText.T("Можно приложить не более 10 файлов"));
                 attachments.Add(item); added++;
             }
             catch (System.Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             { errors.Add(error.Message); }
         }
         RefreshAttachments();
-        activity.Text = errors.Count > 0 ? string.Join("; ", errors.Take(2)) : added == 0 ? "Файлы уже приложены" : "Приложено файлов: " + attachments.Count;
+        activity.Text = errors.Count > 0 ? string.Join("; ", errors.Take(2)) : added == 0 ? UiText.T("Файлы уже приложены") : UiText.T("Приложено файлов: ") + attachments.Count;
     }
     private void RefreshAttachments()
     {
@@ -326,9 +326,9 @@ internal sealed class ChatPanel : UserControl
         foreach (var file in attachments)
         {
             var chip = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 5, 2), ToolTip = file.Path };
-            chip.Children.Add(new TextBlock { Text = file.Name + " (" + (file.Size < 1024 ? file.Size + " Б" : Math.Ceiling(file.Size / 1024d) + " КБ") + ")", VerticalAlignment = VerticalAlignment.Center, MaxWidth = 210, TextTrimming = TextTrimming.CharacterEllipsis });
-            var remove = new Button { Content = "×", ToolTip = "Убрать вложение", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-            remove.Click += (_, _) => { attachments.Remove(file); RefreshAttachments(); activity.Text = "Вложение убрано"; };
+            chip.Children.Add(new TextBlock { Text = file.Name + " (" + (file.Size < 1024 ? file.Size + UiText.T(" Б") : Math.Ceiling(file.Size / 1024d) + UiText.T(" КБ")) + ")", VerticalAlignment = VerticalAlignment.Center, MaxWidth = 210, TextTrimming = TextTrimming.CharacterEllipsis });
+            var remove = new Button { Content = "×", ToolTip = UiText.T("Убрать вложение"), Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
+            remove.Click += (_, _) => { attachments.Remove(file); RefreshAttachments(); activity.Text = UiText.T("Вложение убрано"); };
             chip.Children.Add(remove); attachmentItems.Children.Add(chip);
         }
     }
@@ -348,7 +348,7 @@ internal sealed class ChatPanel : UserControl
             if (CadSessionId is null)
             {
                 var descriptors = new Broker(Wire.WorkerRoot).Discover();
-                if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
+                if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? UiText.T("AutoCAD не подключён: загрузите CAD MCP") : UiText.T("Открыто несколько сессий: запустите чат из нужного AutoCAD"); return; }
                 CadSessionId = descriptors[0].SessionId;
             }
             if (CadDocumentId is not null)
@@ -357,7 +357,7 @@ internal sealed class ChatPanel : UserControl
                 if (runtime.Error is null && runtime.Data is JsonElement status && status.TryGetProperty("document_availability", out var availability) && availability.ValueKind == JsonValueKind.Object &&
                     availability.TryGetProperty("read_available", out var readable) && readable.ValueKind == JsonValueKind.False)
                 {
-                    activity.Text = "Чертёж занят: " + (availability.Text("command_in_progress") is { Length: > 0 } command ? command : availability.Text("reason"));
+                    activity.Text = UiText.T("Чертёж занят: ") + (availability.Text("command_in_progress") is { Length: > 0 } command ? command : availability.Text("reason"));
                     return;
                 }
             }
@@ -367,12 +367,12 @@ internal sealed class ChatPanel : UserControl
             if (context.Data is JsonElement data)
             {
                 ApplyTheme();
-                drawing.Text = "Чертёж: " + Path.GetFileName(data.Text("name")) + " · " + data.Text("units");
+                drawing.Text = UiText.T("Чертёж: ") + Path.GetFileName(data.Text("name")) + " · " + data.Text("units");
                 if (data.TryGetProperty("editing", out var edit) && edit.TryGetProperty("pending_lisp", out var pending) && pending.ValueKind == JsonValueKind.String)
-                    drawing.Text += " · CAD-скрипт ещё выполняется: " + pending.GetString();
+                    drawing.Text += UiText.T(" · CAD-скрипт ещё выполняется: ") + pending.GetString();
             }
         }
-        catch (System.Exception error) { cadContext = null; drawing.Text = "AutoCAD занят или недоступен: " + error.Message; }
+        catch (System.Exception error) { cadContext = null; drawing.Text = UiText.T("AutoCAD занят или недоступен: ") + error.Message; }
         finally { readingContext = false; }
     }
     private async Task RunAccount(bool diagnostic)
@@ -389,23 +389,23 @@ internal sealed class ChatPanel : UserControl
             using var process = System.Diagnostics.Process.Start(ProviderProcess.StartInfo(options, command))!;
             using var cancel = running.Token.Register(() => ProviderProcess.Stop(process));
             var stderr = ProviderProcess.DrainErrors(process); var stdout = process.StandardOutput.ReadToEndAsync(running.Token);
-            activity.Text = diagnostic ? "Проверка входа…" : "Завершите вход в открывшемся браузере";
+            activity.Text = diagnostic ? UiText.T("Проверка входа…") : UiText.T("Завершите вход в открывшемся браузере");
             await process.WaitForExitAsync(running.Token); await stdout; string detail = await stderr;
             string providerName = codex ? "Codex" : "Claude Code";
-            activity.Text = process.ExitCode == 0 ? providerName + ": вход выполнен"
-                : "Нужно войти в " + providerName + ": " + detail;
+            activity.Text = process.ExitCode == 0 ? providerName + UiText.T(": вход выполнен")
+                : UiText.T("Нужно войти в ") + providerName + ": " + detail;
         }
-        catch (OperationCanceledException) { activity.Text = "Вход или проверка остановлены"; }
-        catch (System.Exception error) { LogError(error); activity.Text = "Подключение: " + error.Message; }
+        catch (OperationCanceledException) { activity.Text = UiText.T("Вход или проверка остановлены"); }
+        catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Подключение: ") + error.Message; }
         finally { running.Dispose(); running = null; SetBusy(false); }
         await RefreshCad();
         if (!diagnostic) await RefreshModels();
     }
     private static string EffortLabel(string effort) => effort switch
     {
-        "none" => "Без дополнительных рассуждений", "minimal" => "Минимальная", "low" => "Низкая",
-        "medium" => "Средняя", "high" => "Высокая", "xhigh" => "Очень высокая", "max" => "Максимальная",
-        "ultra" => "Ultra — с делегированием задач", _ => effort
+        "none" => UiText.T("Без дополнительных рассуждений"), "minimal" => UiText.T("Минимальная"), "low" => UiText.T("Низкая"),
+        "medium" => UiText.T("Средняя"), "high" => UiText.T("Высокая"), "xhigh" => UiText.T("Очень высокая"), "max" => UiText.T("Максимальная"),
+        "ultra" => UiText.T("Ultra — с делегированием задач"), _ => effort
     };
     private CodexModel? SelectedCatalogModel() => string.IsNullOrEmpty(chosenModel)
         ? catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault()
@@ -415,9 +415,9 @@ internal sealed class ChatPanel : UserControl
         catalog = models; settingChoices = true;
         if (provider.SelectedIndex != 0) { settingChoices = false; return; }
         var defaultModel = catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault();
-        var choices = new List<Choice> { new("", "Автоматически" + (defaultModel is null ? "" : " — " + defaultModel.DisplayName)) };
+        var choices = new List<Choice> { new("", UiText.T("Автоматически") + (defaultModel is null ? "" : " — " + defaultModel.DisplayName)) };
         choices.AddRange(catalog.Select(m => new Choice(m.Id, m.DisplayName)));
-        if (!string.IsNullOrEmpty(chosenModel) && !catalog.Any(m => m.Id == chosenModel)) choices.Add(new(chosenModel, chosenModel + " — недоступна"));
+        if (!string.IsNullOrEmpty(chosenModel) && !catalog.Any(m => m.Id == chosenModel)) choices.Add(new(chosenModel, chosenModel + UiText.T(" — недоступна")));
         model.ItemsSource = choices; model.SelectedValue = chosenModel ?? "";
         settingChoices = false; PopulateEfforts();
     }
@@ -437,10 +437,10 @@ internal sealed class ChatPanel : UserControl
         settingChoices = true;
         // "Автоматически" passes no --model: Claude Code then uses its default entry, named here with its current version.
         var automatic = claudeCatalog.FirstOrDefault(m => m.IsDefault);
-        var choices = new List<Choice> { new("", "Автоматически" + (automatic is null ? "" : " — " + automatic.Label)) };
+        var choices = new List<Choice> { new("", UiText.T("Автоматически") + (automatic is null ? "" : " — " + automatic.Label)) };
         choices.AddRange((claudeCatalog.Count > 0 ? claudeCatalog : ClaudeCatalog.Fallback).Where(m => !m.IsDefault).Select(m => new Choice(m.Id, m.Label)));
         if (!string.IsNullOrEmpty(chosenClaudeModel) && !choices.Any(c => c.Id == chosenClaudeModel))
-            choices.Add(new(chosenClaudeModel, chosenClaudeModel + (claudeCatalog.Count > 0 ? " — недоступна" : "")));
+            choices.Add(new(chosenClaudeModel, chosenClaudeModel + (claudeCatalog.Count > 0 ? UiText.T(" — недоступна") : "")));
         model.ItemsSource = choices; model.SelectedValue = chosenClaudeModel ?? "";
         settingChoices = false;
         PopulateEfforts();
@@ -452,17 +452,17 @@ internal sealed class ChatPanel : UserControl
         {
             // The levels the selected model accepts; every --effort level while the CLI has not listed its models.
             var levels = SelectedClaudeModel()?.Efforts ?? (claudeCatalog.Count == 0 ? ClaudeCatalog.AllEfforts : Array.Empty<string>());
-            var claudeChoices = new List<Choice> { new("", "По умолчанию") };
+            var claudeChoices = new List<Choice> { new("", UiText.T("По умолчанию")) };
             claudeChoices.AddRange(levels.Select(e => new Choice(e, EffortLabel(e))));
-            if (!string.IsNullOrEmpty(chosenClaudeEffort) && !claudeChoices.Any(c => c.Id == chosenClaudeEffort)) claudeChoices.Add(new(chosenClaudeEffort, EffortLabel(chosenClaudeEffort) + " — недоступна"));
+            if (!string.IsNullOrEmpty(chosenClaudeEffort) && !claudeChoices.Any(c => c.Id == chosenClaudeEffort)) claudeChoices.Add(new(chosenClaudeEffort, EffortLabel(chosenClaudeEffort) + UiText.T(" — недоступна")));
             reasoning.ItemsSource = claudeChoices; reasoning.SelectedValue = chosenClaudeEffort ?? "";
             settingChoices = false;
             return;
         }
         var selected = SelectedCatalogModel();
-        var choices = new List<Choice> { new("", "По умолчанию" + (selected is null ? "" : " — " + EffortLabel(selected.DefaultEffort))) };
+        var choices = new List<Choice> { new("", UiText.T("По умолчанию") + (selected is null ? "" : " — " + EffortLabel(selected.DefaultEffort))) };
         if (selected is not null) choices.AddRange(selected.Efforts.Select(e => new Choice(e, EffortLabel(e))));
-        if (!string.IsNullOrEmpty(chosenEffort) && !choices.Any(c => c.Id == chosenEffort)) choices.Add(new(chosenEffort, chosenEffort + " — недоступна"));
+        if (!string.IsNullOrEmpty(chosenEffort) && !choices.Any(c => c.Id == chosenEffort)) choices.Add(new(chosenEffort, chosenEffort + UiText.T(" — недоступна")));
         reasoning.ItemsSource = choices; reasoning.SelectedValue = chosenEffort ?? "";
         settingChoices = false;
     }
@@ -470,7 +470,7 @@ internal sealed class ChatPanel : UserControl
     {
         stop.IsEnabled = busy;
         send.IsEnabled = attach.IsEnabled = !documentClosed && !benchmarkBusy && (!busy || acceptingInput);
-        send.Content = acceptingInput ? "Дополнить" : "Отправить";
+        send.Content = acceptingInput ? UiText.T("Дополнить") : UiText.T("Отправить");
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy;
@@ -490,29 +490,29 @@ internal sealed class ChatPanel : UserControl
     {
         if (running is not null) return;
         bool codex = provider.SelectedIndex == 0;
-        running = new(); SetBusy(true); activity.Text = "Загрузка доступных моделей…";
+        running = new(); SetBusy(true); activity.Text = UiText.T("Загрузка доступных моделей…");
         try
         {
-            if (!Directory.Exists(directory.Text)) throw new IOException("Укажите существующую рабочую папку в настройках подключения");
+            if (!Directory.Exists(directory.Text)) throw new IOException(UiText.T("Укажите существующую рабочую папку в настройках подключения"));
             var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
             if (codex)
             {
                 var models = await CodexCatalog.ReadAsync(options, running.Token);
                 ApplyModels(models);
                 activity.Text = !string.IsNullOrEmpty(chosenModel) && !catalog.Any(m => m.Id == chosenModel)
-                    ? "Сохранённая модель недоступна. Выберите другую модель." : "Доступно моделей: " + models.Count;
+                    ? UiText.T("Сохранённая модель недоступна. Выберите другую модель.") : UiText.T("Доступно моделей: ") + models.Count;
             }
             else
             {
                 var models = await ClaudeCatalog.ReadAsync(options, running.Token);
                 ApplyClaudeModels(models);
                 activity.Text = !string.IsNullOrEmpty(chosenClaudeModel) && !claudeCatalog.Any(m => m.Id == chosenClaudeModel)
-                    ? "Сохранённая модель Claude недоступна. Выберите другую модель." : "Доступно моделей Claude: " + models.Count(m => !m.IsDefault);
+                    ? UiText.T("Сохранённая модель Claude недоступна. Выберите другую модель.") : UiText.T("Доступно моделей Claude: ") + models.Count(m => !m.IsDefault);
             }
             Persist();
         }
-        catch (OperationCanceledException) { activity.Text = "Загрузка моделей остановлена или истекло время ожидания"; }
-        catch (System.Exception e) { activity.Text = "Модели не загружены: " + e.Message; }
+        catch (OperationCanceledException) { activity.Text = UiText.T("Загрузка моделей остановлена или истекло время ожидания"); }
+        catch (System.Exception e) { activity.Text = UiText.T("Модели не загружены: ") + e.Message; }
         finally { running.Dispose(); running = null; SetBusy(false); }
     }
     private async Task Send()
@@ -521,30 +521,30 @@ internal sealed class ChatPanel : UserControl
         if (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0) return;
         if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
-        { activity.Text = "Укажите существующие MCP host и рабочую папку."; return; }
+        { activity.Text = UiText.T("Укажите существующие MCP host и рабочую папку."); return; }
         // A saved Claude model or level the CLI no longer offers is reported before the message is sent.
         if (provider.SelectedIndex == 1)
             try { ClaudeCatalog.Select(claudeCatalog, chosenClaudeModel, chosenClaudeEffort); }
             catch (IOException error) { activity.Text = error.Message; return; }
         running = new(); acceptingInput = true; SetBusy(true);
         reportedProblems.Clear();
-        string completionStatus = "Готово";
+        string completionStatus = UiText.T("Готово");
         var answerClock = Stopwatch.StartNew();
         ProviderTokenUsage? tokenUsage = null;
         CodexRateLimits? rateLimits = null;
         bool codexTurn = provider.SelectedIndex == 0;
         quota.Visibility = codexTurn ? Visibility.Visible : Visibility.Collapsed;
-        if (codexTurn) quota.Text = "Лимиты Codex: обновляю…";
+        if (codexTurn) quota.Text = UiText.T("Лимиты Codex: обновляю…");
         bool answerCompleted = false;
         turnStarted = lastSignal = DateTimeOffset.Now;
-        currentActivity = "Подключение";
-        activity.Text = "Подключение…"; flushTimer.Start(); progressTimer.Start();
+        currentActivity = UiText.T("Подключение");
+        activity.Text = UiText.T("Подключение…"); flushTimer.Start(); progressTimer.Start();
         string? initialDocumentId = null, initialSessionId = null;
         bool visibleCadResult = false;
         try
         {
             var files = ChatAttachments.Capture(attachments);
-            var initialPrompt = string.IsNullOrWhiteSpace(input.Text) ? "Изучи приложенные файлы и скажи, чем можешь помочь." : input.Text;
+            var initialPrompt = string.IsNullOrWhiteSpace(input.Text) ? UiText.T("Изучи приложенные файлы и скажи, чем можешь помочь.") : input.Text;
             var images = files.Where(f => f.Kind == AttachmentKind.Image).Select(transcript.SaveImage).ToArray();
             messages.Add(new ChatLine("user", initialPrompt, Images: images));
             currentAssistantIndex = messages.Count; messages.Add(new ChatLine("assistant", ""));
@@ -568,26 +568,26 @@ internal sealed class ChatPanel : UserControl
             }
             var prompt = initialPrompt;
             bool quietCodex = adapter is CodexProvider;
-            if (quietCodex) currentActivity = "Codex выполняет задачу";
+            if (quietCodex) currentActivity = UiText.T("Codex выполняет задачу");
             if (cadContext is { } target) prompt += "\nPinned project target (verify fresh with cad_context document_id; never use another drawing from cad_sessions): session_id=" + target.SessionId + ", document_id=" + target.DocumentId + ". Work only in this drawing; if it changed, report the change.";
             await foreach (var item in adapter.SendAsync(prompt, running.Token, files))
             {
                 lastSignal = DateTimeOffset.Now;
                 if (item.Kind == "usage") tokenUsage = item.Usage;
-                if (item.Kind == "rate_limits") { rateLimits = item.RateLimits; quota.Text = rateLimits?.Display() ?? "Лимиты Codex: нет данных"; }
+                if (item.Kind == "rate_limits") { rateLimits = item.RateLimits; quota.Text = rateLimits?.Display() ?? UiText.T("Лимиты Codex: нет данных"); }
                 if (item.Kind == "progress") RecordProgress(item.Text);
                 if (item.Kind == "problem") RecordProblem(item.Text);
                 if (item.Kind == "completed") { answerCompleted = true; ProviderCompleted(); }
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
                 if (item.Kind == "text") streamedText.Append(item.Text);
-                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); if (!quietCodex) currentActivity = "Модель: " + item.Text; }
+                if (item.Kind == "model") { FlushText(); UpdateAssistant(line => line with { Model = item.Text }); if (!quietCodex) currentActivity = UiText.T("Модель: ") + item.Text; }
                 if (item.Kind == "effort") { FlushText(); UpdateAssistant(line => line with { Effort = EffortLabel(item.Text) }); }
                 if (item.Kind == "reasoning_summary" && !quietCodex) UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
                     currentActivity = CadToolActivity.Describe(item.Text);
-                    if (item.Text.StartsWith("Выполняю", StringComparison.Ordinal)) RecordProgress(currentActivity);
+                    if (item.Text.StartsWith(UiText.T("Выполняю"), StringComparison.Ordinal)) RecordProgress(currentActivity);
                     visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
                 }
                 if (item.Kind == "status" && !quietCodex) currentActivity = item.Text;
@@ -596,25 +596,25 @@ internal sealed class ChatPanel : UserControl
             }
             FlushText();
             await FinalizeCadResult(initialSessionId, initialDocumentId, visibleCadResult);
-            activity.Text = "Готово";
+            activity.Text = UiText.T("Готово");
         }
         catch (OperationCanceledException)
         {
-            completionStatus = "Остановлено";
-            FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\nОстановлено. Проверяю результат отмены и состояние чертежа." }); activity.Text = "Остановлено";
+            completionStatus = UiText.T("Остановлено");
+            FlushText(); UpdateAssistant(line => line with { Text = line.Text + UiText.T("\n\nОстановлено. Проверяю результат отмены и состояние чертежа.") }); activity.Text = UiText.T("Остановлено");
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         catch (System.Exception e)
         {
-            completionStatus = "Ошибка; подробности в чате и журнале";
-            LogError(e); RecordProblem("Этап: " + currentActivity + "\nКод/тип: " + (e is CadFault fault ? fault.Code : e.GetType().Name) + "\nОшибка: " + e.Message + "\nЖурнал: " + LogPath() + "\nИсход ранее принятых CAD-операций проверяется отдельно; автоматического повтора нет."); activity.Text = completionStatus;
+            completionStatus = UiText.T("Ошибка; подробности в чате и журнале");
+            LogError(e); RecordProblem(UiText.T("Этап: ") + currentActivity + UiText.T("\nКод/тип: ") + (e is CadFault fault ? fault.Code : e.GetType().Name) + UiText.T("\nОшибка: ") + e.Message + UiText.T("\nЖурнал: ") + LogPath() + UiText.T("\nИсход ранее принятых CAD-операций проверяется отдельно; автоматического повтора нет.")); activity.Text = completionStatus;
             await FinalizeCadResult(initialSessionId, initialDocumentId, false);
         }
         finally {
             acceptingInput=false;
-            while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,"Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно.");
+            while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,UiText.T("Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно."));
             progressTimer.Stop(); flushTimer.Stop(); FlushText(); answerClock.Stop();
-            UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) + (codexTurn ? "\n" + (rateLimits?.Display() ?? "Лимиты Codex: нет данных") : "") });
+            UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) + (codexTurn ? "\n" + (rateLimits?.Display() ?? UiText.T("Лимиты Codex: нет данных")) : "") });
             running.Dispose(); running = null; currentAssistantIndex = -1; FinishTurn(completionStatus); Persist(); }
     }
     private async Task AddFollowup()
@@ -622,17 +622,17 @@ internal sealed class ChatPanel : UserControl
         try
         {
             var files=ChatAttachments.Capture(attachments);
-            var prompt=string.IsNullOrWhiteSpace(input.Text)?"Учти также приложенные файлы.":input.Text;
+            var prompt=string.IsNullOrWhiteSpace(input.Text)?UiText.T("Учти также приложенные файлы."):input.Text;
             int line=messages.Count;
             FlushText();var previous=currentAssistantIndex>=0?messages[currentAssistantIndex]:null;
             if (previous is not null && string.IsNullOrWhiteSpace(previous.Text))
-                messages[currentAssistantIndex] = previous with { Delivery = "Продолжение задачи — ниже." };
-            messages.Add(new ChatLine("user",prompt,Images:files.Where(f=>f.Kind==AttachmentKind.Image).Select(transcript.SaveImage).ToArray(),Delivery:"Ожидает подключения"));
+                messages[currentAssistantIndex] = previous with { Delivery = UiText.T("Продолжение задачи — ниже.") };
+            messages.Add(new ChatLine("user",prompt,Images:files.Where(f=>f.Kind==AttachmentKind.Image).Select(transcript.SaveImage).ToArray(),Delivery:UiText.T("Ожидает подключения")));
             currentAssistantIndex=messages.Count;messages.Add(new ChatLine("assistant","",Model:previous?.Model,Effort:previous?.Effort));
             followups.Enqueue((line,new(prompt,files)));input.Clear();attachments.Clear();RefreshAttachments();RenderChat();Persist();
             await DeliverFollowups();
         }
-        catch(System.Exception error) { activity.Text="Дополнение не отправлено: "+error.Message;LogError(error); }
+        catch(System.Exception error) { activity.Text=UiText.T("Дополнение не отправлено: ")+error.Message;LogError(error); }
     }
     private void SetDelivery(int line,string text)
     { if(line>=0&&line<messages.Count){messages[line]=messages[line] with {Delivery=text};RenderChat();Persist();} }
@@ -643,21 +643,21 @@ internal sealed class ChatPanel : UserControl
         {
             while(acceptingInput&&adapter is not null&&running is not null&&followups.TryPeek(out var message))
             {
-                SetDelivery(message.Line,"Отправляется…");
+                SetDelivery(message.Line,UiText.T("Отправляется…"));
                 var receipt=await adapter.SteerAsync(message.Input,running.Token);
-                if(receipt.State=="unavailable") {SetDelivery(message.Line,"Ожидает подключения");return;}
+                if(receipt.State=="unavailable") {SetDelivery(message.Line,UiText.T("Ожидает подключения"));return;}
                 // Send finalization can remove a queued item while awaiting the protocol acknowledgment.
                 if(followups.TryPeek(out var first)&&first.Line==message.Line)followups.Dequeue();
-                SetDelivery(message.Line,receipt.State=="accepted"?receipt.Message:receipt.State=="rejected"?"Не принято: "+receipt.Message:receipt.Message);
+                SetDelivery(message.Line,receipt.State=="accepted"?receipt.Message:receipt.State=="rejected"?UiText.T("Не принято: ")+receipt.Message:receipt.Message);
             }
         }
-        catch(System.Exception error) {LogError(error);activity.Text="Дополнение не отправлено: "+error.Message;}
+        catch(System.Exception error) {LogError(error);activity.Text=UiText.T("Дополнение не отправлено: ")+error.Message;}
         finally{inputDelivery.Release();}
     }
     private async Task FinalizeCadResult(string? session, string? document, bool preview)
     {
         if (session is null || document is null) return;
-        currentActivity = "Проверяю результат и сохранение DWG"; UpdateProgress();
+        currentActivity = UiText.T("Проверяю результат и сохранение DWG"); UpdateProgress();
         try
         {
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -707,33 +707,33 @@ internal sealed class ChatPanel : UserControl
         // Verification is best effort and runs from UI event handlers: no failure may escape to the dispatcher.
         catch(System.Exception error)
         {
-            LogError(error); RecordProblem("Этап: проверка результата DWG\nКод/тип: " + (error is CadFault fault ? fault.Code : error.GetType().Name) + "\nОшибка: " + error.Message + "\nЖурнал: " + LogPath()); UpdateAssistant(line=>line with{Text=line.Text+"\n\nПроверка результата плагином не завершена: "+error.Message+". Сохранение DWG не подтверждено."});
+            LogError(error); RecordProblem(UiText.T("Этап: проверка результата DWG\nКод/тип: ") + (error is CadFault fault ? fault.Code : error.GetType().Name) + UiText.T("\nОшибка: ") + error.Message + UiText.T("\nЖурнал: ") + LogPath()); UpdateAssistant(line=>line with{Text=line.Text+UiText.T("\n\nПроверка результата плагином не завершена: ")+error.Message+UiText.T(". Сохранение DWG не подтверждено.")});
         }
     }
     private async Task AttachPreview(string? initialDocumentId,string viewName="current",IReadOnlyList<string>? handles=null)
     {
-        currentActivity = "Получаю итоговый вид чертежа";
+        currentActivity = UiText.T("Получаю итоговый вид чертежа");
         UpdateProgress();
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await RefreshCad();
-            var context = cadContext ?? throw new IOException("подключение к AutoCAD недоступно");
+            var context = cadContext ?? throw new IOException(UiText.T("подключение к AutoCAD недоступно"));
             if (initialDocumentId is null || context.DocumentId != initialDocumentId)
-                throw new IOException("активный чертёж изменился");
+                throw new IOException(UiText.T("активный чертёж изменился"));
             var result = await PipeClient.CallAsync(brokerPipe,
                 new(Guid.NewGuid().ToString("N"), "cad_render", context.SessionId, context.DocumentId,
                     context.Revision, Wire.Element(new { width = 1024, height = 768,view_name=viewName,handles_json=handles is null?null:JsonSerializer.Serialize(handles) })), timeout.Token);
             if (result.Error is not null) throw new CadFault(result.Error.Code, result.Error.Message);
-            if (result.Data is not JsonElement data) throw new IOException("AutoCAD не вернул изображение");
-            var preview = transcript.SavePreview(data.Text("image_base64") ?? throw new IOException("изображение пусто"),
+            if (result.Data is not JsonElement data) throw new IOException(UiText.T("AutoCAD не вернул изображение"));
+            var preview = transcript.SavePreview(data.Text("image_base64") ?? throw new IOException(UiText.T("изображение пусто")),
                 data.Number("width", 1024), data.Number("height", 768));
             UpdateAssistant(line => line with { Images = (line.Images ?? Array.Empty<ChatImage>()).Append(preview).ToArray() });
         }
         catch (System.Exception error)
         {
-            LogError(error); RecordProblem("Этап: получение итогового вида\nКод/тип: " + (error is CadFault fault ? fault.Code : error.GetType().Name) + "\nОшибка: " + error.Message + "\nЖурнал: " + LogPath());
-            UpdateAssistant(line => line with { Text = line.Text + "\n\nИтоговый вид не получен: " + error.Message + ". Проверьте открытый чертёж перед сохранением." });
+            LogError(error); RecordProblem(UiText.T("Этап: получение итогового вида\nКод/тип: ") + (error is CadFault fault ? fault.Code : error.GetType().Name) + UiText.T("\nОшибка: ") + error.Message + UiText.T("\nЖурнал: ") + LogPath());
+            UpdateAssistant(line => line with { Text = line.Text + UiText.T("\n\nИтоговый вид не получен: ") + error.Message + UiText.T(". Проверьте открытый чертёж перед сохранением.") });
         }
     }
     private void FlushText()
@@ -754,8 +754,8 @@ internal sealed class ChatPanel : UserControl
         if (running is null || !progressTimer.IsEnabled) return;
         int elapsed = (int)(DateTimeOffset.Now - turnStarted).TotalSeconds;
         int silence = (int)(DateTimeOffset.Now - lastSignal).TotalSeconds;
-        activity.Text = currentActivity + " · " + elapsed + " с" +
-            (silence >= 15 ? " · нет новых событий " + silence + " с; можно остановить" : "");
+        activity.Text = currentActivity + " · " + elapsed + UiText.T(" с") +
+            (silence >= 15 ? UiText.T(" · нет новых событий ") + silence + UiText.T(" с; можно остановить") : "");
     }
     private ChatState State()
     {
@@ -773,16 +773,16 @@ internal sealed class ChatPanel : UserControl
             var choices = Preferences();
             if (!restoring && !settingChoices && choices != lastPreferences) { preferences.Save(choices); lastPreferences = choices; }
         }
-        catch (System.Exception e) { activity.Text = "История или выбор модели не сохранены: " + e.Message; }
+        catch (System.Exception e) { activity.Text = UiText.T("История или выбор модели не сохранены: ") + e.Message; }
     }
     private ChatPreferences Preferences() => new(provider.SelectedIndex, chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort, showProgress.IsChecked == true);
     private void RecordProblem(string diagnostic)
     {
         if (string.IsNullOrWhiteSpace(diagnostic) || !reportedProblems.Add(diagnostic)) return;
         FlushText();
-        currentActivity = "Возникла проблема; диагностика в чате";
+        currentActivity = UiText.T("Возникла проблема; диагностика в чате");
         string bounded = diagnostic.Length <= 4000 ? diagnostic : diagnostic[..4000] + "…";
-        UpdateAssistant(line => line with { Text = line.Text + "\n\n**Проблема при выполнении**\n\n```text\n" + bounded.Replace("```", "'''") + "\n```\n\n" });
+        UpdateAssistant(line => line with { Text = line.Text + UiText.T("\n\n**Проблема при выполнении**\n\n```text\n") + bounded.Replace("```", "'''") + "\n```\n\n" });
         Persist();
     }
     private void RecordProgress(string text)
@@ -797,7 +797,7 @@ internal sealed class ChatPanel : UserControl
     /// </param>
     private void Restore(ChatState state, bool imported)
     {
-        if (!ChatStateStore.Valid(state)) throw new InvalidDataException("Файл не соответствует формату истории CAD MCP");
+        if (!ChatStateStore.Valid(state)) throw new InvalidDataException(UiText.T("Файл не соответствует формату истории CAD MCP"));
         restoring = true;
         try
         {
@@ -820,7 +820,7 @@ internal sealed class ChatPanel : UserControl
         maxSubagents = state.MaxSubagents;
         agentCount.SelectedIndex = maxSubagents switch { 2 => 1, 3 => 2, 4 => 3, _ => 0 };
         ApplyProviderChoices();
-        activity.Text = "История восстановлена; актуальный чертёж будет прочитан заново";
+        activity.Text = UiText.T("История восстановлена; актуальный чертёж будет прочитан заново");
         }
         finally { restoring = false; }
     }
@@ -829,20 +829,20 @@ internal sealed class ChatPanel : UserControl
         var dialog = new Microsoft.Win32.SaveFileDialog { Filter = "JSON (*.json)|*.json", FileName = "cad-mcp-chat.json" };
         if (dialog.ShowDialog() == true)
             try { File.WriteAllText(dialog.FileName, JsonSerializer.Serialize(State(), new JsonSerializerOptions { WriteIndented = true })); }
-            catch (System.Exception e) { activity.Text = "История не экспортирована: " + e.Message; }
+            catch (System.Exception e) { activity.Text = UiText.T("История не экспортирована: ") + e.Message; }
     }
     private void LoadHistory()
     {
         if (running is not null) return;
-        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "История CAD MCP (*.json)|*.json" };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = UiText.T("История CAD MCP (*.json)|*.json") };
         if (dialog.ShowDialog() != true) return;
         try
         {
-            if (new FileInfo(dialog.FileName).Length > 4 * 1024 * 1024) throw new InvalidDataException("Файл истории слишком велик");
-            Restore(JsonSerializer.Deserialize<ChatState>(File.ReadAllText(dialog.FileName)) ?? throw new InvalidDataException("Пустой файл истории"), imported: true); Persist();
+            if (new FileInfo(dialog.FileName).Length > 4 * 1024 * 1024) throw new InvalidDataException(UiText.T("Файл истории слишком велик"));
+            Restore(JsonSerializer.Deserialize<ChatState>(File.ReadAllText(dialog.FileName)) ?? throw new InvalidDataException(UiText.T("Пустой файл истории")), imported: true); Persist();
             if (provider.SelectedIndex == 0) _ = RefreshModels();
         }
-        catch (System.Exception e) { activity.Text = "История не открыта: " + e.Message; }
+        catch (System.Exception e) { activity.Text = UiText.T("История не открыта: ") + e.Message; }
     }
     private void SaveWord(bool answerOnly)
     {
@@ -851,18 +851,18 @@ internal sealed class ChatPanel : UserControl
         {
             int index = selectedAnswer >= 0 && selectedAnswer < messages.Count && messages[selectedAnswer].Role == "assistant"
                 ? selectedAnswer : messages.FindLastIndex(line => line.Role == "assistant");
-            if (index < 0) { activity.Text = "В диалоге пока нет ответа для сохранения"; return; }
+            if (index < 0) { activity.Text = UiText.T("В диалоге пока нет ответа для сохранения"); return; }
             selected = new[] { messages[index] };
         }
-        if (selected.Count == 0) { activity.Text = "Диалог пока пуст"; return; }
+        if (selected.Count == 0) { activity.Text = UiText.T("Диалог пока пуст"); return; }
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
-            Filter = "Документ Word (*.docx)|*.docx",
+            Filter = UiText.T("Документ Word (*.docx)|*.docx"),
             FileName = answerOnly ? "cad-mcp-answer.docx" : "cad-mcp-chat.docx"
         };
         if (dialog.ShowDialog() != true) return;
-        try { ChatWordExporter.Save(dialog.FileName, selected); activity.Text = "Сохранено в Word: " + dialog.FileName; }
-        catch (System.Exception error) { LogError(error); activity.Text = "Не удалось сохранить Word: " + error.Message; }
+        try { ChatWordExporter.Save(dialog.FileName, selected); activity.Text = UiText.T("Сохранено в Word: ") + dialog.FileName; }
+        catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Не удалось сохранить Word: ") + error.Message; }
     }
     private void InstallThemeStyles()
     {

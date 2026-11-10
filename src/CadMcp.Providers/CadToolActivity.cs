@@ -1,30 +1,31 @@
+using CadMcp.Core;
 namespace CadMcp.Providers;
 
 public static class CadToolActivity
 {
     public static string Describe(string eventText)
     {
-        bool failed = eventText.StartsWith("Ошибка:", StringComparison.Ordinal);
-        if (failed) return "Инструмент сообщил об ошибке; диагностика в чате";
-        if (eventText.Contains("cad_pdf_read", StringComparison.OrdinalIgnoreCase)) return "Читаю текст и страницы PDF";
-        if (eventText.Contains("cad_web_download", StringComparison.OrdinalIgnoreCase)) return "Скачиваю найденный материал";
-        if (eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase)) return "Компилирую и выполняю C#; затем проверю результат";
-        if (eventText.Contains("cad_verify", StringComparison.OrdinalIgnoreCase)) return "Сверяю реальные размеры и сохранение DWG";
-        if (eventText.Contains("cad_reference_compare", StringComparison.OrdinalIgnoreCase)) return "Сравниваю силуэт с изображением";
-        if (eventText.Contains("cad_reference_", StringComparison.OrdinalIgnoreCase)) return "Привязываю изображение к координатам";
-        if (eventText.Contains("cad_edit_help", StringComparison.OrdinalIgnoreCase)) return "Проверяю доступные команды AutoCAD";
-        if (eventText.Contains("cad_render", StringComparison.OrdinalIgnoreCase)) return "Проверяю вид чертежа";
+        bool failed = eventText.StartsWith(UiText.T("Ошибка:"), StringComparison.Ordinal);
+        if (failed) return UiText.T("Инструмент сообщил об ошибке; диагностика в чате");
+        if (eventText.Contains("cad_pdf_read", StringComparison.OrdinalIgnoreCase)) return UiText.T("Читаю текст и страницы PDF");
+        if (eventText.Contains("cad_web_download", StringComparison.OrdinalIgnoreCase)) return UiText.T("Скачиваю найденный материал");
+        if (eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase)) return UiText.T("Компилирую и выполняю C#; затем проверю результат");
+        if (eventText.Contains("cad_verify", StringComparison.OrdinalIgnoreCase)) return UiText.T("Сверяю реальные размеры и сохранение DWG");
+        if (eventText.Contains("cad_reference_compare", StringComparison.OrdinalIgnoreCase)) return UiText.T("Сравниваю силуэт с изображением");
+        if (eventText.Contains("cad_reference_", StringComparison.OrdinalIgnoreCase)) return UiText.T("Привязываю изображение к координатам");
+        if (eventText.Contains("cad_edit_help", StringComparison.OrdinalIgnoreCase)) return UiText.T("Проверяю доступные команды AutoCAD");
+        if (eventText.Contains("cad_render", StringComparison.OrdinalIgnoreCase)) return UiText.T("Проверяю вид чертежа");
         if (eventText.Contains("cad_edit", StringComparison.OrdinalIgnoreCase) ||
-            eventText.Contains("cad_lisp", StringComparison.OrdinalIgnoreCase)) return "Изменяю чертёж";
+            eventText.Contains("cad_lisp", StringComparison.OrdinalIgnoreCase)) return UiText.T("Изменяю чертёж");
         if (eventText.Contains("cad_export", StringComparison.OrdinalIgnoreCase) ||
-            eventText.Contains("cad_publish", StringComparison.OrdinalIgnoreCase)) return "Готовлю файлы";
-        if (eventText.Contains("cad_operation_status", StringComparison.OrdinalIgnoreCase) || eventText.Contains("cad_operation_list", StringComparison.OrdinalIgnoreCase)) return "Проверяю завершение операции";
-        if (eventText.Contains("cad_", StringComparison.OrdinalIgnoreCase)) return "Изучаю чертёж";
-        return "Работаю с AutoCAD";
+            eventText.Contains("cad_publish", StringComparison.OrdinalIgnoreCase)) return UiText.T("Готовлю файлы");
+        if (eventText.Contains("cad_operation_status", StringComparison.OrdinalIgnoreCase) || eventText.Contains("cad_operation_list", StringComparison.OrdinalIgnoreCase)) return UiText.T("Проверяю завершение операции");
+        if (eventText.Contains("cad_", StringComparison.OrdinalIgnoreCase)) return UiText.T("Изучаю чертёж");
+        return UiText.T("Работаю с AutoCAD");
     }
 
     public static bool ProducesVisibleResult(string eventText) =>
-        eventText.StartsWith("Завершено:", StringComparison.Ordinal) &&
+        eventText.StartsWith(UiText.T("Завершено:"), StringComparison.Ordinal) &&
         (eventText.Contains("cad_edit", StringComparison.OrdinalIgnoreCase) ||
          eventText.Contains("cad_lisp", StringComparison.OrdinalIgnoreCase) ||
          eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase) ||

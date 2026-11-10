@@ -49,18 +49,18 @@ public static class CadSubagentPolicy
                 {
                     var match=Regex.Match(File.ReadAllText(file),"(?m)^\\s*name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)')");
                     if(match.Success)Add(match.Groups.Cast<Group>().Skip(1).First(g=>g.Success).Value,file);
-                    else warnings?.Add("Помощник из "+file+" не распознан; запись в чертёж ему всё равно недоступна");
+                    else warnings?.Add(UiText.T("Помощник из ")+file+UiText.T(" не распознан; запись в чертёж ему всё равно недоступна"));
                 }
             }
             catch(Exception e) when(e is IOException or UnauthorizedAccessException)
-            { warnings?.Add("Не удалось прочитать роли помощников в "+directory+": "+e.Message); }
+            { warnings?.Add(UiText.T("Не удалось прочитать роли помощников в ")+directory+": "+e.Message); }
         }
         return roles.OrderBy(v=>v,StringComparer.Ordinal).ToArray();
         void Add(string role,string file)
         {
             // Only names that are safe as TOML keys receive an override.
-            if(!Regex.IsMatch(role,"^[A-Za-z0-9_-]{1,64}$")){warnings?.Add("Роль помощника «"+role+"» из "+file+" пропущена: недопустимое имя");return;}
-            if(roles.Count>=64&&!roles.Contains(role)){warnings?.Add("Слишком много ролей помощников; роль «"+role+"» пропущена");return;}
+            if(!Regex.IsMatch(role,"^[A-Za-z0-9_-]{1,64}$")){warnings?.Add(UiText.T("Роль помощника «")+role+UiText.T("» из ")+file+UiText.T(" пропущена: недопустимое имя"));return;}
+            if(roles.Count>=64&&!roles.Contains(role)){warnings?.Add(UiText.T("Слишком много ролей помощников; роль «")+role+UiText.T("» пропущена"));return;}
             roles.Add(role);
         }
     }

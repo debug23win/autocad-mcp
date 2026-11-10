@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Globalization;
 using System.Text.Json;
 namespace CadMcp.Providers;
@@ -26,11 +27,11 @@ public sealed record CodexRateLimits(CodexLimitWindow? Primary, CodexLimitWindow
     {
         string Format(CodexLimitWindow window, string fallback)
         {
-            string label = window.DurationMinutes is { } m ? m % 1440 == 0 ? m / 1440 + " дн" : m % 60 == 0 ? m / 60 + " ч" : m + " мин" : fallback;
-            return label + ": осталось " + window.RemainingPercent.ToString("0.#", CultureInfo.GetCultureInfo("ru-RU")) + "%" +
-                (window.ResetsAt is { } reset ? " (сброс " + reset.ToLocalTime().ToString("dd.MM HH:mm", CultureInfo.InvariantCulture) + ")" : "");
+            string label = window.DurationMinutes is { } m ? m % 1440 == 0 ? m / 1440 + UiText.T(" дн") : m % 60 == 0 ? m / 60 + UiText.T(" ч") : m + UiText.T(" мин") : fallback;
+            return label + UiText.T(": осталось ") + window.RemainingPercent.ToString("0.#", CultureInfo.GetCultureInfo("ru-RU")) + "%" +
+                (window.ResetsAt is { } reset ? UiText.T(" (сброс ") + reset.ToLocalTime().ToString("dd.MM HH:mm", CultureInfo.InvariantCulture) + ")" : "");
         }
-        return "Лимиты Codex: " + string.Join(" · ", new[] { Primary is { } p ? Format(p, "основной") : null, Secondary is { } s ? Format(s, "дополнительный") : null,
-            OrdinaryUsageAllowed == false ? "доступ по подписке ограничен" : null }.OfType<string>());
+        return UiText.T("Лимиты Codex: ") + string.Join(" · ", new[] { Primary is { } p ? Format(p, UiText.T("основной")) : null, Secondary is { } s ? Format(s, UiText.T("дополнительный")) : null,
+            OrdinaryUsageAllowed == false ? UiText.T("доступ по подписке ограничен") : null }.OfType<string>());
     }
 }

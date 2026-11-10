@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
@@ -13,7 +14,7 @@ public static class ChatWordExporter
 {
     public static void Save(string path, IReadOnlyList<ChatLine> messages)
     {
-        if (messages.Count == 0) throw new InvalidOperationException("В диалоге ещё нет сообщений");
+        if (messages.Count == 0) throw new InvalidOperationException(UiText.T("В диалоге ещё нет сообщений"));
         string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp.docx";
         try
         {
@@ -25,29 +26,29 @@ public static class ChatWordExporter
         var styles=main.AddNewPart<StyleDefinitionsPart>();
         styles.Styles=new Styles(new DocDefaults(new RunPropertiesDefault(new RunPropertiesBaseStyle(new RunFonts{Ascii="Calibri",HighAnsi="Calibri"},new Color{Val="000000"},new FontSize{Val="22"}))),
             new Style(new StyleName{Val="Title"},new StyleParagraphProperties(new SpacingBetweenLines{After="240"}),new StyleRunProperties(new Color{Val="000000"},new FontSize{Val="32"})){Type=StyleValues.Paragraph,StyleId="Title"});
-        var title=Paragraph("Диалог CAD MCP");title.ParagraphProperties=new ParagraphProperties(new ParagraphStyleId{Val="Title"});body.Append(title);
+        var title=Paragraph(UiText.T("Диалог CAD MCP"));title.ParagraphProperties=new ParagraphProperties(new ParagraphStyleId{Val="Title"});body.Append(title);
         uint imageId = 1;
         foreach (var message in messages)
         {
-            string label = message.Role switch { "user" => "Вы", "assistant" => "Ассистент", "progress" => "Ход работы", _ => "История" };
+            string label = message.Role switch { "user" => UiText.T("Вы"), "assistant" => UiText.T("Ассистент"), "progress" => UiText.T("Ход работы"), _ => UiText.T("История") };
             if (!string.IsNullOrWhiteSpace(message.Model)) label += " · " + message.Model;
             body.Append(Paragraph(label, bold: true, size: "24"));
             AppendContent(body,message.Text);
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
             {
-                body.Append(Paragraph("Краткий ход рассуждений", bold: true));
+                body.Append(Paragraph(UiText.T("Краткий ход рассуждений"), bold: true));
                 foreach (string line in message.ReasoningSummary.Replace("\r\n", "\n").Split('\n')) body.Append(Paragraph(line));
             }
             if (message.Images is { Count: > 0 })
                 foreach (var image in message.Images)
                 {
-                    if (!File.Exists(image.Path)) { body.Append(Paragraph("Изображение недоступно: " + image.Name)); continue; }
+                    if (!File.Exists(image.Path)) { body.Append(Paragraph(UiText.T("Изображение недоступно: ") + image.Name)); continue; }
                     PartTypeInfo? type = Path.GetExtension(image.Path).ToLowerInvariant() switch
                     {
                         ".png" => ImagePartType.Png, ".jpg" or ".jpeg" => ImagePartType.Jpeg,
                         ".gif" => ImagePartType.Gif, _ => null
                     };
-                    if (type is null) { body.Append(Paragraph("Изображение: " + image.Name + " (формат не поддерживается Word)")); continue; }
+                    if (type is null) { body.Append(Paragraph(UiText.T("Изображение: ") + image.Name + UiText.T(" (формат не поддерживается Word)"))); continue; }
                     var part = main.AddImagePart(type.Value);
                     using (var source = File.OpenRead(image.Path)) part.FeedData(source);
                     long width = 5_400_000;

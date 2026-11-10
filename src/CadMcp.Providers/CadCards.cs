@@ -1,10 +1,11 @@
+using CadMcp.Core;
 using System.Text.Json;
 
 namespace CadMcp.Providers;
 
 public sealed record CadCard(string Session, string Document, string Handle, string Type, bool Erased, string? RootHandle = null)
 {
-    public string Label => (Erased ? "Удалён: " : "") + Type + " · " + Handle;
+    public string Label => (Erased ? UiText.T("Удалён: ") : "") + Type + " · " + Handle;
     public string FocusHandle => RootHandle ?? Handle;
 }
 public static class CadCards
@@ -26,7 +27,7 @@ public static class CadCards
             if (value.TryGetProperty("session_id", out var s) && s.ValueKind == JsonValueKind.String) session = s.GetString()!;
             if (value.TryGetProperty("document_id", out var d) && d.ValueKind == JsonValueKind.String) document = d.GetString()!;
             if (session.Length != 0 && document.Length != 0 && value.TryGetProperty("handle", out var handle) && handle.ValueKind == JsonValueKind.String)
-                cards.Add(new(session, document, handle.GetString()!, value.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString()! : "Объект",
+                cards.Add(new(session, document, handle.GetString()!, value.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString()! : UiText.T("Объект"),
                     value.TryGetProperty("erased", out var e) && e.ValueKind == JsonValueKind.True,
                     value.TryGetProperty("root_handle", out var root) && root.ValueKind == JsonValueKind.String ? root.GetString() : null));
             foreach (var property in value.EnumerateObject()) Visit(property.Value, session, document, depth + 1);

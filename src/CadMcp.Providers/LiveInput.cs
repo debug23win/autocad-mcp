@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Collections.Concurrent;
 
 namespace CadMcp.Providers;
@@ -5,7 +6,7 @@ namespace CadMcp.Providers;
 public sealed record ChatInput(string Prompt, IReadOnlyList<ChatAttachment> Attachments);
 public sealed record InputReceipt(string State, string Message)
 {
-    public static InputReceipt Unavailable => new("unavailable", "Текущий ход ещё не начался или уже завершён");
+    public static InputReceipt Unavailable => new("unavailable", UiText.T("Текущий ход ещё не начался или уже завершён"));
 }
 
 // A receipt is acknowledged by the provider protocol, never merely by writing stdin.
@@ -34,7 +35,7 @@ internal sealed class LiveInput
             return await completion.Task.WaitAsync(AcknowledgementTimeout,ct);
         }
         catch(Exception error) when(error is IOException or InvalidOperationException or TimeoutException or OperationCanceledException)
-        {return new("uncertain","Доставка дополнения не подтверждена. Автоматический повтор отключён: "+error.Message);}
+        {return new("uncertain",UiText.T("Доставка дополнения не подтверждена. Автоматический повтор отключён: ")+error.Message);}
         finally{pending.TryRemove(id,out _);}
     }
     public bool Resolve(int id,InputReceipt receipt)
@@ -54,7 +55,7 @@ internal sealed class LiveInput
     public void Close()
     {
         lock(gate)sender=null;
-        foreach(var item in pending.ToArray())Resolve(item.Key,new("uncertain","Ход завершился до подтверждения дополнения; автоматический повтор отключён"));
+        foreach(var item in pending.ToArray())Resolve(item.Key,new("uncertain",UiText.T("Ход завершился до подтверждения дополнения; автоматический повтор отключён")));
     }
     public static IReadOnlyList<object> CodexContent(ChatInput input)
     {

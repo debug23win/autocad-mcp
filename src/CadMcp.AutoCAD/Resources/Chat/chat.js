@@ -1,6 +1,7 @@
 const conversation = document.getElementById("conversation");
 let selected = -1, lastSequence = -1, following = true, anchor = null, manualVersion = 0;
 let applying = false, scheduled = false;
+let labels = {empty:"", copied:"", copyFailed:"", copy:""};
 const scroller = () => document.scrollingElement || document.documentElement;
 const nearBottom = () => scroller().scrollHeight - scroller().scrollTop - window.innerHeight < 90;
 function captureAnchor() {
@@ -45,16 +46,22 @@ function renderMath(element) {
 function update(data) {
   if (Number.isInteger(data.sequence) && data.sequence <= lastSequence) return;
   lastSequence = data.sequence ?? lastSequence;
+  labels = data.labels || labels;
+  document.documentElement.lang = data.language === "en" ? "en" : "ru";
   following = nearBottom(); anchor = captureAnchor();
   document.body.classList.toggle("dark", data.dark === true);
   const template = document.createElement("template");
-  template.innerHTML = data.html || "<p id='empty'>Напишите запрос о чертеже или прикрепите файлы.</p>";
+  template.innerHTML = data.html || "";
+  if (!data.html) {
+    const empty = document.createElement("p"); empty.id = "empty"; empty.textContent = labels.empty;
+    template.content.appendChild(empty);
+  }
   const incoming = [...template.content.children];
   if (incoming.length < conversation.children.length) { following = true; anchor.index = undefined; }
   incoming.forEach((card, i) => {
     const previous = conversation.children[i];
     const source = card.outerHTML;
-    if (previous?.dataset.index === card.dataset.index && previous.tagName === card.tagName) {
+    if (previous && card.dataset.index !== undefined && previous.dataset.index === card.dataset.index && previous.tagName === card.tagName) {
       if (previous._sourceHtml !== source) { patchArticle(previous, card); previous._sourceHtml = source; renderMath(previous); }
     } else { card._sourceHtml = source; if (previous) previous.replaceWith(card); else conversation.appendChild(card); renderMath(card); }
   });
@@ -68,8 +75,8 @@ window.chrome.webview.addEventListener("message", e => {
   if (e.data.type === "copy-result") {
     const button = conversation.querySelector(`.copy-answer[data-index="${e.data.index}"]`);
     if (button) {
-      button.textContent = e.data.success ? "Скопировано" : "Не удалось скопировать";
-      setTimeout(() => { if (button.isConnected) button.textContent = "Копировать"; }, 1800);
+      button.textContent = e.data.success ? labels.copied : labels.copyFailed;
+      setTimeout(() => { if (button.isConnected) button.textContent = labels.copy; }, 1800);
     }
     return;
   }

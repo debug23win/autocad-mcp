@@ -23,19 +23,19 @@ internal sealed class LispApprovalWindow : Window
     private Action<bool, bool>? decided;
     private readonly CheckBox remember = new()
     {
-        Content = "Не спрашивать до перезапуска AutoCAD, если в коде нет опасных функций", Margin = new Thickness(0, 8, 0, 0)
+        Content = UiText.T("Не спрашивать до перезапуска AutoCAD, если в коде нет опасных функций"), Margin = new Thickness(0, 8, 0, 0)
     };
 
     private LispApprovalWindow(LispApprovalRequest request, Action<bool, bool> decided)
     {
         this.decided = decided;
-        Title = "CAD MCP — подтверждение AutoLISP";
+        Title = UiText.T("CAD MCP — подтверждение AutoLISP");
         Width = 640; Height = 520; MinWidth = 420; MinHeight = 320;
         WindowStartupLocation = WindowStartupLocation.CenterScreen; ShowInTaskbar = false; Topmost = true;
         var root = new DockPanel { Margin = new Thickness(12) };
         var header = new StackPanel(); DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
-        header.Children.Add(new TextBlock { Text = "Агент просит выполнить AutoLISP в чертеже «" + request.Drawing + "».", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold });
-        header.Children.Add(new TextBlock { Text = "Операция " + request.OperationId + ". AutoLISP выполняется без отката транзакции; изменения можно отменить командой ОТМЕНИТЬ (U).", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
+        header.Children.Add(new TextBlock { Text = UiText.T("Агент просит выполнить AutoLISP в чертеже «") + request.Drawing + "».", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold });
+        header.Children.Add(new TextBlock { Text = UiText.T("Операция ") + request.OperationId + UiText.T(". AutoLISP выполняется без отката транзакции; изменения можно отменить командой ОТМЕНИТЬ (U)."), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
         foreach (var finding in request.Findings)
             header.Children.Add(new TextBlock
             {
@@ -46,8 +46,8 @@ internal sealed class LispApprovalWindow : Window
         DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
         DockPanel.SetDock(remember, Dock.Bottom); root.Children.Add(remember);
         // Not a default button: Enter in the code box must never approve by accident.
-        var run = new Button { Content = "Выполнить", Padding = new Thickness(16, 4, 16, 4), Margin = new Thickness(0, 0, 8, 0) };
-        var decline = new Button { Content = "Отклонить", Padding = new Thickness(16, 4, 16, 4), IsCancel = true };
+        var run = new Button { Content = UiText.T("Выполнить"), Padding = new Thickness(16, 4, 16, 4), Margin = new Thickness(0, 0, 8, 0) };
+        var decline = new Button { Content = UiText.T("Отклонить"), Padding = new Thickness(16, 4, 16, 4), IsCancel = true };
         run.Click += (_, _) => Decide(true);
         decline.Click += (_, _) => Decide(false);
         buttons.Children.Add(run); buttons.Children.Add(decline);
@@ -63,15 +63,15 @@ internal sealed class LispApprovalWindow : Window
 
     private static string Describe(LispFinding finding) => finding.Code switch
     {
-        "LISP_EXTERNAL_PROCESS" => "Запуск внешних программ или объектов: " + finding.Detail,
-        "LISP_FILE_WRITE" => "Работа с файлами на диске: " + finding.Detail,
-        "LISP_CODE_LOADING" => "Загрузка и запуск стороннего кода: " + finding.Detail,
-        "LISP_REGISTRY" => "Изменение реестра или настроек: " + finding.Detail,
-        "LISP_DYNAMIC_CODE" => "Код, собираемый во время выполнения (его нельзя проверить заранее): " + finding.Detail,
-        "LISP_REACTOR" => "Реактор, который будет выполнять код позже: " + finding.Detail,
-        "LISP_SEND_COMMAND" => "Команды, передаваемые строкой: " + finding.Detail,
-        "LISP_DIALOG_COMMAND" => "Команда может открыть диалог и ждать пользователя: " + finding.Detail,
-        "LISP_DOCUMENT_SWITCH" => "Может открыть, закрыть или переключить чертёж: " + finding.Detail,
+        "LISP_EXTERNAL_PROCESS" => UiText.T("Запуск внешних программ или объектов: ") + finding.Detail,
+        "LISP_FILE_WRITE" => UiText.T("Работа с файлами на диске: ") + finding.Detail,
+        "LISP_CODE_LOADING" => UiText.T("Загрузка и запуск стороннего кода: ") + finding.Detail,
+        "LISP_REGISTRY" => UiText.T("Изменение реестра или настроек: ") + finding.Detail,
+        "LISP_DYNAMIC_CODE" => UiText.T("Код, собираемый во время выполнения (его нельзя проверить заранее): ") + finding.Detail,
+        "LISP_REACTOR" => UiText.T("Реактор, который будет выполнять код позже: ") + finding.Detail,
+        "LISP_SEND_COMMAND" => UiText.T("Команды, передаваемые строкой: ") + finding.Detail,
+        "LISP_DIALOG_COMMAND" => UiText.T("Команда может открыть диалог и ждать пользователя: ") + finding.Detail,
+        "LISP_DOCUMENT_SWITCH" => UiText.T("Может открыть, закрыть или переключить чертёж: ") + finding.Detail,
         _ => finding.Detail
     };
 
@@ -116,32 +116,32 @@ internal static class LispPolicyPrompt
         // queues it with SendCommand; the scanner blocks the visible forms, this blocks the rest.
         if (Dispatcher.RunningLispScript is { } running)
         {
-            editor.WriteMessage("\nCAD MCP: политику AutoLISP нельзя менять из скрипта агента (операция " + running + ").");
+            editor.WriteMessage(UiText.T("\nCAD MCP: политику AutoLISP нельзя менять из скрипта агента (операция ") + running + ").");
             return;
         }
         var current = CadSettings.StoredLispPolicy();
         var effective = CadSettings.EffectiveLispPolicy();
-        var options = new EditorInput.PromptKeywordOptions("\nAutoLISP, запрошенный агентами CAD MCP. Сейчас: " + LispPolicy.Label(effective) +
-            (effective != current ? " (до перезапуска AutoCAD)" : "")) { AppendKeywordsToMessage = true };
-        options.Keywords.Add("Ask", "Спрашивать", "Спрашивать");
-        options.Keywords.Add("AutoSafe", "Безопасный", "Безопасный");
-        options.Keywords.Add("Allow", "Разрешать", "Разрешать");
-        options.Keywords.Add("Deny", "Запретить", "Запретить");
+        var options = new EditorInput.PromptKeywordOptions(UiText.T("\nAutoLISP, запрошенный агентами CAD MCP. Сейчас: ") + LispPolicy.Label(effective) +
+            (effective != current ? UiText.T(" (до перезапуска AutoCAD)") : "")) { AppendKeywordsToMessage = true };
+        options.Keywords.Add("Ask", UiText.T("Спрашивать"), UiText.T("Спрашивать"));
+        options.Keywords.Add("AutoSafe", UiText.T("Безопасный"), UiText.T("Безопасный"));
+        options.Keywords.Add("Allow", UiText.T("Разрешать"), UiText.T("Разрешать"));
+        options.Keywords.Add("Deny", UiText.T("Запретить"), UiText.T("Запретить"));
         options.Keywords.Default = current switch { LispPolicyMode.AutoSafe => "AutoSafe", LispPolicyMode.Allow => "Allow", LispPolicyMode.Deny => "Deny", _ => "Ask" };
         var result = editor.GetKeywords(options);
         if (result.Status != EditorInput.PromptStatus.OK) return;
         var mode = result.StringResult switch { "AutoSafe" => LispPolicyMode.AutoSafe, "Allow" => LispPolicyMode.Allow, "Deny" => LispPolicyMode.Deny, _ => LispPolicyMode.Ask };
         // Relaxing the policy needs a click that typed or scripted input cannot supply.
-        if (Strictness(mode) < Strictness(current) && System.Windows.MessageBox.Show("Разрешить агентам CAD MCP выполнять AutoLISP: " + LispPolicy.Label(mode) + "?",
-                "CAD MCP — политика AutoLISP", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        if (Strictness(mode) < Strictness(current) && System.Windows.MessageBox.Show(UiText.T("Разрешить агентам CAD MCP выполнять AutoLISP: ") + LispPolicy.Label(mode) + "?",
+                UiText.T("CAD MCP — политика AutoLISP"), MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
         {
-            editor.WriteMessage("\nCAD MCP: политика AutoLISP не изменена.");
+            editor.WriteMessage(UiText.T("\nCAD MCP: политика AutoLISP не изменена."));
             return;
         }
         try { CadSettings.StoreLispPolicy(mode); CadSettings.SessionLispPolicy = null; }
-        catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage("\nCAD MCP: не удалось сохранить настройку: " + error.Message); return; }
+        catch (System.Exception error) when (error is IOException or UnauthorizedAccessException) { editor.WriteMessage(UiText.T("\nCAD MCP: не удалось сохранить настройку: ") + error.Message); return; }
         editor.WriteMessage("\nCAD MCP: AutoLISP — " + LispPolicy.Label(mode) +
-            (Environment.GetEnvironmentVariable("CAD_MCP_LISP_POLICY") is { Length: > 0 } environment ? ". Внимание: переменная CAD_MCP_LISP_POLICY=" + environment + " имеет приоритет" : ""));
+            (Environment.GetEnvironmentVariable("CAD_MCP_LISP_POLICY") is { Length: > 0 } environment ? UiText.T(". Внимание: переменная CAD_MCP_LISP_POLICY=") + environment + UiText.T(" имеет приоритет") : ""));
     }
 
     private static int Strictness(LispPolicyMode mode) => mode switch { LispPolicyMode.Deny => 3, LispPolicyMode.Ask => 2, LispPolicyMode.AutoSafe => 1, _ => 0 };
