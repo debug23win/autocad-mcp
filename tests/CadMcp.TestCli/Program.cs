@@ -111,6 +111,12 @@ internal static class FakeCodex
                 Console.WriteLine("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"completed\"}}}");
                 return;
             }
+            if (prompt == "TOOL_PROBLEM")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "problem-turn" } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/completed", @params = new { threadId = "test-thread", item = new { type = "mcpToolCall", tool = "cad_csharp", status = "completed", arguments = new { operation_id = "op-visible" }, result = new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(new { code = "CSHARP_FAILED", message = "PE image does not have metadata", changes_started = false }) } } } } } }));
+                await Task.Delay(TimeSpan.FromMinutes(1)); return;
+            }
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
             if (prompt == "SILENT_ACTIVE")
             {
@@ -266,6 +272,10 @@ internal static class FakeClaude
                 await Task.Delay(TimeSpan.FromMinutes(1));
                 return 0;
             }
+            case "TOOL_PROBLEM":
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "assistant", message = new { content = new[] { new { type = "tool_use", id = "problem-tool", name = "mcp__cad__cad_csharp", input = new { operation_id = "op-visible" } } } } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { type = "user", message = new { content = new[] { new { type = "tool_result", tool_use_id = "problem-tool", is_error = true, content = JsonSerializer.Serialize(new { code = "CSHARP_FAILED", message = "PE image does not have metadata", changes_started = false }) } } } }));
+                await Task.Delay(TimeSpan.FromMinutes(1)); return 0;
             case "SILENT": await Task.Delay(TimeSpan.FromMinutes(1)); return 0;
         }
         Console.WriteLine("{\"type\":\"system\",\"session_id\":\"test-claude\"}");

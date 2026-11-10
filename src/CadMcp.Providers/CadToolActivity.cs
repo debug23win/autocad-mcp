@@ -5,7 +5,7 @@ public static class CadToolActivity
     public static string Describe(string eventText)
     {
         bool failed = eventText.StartsWith("Ошибка:", StringComparison.Ordinal);
-        if (failed) return "AutoCAD сообщил об ошибке; проверяю результат";
+        if (failed) return "Инструмент сообщил об ошибке; диагностика в чате";
         if (eventText.Contains("cad_pdf_read", StringComparison.OrdinalIgnoreCase)) return "Читаю текст и страницы PDF";
         if (eventText.Contains("cad_web_download", StringComparison.OrdinalIgnoreCase)) return "Скачиваю найденный материал";
         if (eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase)) return "Компилирую и выполняю C#; затем проверю результат";

@@ -92,7 +92,7 @@ public sealed class ProviderTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var events = await TestEnvironment.Collect(new CodexProvider(Options).SendAsync("REQUEST", timeout.Token));
-        Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("item/tool/requestUserInput"));
+        Assert.Contains(events, e => e.Kind == "problem" && e.Text.Contains("item/tool/requestUserInput"));
         Assert.Equal("Продолжил", string.Concat(events.Where(e => e.Kind == "text").Select(e => e.Text)));
         Assert.Contains(events, e => e.Kind == "completed");
     }

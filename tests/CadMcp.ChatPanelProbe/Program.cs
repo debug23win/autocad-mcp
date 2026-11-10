@@ -70,6 +70,26 @@ internal static class Program
         Assert(ButtonField("send").IsEnabled&&ButtonField("attach").IsEnabled&&!model.IsEnabled&&ButtonField("send").Content.ToString()=="Дополнить","Running chat prevents adding instructions or files");
         typeof(ChatPanel).GetField("acceptingInput", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(panel,false);
         typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel,new object[]{false});
+        var flow = new ChatPanel(new ChatStateStore(Path.Combine(root, "followup-flow")), preferences: new ChatPreferencesStore(Path.Combine(root, "flow-preferences.json")));
+        object FlowField(string name) => typeof(ChatPanel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(flow)!;
+        void FlowSet(string name, object value) => typeof(ChatPanel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(flow, value);
+        var flowMessages = (List<ChatLine>)FlowField("messages");
+        flowMessages.Add(new("user", "Исходная задача")); flowMessages.Add(new("assistant", "", Steps: new[] { "Изучаю чертёж" }));
+        FlowSet("currentAssistantIndex", 1); FlowSet("acceptingInput", true);
+        ((System.Windows.Controls.TextBox)FlowField("input")).Text = "Уточнение задачи";
+        ((Task)typeof(ChatPanel).GetMethod("AddFollowup", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(flow, null)!).GetAwaiter().GetResult();
+        Assert(flowMessages.Count == 4 && flowMessages[1].Delivery == "Продолжение задачи — ниже." && flowMessages[1].Steps!.Contains("Изучаю чертёж"), "Steering left an unexplained empty assistant card or erased progress");
+        typeof(ChatPanel).GetMethod("ProviderCompleted", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(flow, null);
+        Assert(!(bool)FlowField("acceptingInput") && !((Button)FlowField("send")).IsEnabled && !((Button)FlowField("attach")).IsEnabled, "Final CAD verification accepted input into an already closed provider turn");
+        typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(flow, new object[] { false });
+        Assert(((Button)FlowField("send")).IsEnabled && ((Button)FlowField("send")).Content.ToString() == "Отправить", "A completed turn did not restore a fresh Send action");
+        ((System.Windows.Controls.CheckBox)FlowField("showProgress")).IsChecked = false;
+        typeof(ChatPanel).GetMethod("RecordProblem", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(flow, new object[] { "Код: CSHARP_FAILED\nОшибка: PE image does not have metadata" });
+        Assert(flowMessages[3].Text.Contains("CSHARP_FAILED") && flowMessages[3].Text.Contains("Проблема при выполнении"), "Task errors were hidden with progress disabled");
+        Assert(ChatMarkup.AnswerText(flowMessages, 3)!.Contains("CSHARP_FAILED"), "Copying the answer omitted the diagnostic");
+        ((System.Windows.Threading.DispatcherTimer)FlowField("progressTimer")).Start();
+        typeof(ChatPanel).GetMethod("FinishTurn", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(flow, new object[] { "Остановлено" });
+        Assert(!((Button)FlowField("stop")).IsEnabled && !((System.Windows.Threading.DispatcherTimer)FlowField("progressTimer")).IsEnabled && ((TextBlock)FlowField("activity")).Text == "Остановлено", "Stopped task still looked like active work");
         var note = Path.Combine(root, "plan.txt");
         var picture = Path.Combine(root, "view.png");
         File.WriteAllText(note, "Чертёж ✓");
@@ -99,6 +119,26 @@ internal static class Program
         var darkEncoder = new PngBitmapEncoder(); darkEncoder.Frames.Add(BitmapFrame.Create(darkImage));
         string darkPath = Path.Combine(root, "panel-dark.png");
         using (var file = File.Create(darkPath)) darkEncoder.Save(file);
+        var captionContent = new Border(); captionContent.SetResourceReference(Border.BackgroundProperty, "Cad.Panel");
+        var captionWindow = new ChatWindow(captionContent) { Width = 480, Height = 180, Left = -2000, Top = -2000, ShowInTaskbar = false };
+        try
+        {
+            captionWindow.Show(); captionWindow.UpdateLayout();
+            var caption = (Border)typeof(ChatWindow).GetField("caption", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(captionWindow)!;
+            Assert(caption.Background is SolidColorBrush cb && cb.Color == System.Windows.Media.Color.FromRgb(57, 67, 81), "Caption is black instead of the AutoCAD palette");
+            Assert(System.Windows.Shell.WindowChrome.GetWindowChrome(captionWindow).CaptionHeight == 32 && captionWindow.ResizeMode == ResizeMode.CanResize, "Custom caption lost draggable or resizable window chrome");
+            void SaveCaption(string name)
+            {
+                captionWindow.UpdateLayout(); var bitmap = new RenderTargetBitmap(480, 180, 96, 96, PixelFormats.Pbgra32); bitmap.Render(captionWindow);
+                var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using var file = File.Create(Path.Combine(root, name)); png.Save(file);
+            }
+            SaveCaption("panel-caption-dark.png");
+            captionWindow.ApplyHeaderTheme(false);
+            Assert(caption.Background is SolidColorBrush lb && lb.Color == System.Windows.Media.Color.FromRgb(245, 246, 248), "Caption does not follow a light theme change");
+            SaveCaption("panel-caption-light.png");
+        }
+        finally { captionWindow.Close(); }
+        Console.WriteLine("PASS visible tool diagnostics with progress disabled, stopped task state and palette-colored native caption");
         Console.WriteLine("PASS real WPF model/effort selection, attachment chips/removal, persistence and provider controls");
         Console.WriteLine("UI image: " + path);
         Console.WriteLine("Dark UI image: " + darkPath);

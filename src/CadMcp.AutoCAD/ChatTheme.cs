@@ -51,7 +51,8 @@ internal static class ChatTheme
         Brush("Cad.Foreground", dark ? "#f0f2f5" : "#20232a"); Brush("Cad.Border", dark ? "#6a7b90" : "#bec5cf");
         Brush("Cad.Hover", dark ? "#4b5a6e" : "#e4edf7"); Brush("Cad.Selected", dark ? "#506b88" : "#cce3fa"); Brush("Cad.Accent", dark ? "#9cc3ed" : "#0867b4");
         control.Background = (Brush)control.Resources["Cad.Panel"]; control.Foreground = (Brush)control.Resources["Cad.Foreground"];
-        if (PresentationSource.FromVisual(control) is HwndSource source)
+        if (control is not ChatWindow && Window.GetWindow(control) is ChatWindow chatWindow) chatWindow.ApplyHeaderTheme(dark);
+        if (control is not ChatWindow && Window.GetWindow(control) is not ChatWindow && PresentationSource.FromVisual(control) is HwndSource source)
         {
             IntPtr root = GetAncestor(source.Handle, 2);
             int value = dark ? 1 : 0;
