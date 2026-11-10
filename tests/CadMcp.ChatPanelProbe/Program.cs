@@ -25,7 +25,8 @@ internal static class Program
         var root = Path.GetFullPath(Path.Combine(".runtime", "panel-probe-" + Guid.NewGuid().ToString("N")));
         var store = new ChatStateStore(root);
         store.Save(new(0, "codex.exe", "claude.exe", "host.exe", Environment.CurrentDirectory, "kept-session", "", "test-key", "gpt-6-astra", "ultra"));
-        var panel = new ChatPanel(store);
+        var preferences = new ChatPreferencesStore(Path.Combine(root, "preferences.json"));
+        var panel = new ChatPanel(store, preferences: preferences);
         var models = new[] {
             new CodexModel("gpt-6-astra", "GPT-6-Astra", "medium", new[] { "low", "medium", "high", "ultra" }, true),
             new CodexModel("gpt-6-sol", "GPT-6-Sol", "low", new[] { "low", "medium", "high", "ultra" }, false),
@@ -40,7 +41,7 @@ internal static class Program
         model.SelectedValue = "gpt-6-sol"; reasoning.SelectedValue = "high";
         var saved = store.Load()!;
         Assert(saved.CodexModel == "gpt-6-sol" && saved.CodexReasoningEffort == "high" && saved.SessionId == "kept-session", "Selection discarded history/settings");
-        var restored = new ChatPanel(store); restored.ApplyModels(models);
+        var restored = new ChatPanel(store, preferences: preferences); restored.ApplyModels(models);
         Assert((string)((ComboBox)typeof(ChatPanel).GetField("model", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(restored)!).SelectedValue == "gpt-6-sol", "Reopened panel lost model");
         Field("provider").SelectedIndex = 1;
         int Items(ComboBox box) => ((System.Collections.IEnumerable)box.ItemsSource).Cast<object>().Count();
@@ -84,6 +85,12 @@ internal static class Program
         panel.DarkThemeProvider = () => true;
         typeof(ChatPanel).GetMethod("ApplyTheme", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, null);
         panel.UpdateLayout();
+        Assert(model.Template is not null && model.Foreground is SolidColorBrush foreground && foreground.Color.R > 180, "Dark ComboBox uses a real dark template and readable light foreground");
+        Assert(panel.Resources.Contains("Cad.ThemeInstalled"), "Native controls did not receive the shared theme");
+        var toggle = (System.Windows.Controls.Primitives.ToggleButton)model.Template!.FindName("Toggle", model);
+        toggle.ApplyTemplate();
+        var chrome = (Border)toggle.Template.FindName("Box", toggle);
+        Assert(chrome.Background is SolidColorBrush background && background.Color == System.Windows.Media.Color.FromRgb(48,57,70), "ComboBox selection field still has a light native background");
         var darkImage = new RenderTargetBitmap(480, 850, 96, 96, PixelFormats.Pbgra32); darkImage.Render(panel);
         var darkEncoder = new PngBitmapEncoder(); darkEncoder.Frames.Add(BitmapFrame.Create(darkImage));
         string darkPath = Path.Combine(root, "panel-dark.png");
@@ -91,6 +98,7 @@ internal static class Program
         Console.WriteLine("PASS real WPF model/effort selection, attachment chips/removal, persistence and provider controls");
         Console.WriteLine("UI image: " + path);
         Console.WriteLine("Dark UI image: " + darkPath);
+        if (Environment.GetCommandLineArgs().Contains("--native-theme-only")) return;
         var browserProbe = new ChatBrowser(Path.Combine(root, "browser-data"));
         browserProbe.Update(new[]
         {

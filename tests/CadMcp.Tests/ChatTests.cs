@@ -79,7 +79,7 @@ public sealed class AttachmentTests
         File.WriteAllBytes(root.File("view.png"), Convert.FromBase64String(TestEnvironment.Png));
         File.WriteAllBytes(root.File("base.dwg"), [1, 2, 3]);
         var files = ChatAttachments.Capture(new[] { "plan.txt", "view.png", "base.dwg" }.Select(name => ChatAttachments.Inspect(root.File(name))).ToArray());
-        Assert.True(files.Count == 3 && files[0].Text == "Чертёж ✓" && files[1].Kind == AttachmentKind.Image && files[2].Kind == AttachmentKind.File, "Wrong attachment types/content");
+        Assert.True(files.Count == 3 && files[0].Text == "Чертёж ✓" && files[1].Kind == AttachmentKind.Image && files[2].Kind == AttachmentKind.Drawing, "Wrong attachment types/content");
         var prompt = ChatAttachments.AddToPrompt("Review", files);
         // The model opens other files by path; photo calibration takes the image path.
         Assert.Contains(JsonSerializer.Serialize(root.File("base.dwg")), prompt);

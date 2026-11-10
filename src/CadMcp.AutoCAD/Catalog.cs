@@ -4,6 +4,26 @@ namespace CadMcp.AutoCAD;
 
 internal static class Catalog
 {
+    private static object[] PdfDevices()
+    {
+        var devices = new List<object>();
+        try
+        {
+            var validator = PlotSettingsValidator.Current;
+            foreach (string name in validator.GetPlotDeviceList().Cast<string>().Where(n => n.Equals("DWG To PDF.pc3", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    using var settings = new PlotSettings(false);
+                    validator.SetPlotConfigurationName(settings, name, null); validator.RefreshLists(settings);
+                    devices.Add(new { name, media = validator.GetCanonicalMediaNameList(settings).Cast<string>().ToArray() });
+                }
+                catch (Exception error) { devices.Add(new { name, media = Array.Empty<string>(), error = error.Message }); }
+            }
+        }
+        catch (Exception error) { devices.Add(new { name = "DWG To PDF.pc3", media = Array.Empty<string>(), error = error.Message }); }
+        return devices.ToArray();
+    }
     public static object Read(Database db, Transaction tr)
     {
         const int limit = 500;
@@ -18,7 +38,7 @@ internal static class Catalog
         var tableStyles = ((DBDictionary)tr.GetObject(db.TableStyleDictionaryId, OpenMode.ForRead)).Cast<System.Collections.DictionaryEntry>().Select(e => e.Key.ToString()).ToArray();
         // Return copied scalar data only. Deferred projections would retain open native
         // database objects and touch them again during serialization on the pipe thread.
-        return new { table_styles = tableStyles.Take(limit).ToArray(), layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }).ToArray(),
+        return new { pdf_devices = PdfDevices(), table_styles = tableStyles.Take(limit).ToArray(), layers = layers.Take(limit).Select(l => new { name = l.Name, color_index = l.Color.ColorIndex, locked = l.IsLocked, off = l.IsOff, frozen = l.IsFrozen, dependent = l.IsDependent }).ToArray(),
             blocks = blocks.Take(limit).Select(b => new { name = b.Name, handle = b.Handle.ToString(), xref = b.IsFromExternalReference, dependent = b.IsDependent,
                 attributes = b.Cast<ObjectId>().Select(id => tr.GetObject(id, OpenMode.ForRead)).OfType<AttributeDefinition>().Take(100).Select(a => new { tag = a.Tag, text = a.TextString, constant = a.Constant }).ToArray() }).ToArray(),
             text_styles = styles.Take(limit).Select(s => new { name = s.Name, font = s.FileName, height = s.TextSize }).ToArray(),

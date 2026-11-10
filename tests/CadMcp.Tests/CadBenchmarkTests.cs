@@ -8,7 +8,7 @@ namespace CadMcp.Tests;
 
 // Independent protocol/evidence tests. Fake CAD supplies controlled observations;
 // these tests do not execute AutoCAD and do not claim native compatibility.
-public sealed class CadBenchmarkTests
+public sealed partial class CadBenchmarkTests
 {
     private static Task<CadBenchmarkResult> Run(FakeCad cad, CancellationToken ct = default) =>
         new CadBenchmark(cad.Send, TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(80)).RunAsync("session", ct: ct);
@@ -262,6 +262,8 @@ public sealed class CadBenchmarkTests
         public readonly List<Request> Requests = [];
         public Action? Cancel;
         public int ReceiptPolls;
+        public string FixturePath = "benchmark.dwg";
+        public Func<Request, Response?>? Override;
         private readonly Dictionary<string, string> aliases = [];
         private readonly HashSet<string> erased = [];
         private int nextHandle = 100;
@@ -273,10 +275,11 @@ public sealed class CadBenchmarkTests
         public Task<Response> Send(Request r, CancellationToken ct)
         {
             Requests.Add(r);
+            if (Override?.Invoke(r) is { } overridden) return Task.FromResult(overridden);
             if (r.Operation == "cad_documents") return Task.FromResult(Reply(r, new[] { new { document_id = "user-drawing" } }, doc: null));
             if (r.Operation == "benchmark_create")
             {
-                var data = new { benchmark_fixture = mode != "missing_fixture_marker", run_id = mode == "wrong_run_id" ? "wrong" : r.Data.Text("run_id"), path = "benchmark.dwg" };
+                var data = new { benchmark_fixture = mode != "missing_fixture_marker", run_id = mode == "wrong_run_id" ? "wrong" : r.Data.Text("run_id"), path = FixturePath };
                 var reply = Reply(r, data, doc: mode == "existing_document" ? "user-drawing" : "fixture");
                 return Task.FromResult(mode == "wrong_fixture_session" ? reply with { SessionId = "foreign" } : reply);
             }

@@ -73,7 +73,7 @@ public sealed class Broker(string descriptorRoot, string? receiptRoot = null)
                 catch (Exception e) when (Wire.IsTransportFailure(e))
                 { return new { worker = w, context = (Response?)null, reachable = false }; }
             }
-            var reachable = await Task.WhenAll(Discover().Select(ProbeWorker));
+            var reachable = await Task.WhenAll(Discover().Where(w => request.SessionId is null || w.SessionId == request.SessionId).Select(ProbeWorker));
             return new(request.RequestId, "completed", reachable);
         }
         if (string.IsNullOrEmpty(request.SessionId)) throw new CadFault("SESSION_REQUIRED", "Choose a session from cad_sessions");

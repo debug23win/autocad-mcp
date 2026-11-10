@@ -327,12 +327,12 @@ internal static class DrawingInsight
     }
 
     /// <summary>Outline of a DWG on disk that is not open in AutoCAD, read into a separate database.</summary>
-    public static object InspectFile(string path, CancellationToken ct)
+    public static object InspectFile(string path, CancellationToken ct, JsonElement options = default)
     {
         // Local and mapped drives only: opening \\host\share makes Windows authenticate to whatever host a text names.
         if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)
-            || !path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
-            throw new CadFault("INVALID_PATH", "path must be an absolute .dwg path on a local or mapped drive; network (\\\\server\\share) and device paths are refused");
+            || !(path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase)))
+            throw new CadFault("INVALID_PATH", "path must be an absolute .dwg/.dxf path on a local or mapped drive; network and device paths are refused");
         path = Path.GetFullPath(path);
         var info = new FileInfo(path);
         if (!info.Exists) throw new CadFault("FILE_NOT_FOUND", path);
@@ -343,11 +343,33 @@ internal static class DrawingInsight
             try { open |= Path.IsPathFullyQualified(document.Name) && string.Equals(Path.GetFullPath(document.Name), path, StringComparison.OrdinalIgnoreCase); }
             catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { }
         using var db = new Database(false, true);
-        try { db.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.CloseInput(true); }
+        bool dxf = path.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase);
+        try { if (dxf) db.DxfIn(path, ""); else { db.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.CloseInput(true); } }
         catch (Autodesk.AutoCAD.Runtime.Exception error) { throw new CadFault("DWG_READ_FAILED", error.ErrorStatus + ": " + error.Message); }
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
         var outline = Outline(db, tr, Path.GetFileName(path), ct);
-        return new { path, bytes = info.Length, modified_utc = info.LastWriteTimeUtc, saved_version = db.OriginalFileVersion.ToString(), outline, opened_in_editor = open,
+        if (options.ValueKind != JsonValueKind.Object) options = Wire.Element(new { });
+        int offset = options.Number("offset", 0), limit = options.Number("limit", 100);
+        if (offset < 0 || limit is < 1 or > 500) throw new CadFault("INVALID_PAGE", "offset >= 0; limit 1..500");
+        string scope = options.Text("scope") ?? "model";
+        if (scope is not ("model" or "layout" or "layouts" or "all")) throw new CadFault("INVALID_SCOPE", "Reference file supports model/layout/layouts/all");
+        string? layer = options.Text("layer");
+        var entities = new List<JsonElement>(); int matched = 0; bool more = false;
+        foreach (var (space, _) in Spaces(db, tr, scope, options.Text("layout_name")))
+        {
+            foreach (ObjectId id in (BlockTableRecord)tr.GetObject(space, OpenMode.ForRead))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not Entity entity || layer is not null && !string.Equals(entity.Layer, layer, StringComparison.OrdinalIgnoreCase)) continue;
+                if (matched++ < offset) continue;
+                if (entities.Count == limit) { more = true; break; }
+                entities.Add(Reader.Read(entity, tr));
+            }
+            if (more) break;
+        }
+        return new { path, bytes = info.Length, modified_utc = info.LastWriteTimeUtc, format = dxf ? "DXF" : "DWG", saved_version = db.OriginalFileVersion.ToString(), outline, opened_in_editor = open,
+            entities, scope, offset, next_offset = more ? (int?)(offset + entities.Count) : null, complete = offset == 0 && !more,
+            limitations = new[] { "Saved file only; unsaved editor changes are not included", "Paged top-level entities only; nested definitions, xrefs and proxy geometry may be partial" },
             note = open ? "The drawing is open in AutoCAD: this outline shows the file as last saved; read the open drawing for unsaved changes" : null };
     }
 

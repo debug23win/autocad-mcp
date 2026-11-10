@@ -64,6 +64,12 @@ public static class ChatMarkup
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
                 html.Append("<section class='reasoning'><strong>Краткий ход рассуждений</strong>")
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
+            if (message.Steps is { Count: > 0 })
+            {
+                html.Append("<details class='progress-notes' open><summary>Ход работы</summary><ol>");
+                foreach (string step in message.Steps.Where(s => !s.StartsWith("Завершено: cad_", StringComparison.Ordinal) && !s.StartsWith("Выполняю cad_", StringComparison.Ordinal))) html.Append("<li>").Append(MarkdownHtml(step)).Append("</li>");
+                html.Append("</ol></details>");
+            }
             if (message.Role == "assistant")
                 html.Append("<div class='message-actions'><button type='button' class='copy-answer' data-index='").Append(index)
                     .Append("' title='Копировать ответ' aria-label='Копировать ответ'>Копировать</button></div>");

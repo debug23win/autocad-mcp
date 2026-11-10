@@ -46,6 +46,7 @@ public sealed class ChatWorkspace : UserControl
         stopBenchmark.Click += (_, _) => benchmarkCancellation?.Cancel();
         header.Children.Add(refresh); header.Children.Add(benchmark); header.Children.Add(stopBenchmark); header.Children.Add(status);
         DockPanel.SetDock(header, Dock.Top); root.Children.Add(header); root.Children.Add(tabs); Content = root;
+        ChatTheme.Apply(this, true);
         Loaded += async (_, _) => { timer.Start(); await Refresh(); };
         Unloaded += (_, _) => timer.Stop(); timer.Tick += async (_, _) => await Refresh();
     }
@@ -100,7 +101,8 @@ public sealed class ChatWorkspace : UserControl
                 entry.Label.Text = Path.GetFileName(slot.Document.Name) + (!slot.Open ? " (закрыт)" : entry.Panel.IsWorking ? " · выполняется" : "");
                 entry.Tab.ToolTip = slot.Document.Name;
                 bool dark = DarkThemeProvider?.Invoke() ?? darkTheme;
-                var background = dark ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(36, 40, 46)) : System.Windows.Media.Brushes.White;
+                ChatTheme.Apply(this, dark);
+                var background = dark ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(57, 67, 81)) : System.Windows.Media.Brushes.White;
                 var foreground = dark ? System.Windows.Media.Brushes.Gainsboro : System.Windows.Media.Brushes.Black;
                 Background = tabs.Background = entry.Tab.Background = background; Foreground = tabs.Foreground = entry.Tab.Foreground = foreground;
                 if (slot.Open && slot.Document.Active) active = entry.Tab;
@@ -131,15 +133,19 @@ public sealed class ChatWorkspace : UserControl
         try
         {
             await Refresh(); if (CadSessionId is null) throw new IOException("AutoCAD не подключён");
-            var runner = new CadBenchmark((r, ct) => PipeClient.CallAsync(brokerPipe, r, ct));
+            string runId = Guid.NewGuid().ToString("N");
+            var benchmarkClock = System.Diagnostics.Stopwatch.StartNew();
+            await using var mcp = await BenchmarkMcpSession.StartAsync(host, brokerPipe, runId, cancellation.Token);
+            var runner = new CadBenchmark((r, ct) => r.Operation.StartsWith("benchmark_", StringComparison.Ordinal) ? PipeClient.CallAsync(brokerPipe, r, ct) : mcp.CallAsync(r, ct), toolInventory: mcp.Tools, runId: runId);
             var result = await runner.RunAsync(CadSessionId, progress => { benchmarkDocument = progress.DocumentId ?? benchmarkDocument; status.Text = progress.Message; }, cancellation.Token);
+            result = result with { ElapsedMs = benchmarkClock.Elapsed.TotalMilliseconds };
             string folder = Wire.DataDirectory("benchmarks", result.RunId);
             string path = Path.Combine(folder, "report.json");
             string summary = result.Markdown();
             try
             {
                 Directory.CreateDirectory(folder);
-                File.WriteAllText(path, JsonSerializer.Serialize(result, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
+                File.WriteAllText(path, JsonSerializer.Serialize(new { result, mcp_inventory = mcp.Tools, mcp_calls = mcp.Evidence }, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
                 summary += "\n\nJSON-отчёт: `" + path + "`";
             }
             catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)

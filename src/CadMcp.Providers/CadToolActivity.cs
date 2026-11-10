@@ -6,6 +6,9 @@ public static class CadToolActivity
     {
         bool failed = eventText.StartsWith("Ошибка:", StringComparison.Ordinal);
         if (failed) return "AutoCAD сообщил об ошибке; проверяю результат";
+        if (eventText.Contains("cad_pdf_read", StringComparison.OrdinalIgnoreCase)) return "Читаю текст и страницы PDF";
+        if (eventText.Contains("cad_web_download", StringComparison.OrdinalIgnoreCase)) return "Скачиваю найденный материал";
+        if (eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase)) return "Компилирую и выполняю C#; затем проверю результат";
         if (eventText.Contains("cad_verify", StringComparison.OrdinalIgnoreCase)) return "Сверяю реальные размеры и сохранение DWG";
         if (eventText.Contains("cad_reference_compare", StringComparison.OrdinalIgnoreCase)) return "Сравниваю силуэт с изображением";
         if (eventText.Contains("cad_reference_", StringComparison.OrdinalIgnoreCase)) return "Привязываю изображение к координатам";
@@ -24,5 +27,6 @@ public static class CadToolActivity
         eventText.StartsWith("Завершено:", StringComparison.Ordinal) &&
         (eventText.Contains("cad_edit", StringComparison.OrdinalIgnoreCase) ||
          eventText.Contains("cad_lisp", StringComparison.OrdinalIgnoreCase) ||
+         eventText.Contains("cad_csharp", StringComparison.OrdinalIgnoreCase) ||
          eventText.Contains("cad_render", StringComparison.OrdinalIgnoreCase));
 }

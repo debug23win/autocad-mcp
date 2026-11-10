@@ -11,7 +11,7 @@ public sealed record CadBenchmarkCase(string Id, string Name, string Language, s
     double ApprovalWaitMs, string? ErrorCode, string? Message, IReadOnlyList<CadBenchmarkCheck> Checks, IReadOnlyList<CadBenchmarkCall> Calls);
 public sealed record CadBenchmarkResult(string RunId, string SessionId, string? DocumentId, string? FixturePath,
     DateTimeOffset StartedAt, double ElapsedMs, IReadOnlyList<CadBenchmarkCase> Cases, string? SetupError = null,
-    IReadOnlyList<CadBenchmarkCall>? SetupCalls = null)
+    IReadOnlyList<CadBenchmarkCall>? SetupCalls = null, IReadOnlyList<string>? ToolInventory = null)
 {
     public int Total => Cases.Count;
     public int Passed => Cases.Count(c => c.Status == "passed");
@@ -19,11 +19,14 @@ public sealed record CadBenchmarkResult(string RunId, string SessionId, string? 
     public int Skipped => Cases.Count(c => c.Status == "skipped");
     public int Unknown => Cases.Count(c => c.Status == "unknown");
     public bool Complete => Total > 0 && Passed == Total && SetupError is null;
+    public int ToolsPassed => ToolInventory?.Count(t => Cases.Any(c => c.Id == "tool_" + t && c.Status == "passed")) ?? 0;
+    public int ToolsSkipped => ToolInventory?.Count(t => Cases.Any(c => c.Id == "tool_" + t && c.Status == "skipped")) ?? 0;
     public int CadCalls => (SetupCalls?.Count ?? 0) + Cases.Sum(c => c.Calls.Count);
     public string Markdown()
     {
         var text = new StringBuilder($"**Бенчмарк CAD MCP: {Passed}/{Total} тестов пройдено**\n\n");
-        text.AppendLine($"Общее время: {ElapsedMs / 1000:0.000} с. CAD-вызовов: {CadCalls}. Ошибок: {Failed}; пропущено: {Skipped}; неизвестный исход: {Unknown}.");
+        text.AppendLine($"Общее время: {ElapsedMs / 1000:0.000} с. Запросов runner: {CadCalls}. Ошибок: {Failed}; пропущено: {Skipped}; неизвестный исход: {Unknown}.");
+        if (ToolInventory is not null) text.AppendLine($"\nMCP-инструменты с пройденными проверками: {ToolsPassed}/{ToolInventory.Count}; пропущено по условиям: {ToolsSkipped}. Inventory получен через tools/list настоящего MCP host. Пропуски не являются подтверждённым покрытием.");
         if (SetupError is not null) text.AppendLine("\nПодготовка не выполнена: " + SetupError);
         text.AppendLine("\n| Тест | Результат | Время, с | Ожидание подтверждения, с |\n|---|---|---:|---:|");
         foreach (var item in Cases)
@@ -37,8 +40,8 @@ public sealed record CadBenchmarkResult(string RunId, string SessionId, string? 
 }
 
 /// <summary>Fixed native C# and AutoLISP plans; all verdicts use separate actual geometry reads.</summary>
-public sealed class CadBenchmark(Func<Request, CancellationToken, Task<Response>> send,
-    TimeSpan? pollInterval = null, TimeSpan? operationTimeout = null)
+public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<Response>> send,
+    TimeSpan? pollInterval = null, TimeSpan? operationTimeout = null, IReadOnlyList<string>? toolInventory = null, string? runId = null)
 {
     private sealed class Fault(string code, string message, bool unknown = false, bool skipped = false) : Exception(message)
     { public string Code = code; public bool Unknown = unknown; public bool Skipped = skipped; }
@@ -52,14 +55,14 @@ public sealed class CadBenchmark(Func<Request, CancellationToken, Task<Response>
     public async Task<CadBenchmarkResult> RunAsync(string sessionId, Action<CadBenchmarkProgress>? progress = null, CancellationToken ct = default)
     {
         if (Interlocked.Exchange(ref running, 1) != 0) throw new InvalidOperationException("Benchmark is already running");
-        try { return await new Run(send, pollInterval ?? TimeSpan.FromSeconds(1), operationTimeout ?? TimeSpan.FromMinutes(12), sessionId, progress).Execute(ct); }
+        try { return await new Run(send, pollInterval ?? TimeSpan.FromSeconds(1), operationTimeout ?? TimeSpan.FromMinutes(12), sessionId, progress, toolInventory, runId).Execute(ct); }
         finally { Volatile.Write(ref running, 0); }
     }
 
-    private sealed class Run(Func<Request, CancellationToken, Task<Response>> transport, TimeSpan poll, TimeSpan timeout,
-        string session, Action<CadBenchmarkProgress>? progress)
+    private sealed partial class Run(Func<Request, CancellationToken, Task<Response>> transport, TimeSpan poll, TimeSpan timeout,
+        string session, Action<CadBenchmarkProgress>? progress, IReadOnlyList<string>? toolInventory, string? fixedRunId)
     {
-        private readonly string id = Guid.NewGuid().ToString("N");
+        private readonly string id = fixedRunId ?? Guid.NewGuid().ToString("N");
         private string? document, fixturePath;
         private readonly List<CadBenchmarkCall> calls = [];
         private readonly List<CadBenchmarkCheck> checks = [];
@@ -72,9 +75,10 @@ public sealed class CadBenchmark(Func<Request, CancellationToken, Task<Response>
             var request = new Request(Guid.NewGuid().ToString("N"), operation, session, target ?? document, revision,
                 Wire.Element(data), DateTimeOffset.UtcNow.AddSeconds(25), Owner);
             var watch = Stopwatch.StartNew();
+            using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct); callTimeout.CancelAfter(timeout);
             try
             {
-                var response = await transport(request, ct).WaitAsync(ct);
+                var response = await transport(request, callTimeout.Token).WaitAsync(callTimeout.Token);
                 calls.Add(new(request, response, watch.Elapsed.TotalMilliseconds));
                 if (response.RequestId != request.RequestId) throw new Fault("RESPONSE_MISMATCH", "Response request id changed", true);
                 if (response.SessionId is { } s && s != session || document is not null && response.DocumentId is { } d && d != document ||
@@ -194,6 +198,8 @@ public sealed class CadBenchmark(Func<Request, CancellationToken, Task<Response>
             bool stopped = false;
             try
             {
+                if (toolInventory is not null && (toolInventory.Count == 0 || toolInventory.Distinct(StringComparer.Ordinal).Count() != toolInventory.Count))
+                    throw new Fault("INVALID_TOOL_INVENTORY", "tools/list must contain nonempty unique tool names");
                 progress?.Invoke(new("Создаю отдельный тестовый DWG"));
                 var before = await Call("cad_documents", new { }, ct); Success(before);
                 var oldIds = Data(before).EnumerateArray().Select(d => d.Text("document_id")).ToHashSet();
@@ -233,7 +239,17 @@ public sealed class CadBenchmark(Func<Request, CancellationToken, Task<Response>
                 catch (Exception error) { status = "failed"; errorCode = "BENCHMARK_ERROR"; message = error.Message; }
                 results.Add(new(definition.Id, definition.Name, definition.Language, status, caseWatch.Elapsed.TotalMilliseconds, approvalMs, errorCode, message, checks.ToArray(), calls.ToArray()));
             }
-            return new(id, session, document, fixturePath, start, watch.Elapsed.TotalMilliseconds, results, setupError, setupCalls);
+            if (toolInventory is not null)
+            {
+                try { await Extended(results, stopped, ct); }
+                catch (Exception error)
+                {
+                    results.Add(new("full_setup", "Подготовка полного набора", "MCP", "failed", 0, 0, "FULL_SETUP_FAILED", error.Message, [], []));
+                    foreach (string tool in toolInventory.Where(t => results.All(c => c.Id != "tool_" + t)))
+                        results.Add(new("tool_" + tool, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Full suite setup did not complete", [], []));
+                }
+            }
+            return new(id, session, document, fixturePath, start, watch.Elapsed.TotalMilliseconds, results, setupError, setupCalls, toolInventory);
         }
 
         private async Task Polyline(CancellationToken ct)

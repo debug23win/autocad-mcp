@@ -17,7 +17,7 @@ public static class CadResultSummary
             .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToArray();
     }
     public static string[] ChangedHandles(JsonElement operations) => operations.EnumerateArray()
-        .Where(o=>o.Text("state")=="completed"&&o.Text("operation")=="cad_edit")
+        .Where(o=>o.Text("state")=="completed"&&o.Text("operation") is "cad_edit" or "cad_csharp")
         .SelectMany(o=>o.TryGetProperty("handles",out var handles)&&handles.ValueKind==JsonValueKind.Array?handles.EnumerateArray().Select(h=>h.GetString()!):[])
         .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     public static string Describe(JsonElement data, JsonElement? review = null)

@@ -10,7 +10,7 @@ internal static class WorkSafety
 {
     private static readonly object Sync = new();
     private static readonly string Root = Wire.DataDirectory("recovery");
-    internal static bool Required(Request request, JsonElement[]? operations) => request.Operation == "cad_lisp" || operations is { Length: >= 25 }
+    internal static bool Required(Request request, JsonElement[]? operations) => request.Operation is "cad_lisp" or "cad_csharp" || operations is { Length: >= 25 }
         || operations?.Any(p => EditPlan.IsNonAtomic(p.Text("op") ?? "") || p.Text("op") is "erase" or "solid_boolean" or "solid_shell" or "assembly_update"
             or "text_replace" or "layer_merge" or "explode" or "trim" or "join" or "block_import" || p.Text("action") == "delete") == true;
     internal static object Checkpoint(Document doc, string session, string document, string operation)
