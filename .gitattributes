@@ -3,3 +3,6 @@
 *.md text eol=lf
 *.json text eol=lf
 *.ps1 text eol=lf
+
+# PDF offsets and encrypted streams must survive Windows checkout byte-for-byte.
+*.pdf binary
