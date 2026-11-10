@@ -586,9 +586,10 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "reasoning_summary" && !quietCodex) UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
-                    currentActivity = CadToolActivity.Describe(item.Text);
-                    if (item.Text.StartsWith(UiText.T("Выполняю"), StringComparison.Ordinal)) RecordProgress(currentActivity);
-                    visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
+                    currentActivity = item.Tool is { } tool && item.Phase is { } phase ? CadToolActivity.Describe(tool, phase) : CadToolActivity.Describe(item.Text);
+                    if (item.Phase == "running" || item.Phase is null && item.Text.StartsWith(UiText.T("Выполняю"), StringComparison.Ordinal)) RecordProgress(currentActivity);
+                    visibleCadResult |= item.Tool is { } visibleTool && item.Phase is { } visiblePhase
+                        ? CadToolActivity.ProducesVisibleResult(visibleTool, visiblePhase) : CadToolActivity.ProducesVisibleResult(item.Text);
                 }
                 if (item.Kind == "status" && !quietCodex) currentActivity = item.Text;
                 if (item.Kind == "session") Persist();
@@ -668,7 +669,7 @@ internal sealed class ChatPanel : UserControl
             { if(preview)await AttachPreview(document); return; }
             var records=ops.EnumerateArray().ToArray(); JsonElement? review=null;
             var changedHandles=CadResultSummary.ChangedHandles(ops);var liveHandles=new List<string>();
-            var completed=records.FirstOrDefault(o=>o.Text("state")=="completed" && o.Text("operation")=="cad_edit");
+            var completed=records.FirstOrDefault(o=>o.Text("state")=="completed" && o.Text("operation") is "cad_edit" or "cad_csharp");
             if(completed.ValueKind==JsonValueKind.Object)
             {
                 await RefreshCad();
@@ -677,6 +678,7 @@ internal sealed class ChatPanel : UserControl
                     var checkedResult=await PipeClient.CallAsync(brokerPipe,new(Guid.NewGuid().ToString("N"),"cad_verify",session,document,context.Revision,
                         Wire.Element(new{operation_id=completed.Text("operation_id")})),timeout.Token);
                     if(checkedResult.Error is null && checkedResult.Data is JsonElement checkedData) review=checkedData;
+                    if(checkedResult.Error is { } verificationError) throw new CadFault(verificationError.Code, verificationError.Message);
                     var allEntities=new List<JsonElement>();
                     foreach(var chunk in changedHandles.Chunk(500))
                     {

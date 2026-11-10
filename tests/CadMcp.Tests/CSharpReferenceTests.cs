@@ -54,6 +54,7 @@ public sealed class CSharpReferenceTests
         using var broker = new PipeServer(pipe, (r, ct) =>
         {
             calls.Add(r.Operation);
+            if (r.Operation == "cad_operation_status") return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d"));
             if (r.Operation == "csharp_references") return Task.FromResult(new Response(r.RequestId, "completed", new { references = managedReferences ? new[] { native }.Concat(Framework).ToArray() : new[] { native } }, "s", "d"));
             Assert.Equal("cad_csharp", r.Operation);
             using var pe = new PEReader(new MemoryStream(Convert.FromBase64String(r.Data.Text("assembly_base64")!))); Assert.True(pe.HasMetadata);
@@ -62,7 +63,7 @@ public sealed class CSharpReferenceTests
         broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
         var response = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "reference-test", code = "public static class CadMcpScript { public static int Value => 7; }" });
         using var json = JsonDocument.Parse(response.GetProperty("content")[0].GetProperty("text").GetString()!);
-        if (managedReferences) { Assert.False(response.TryGetProperty("isError", out var failed) && failed.GetBoolean()); Assert.Equal(new[] { "csharp_references", "cad_csharp" }, calls); }
-        else { Assert.Equal(new[] { "csharp_references" }, calls); Assert.Equal("CSHARP_REFERENCES_UNAVAILABLE", json.RootElement.Text("code")); Assert.False(json.RootElement.GetProperty("changes_started").GetBoolean()); Assert.False(json.RootElement.GetProperty("requires_reconciliation").GetBoolean()); }
+        if (managedReferences) { Assert.False(response.TryGetProperty("isError", out var failed) && failed.GetBoolean()); Assert.Equal(new[] { "cad_operation_status", "csharp_references", "cad_csharp" }, calls); }
+        else { Assert.Equal(new[] { "cad_operation_status", "csharp_references" }, calls); Assert.Equal("CSHARP_REFERENCES_UNAVAILABLE", json.RootElement.Text("code")); Assert.False(json.RootElement.GetProperty("changes_started").GetBoolean()); Assert.False(json.RootElement.GetProperty("requires_reconciliation").GetBoolean()); }
     }
 }

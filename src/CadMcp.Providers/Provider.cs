@@ -13,7 +13,8 @@ public sealed record ProviderOptions(string Executable, string McpExecutable, st
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
-public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null, CodexRateLimits? RateLimits = null);
+public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null, CodexRateLimits? RateLimits = null,
+    string? Tool = null, string? Phase = null);
 public interface IChatProvider
 {
     string? SessionId { get; set; }
@@ -84,6 +85,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     private readonly LiveInput live = new();
     /// <summary>Quiet period after a result that did not list its messages, before merged messages are assumed answered.</summary>
     internal TimeSpan QuietAfterResult { get; set; } = TimeSpan.FromSeconds(30);
+    internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan EventSilenceTimeout { get; set; } = TimeSpan.FromMinutes(5);
     internal TimeSpan AcknowledgementTimeout { get => live.AcknowledgementTimeout; set => live.AcknowledgementTimeout = value; }
     public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
     // Read-only built-in tools: the working folder and the files the user attached, never anything else.
@@ -121,7 +124,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 ["cad_researcher"] = new
                 {
                     description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
-                    prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
+                    prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant. " + CadAgent.LanguagePolicy(UiText.Language),
                     mcpServers=new object[]{new Dictionary<string,object>{["cad"] = new {command=options.McpExecutable,args=options.McpArguments??Array.Empty<string>(),env=readOnlyEnvironment}}},
                     tools = CadOperations.HelperAllowed.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").Concat(ReadTools).ToArray()
                 }
@@ -182,10 +185,30 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         var stderr = ProviderProcess.DrainErrors(p);
         var lines = new ProviderLines(p.StandardOutput.BaseStream);
         Task<JsonDocument?>? reading = null;
-        bool completed = false, streamed = false, initialized = false, thinking = false;
+        bool completed = false, streamed = false, initialized = false, thinking = false, started = false;
         string? limitWarning = null;
         var pendingTools = new Dictionary<string, string>(StringComparer.Ordinal);
         var pendingArguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var startupClock = Stopwatch.StartNew();
+        var lastHeartbeat = TimeSpan.FromSeconds(-1);
+        async Task<JsonDocument?> ReadNext()
+        {
+            TimeSpan budget = started ? EventSilenceTimeout : StartupTimeout - startupClock.Elapsed;
+            string message = UiText.T(started
+                ? "Claude Code не передавал события слишком долго. Проверьте квитанции CAD; автоматического повтора нет."
+                : "Claude Code не начал задачу за отведённое время. Автоматического повтора правок нет.");
+            if (budget <= TimeSpan.Zero) throw new IOException(message);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(budget);
+            using var stopSilentProcess = deadline.Token.Register(() => ProviderProcess.Stop(p));
+            try
+            {
+                var document = await lines.ReadAsync(deadline.Token);
+                if (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { document?.Dispose(); throw new IOException(message); }
+                return document;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new IOException(message); }
+            catch (IOException error) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { throw new IOException(message, error); }
+        }
         try
         {
             var turns = new ClaudeTurns(Guid.NewGuid().ToString());
@@ -212,7 +235,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
             DateTimeOffset lastResult = DateTimeOffset.MinValue;
             while (true)
             {
-                reading ??= lines.ReadAsync(ct);
+                reading ??= ReadNext();
                 if (!turnActive && !reading.IsCompleted)
                 {
                     await Task.WhenAny(reading, Task.Delay(250, ct));
@@ -227,9 +250,12 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 if (json is null) break;
                 using (json)
                 {
+                    if (startupClock.Elapsed - lastHeartbeat >= TimeSpan.FromSeconds(1))
+                    { lastHeartbeat = startupClock.Elapsed; yield return new("heartbeat", ""); }
                     var e = json.RootElement;
                     string? type = ProviderJson.Text(e, "type");
                     string? subtype = ProviderJson.Text(e, "subtype");
+                    started |= type is "stream_event" or "assistant" or "user" or "result" || type == "system" && subtype == "init";
                     // Lines of a helper carry the tool call that started it; only the main agent speaks to the user.
                     bool main = ProviderJson.Child(e, "parent_tool_use_id").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null;
                     // session_id repeats on nearly every streamed line; report it only when it changes.
@@ -272,7 +298,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             {
                                 if (ProviderJson.Text(block, "id") is { } id) { pendingTools[id] = toolName; var input = ProviderJson.Child(block, "input"); pendingArguments[id] = input.ValueKind == JsonValueKind.Undefined ? default : input.Clone(); }
                                 yield return toolName is "Agent" or "Task"
-                                    ? new("status", UiText.T("Помощники анализируют задачу")) : new("step", UiText.T("Выполняю ") + toolName);
+                                    ? new("status", UiText.T("Помощники анализируют задачу")) : new("step", UiText.T("Выполняю ") + toolName, Tool: toolName, Phase: "running");
                             }
                     if (type == "user" && ProviderJson.Child(ProviderJson.Child(e, "message"), "content") is { ValueKind: JsonValueKind.Array } results)
                         foreach (var resultBlock in results.EnumerateArray())
@@ -287,7 +313,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                                 if (problem is not null) yield return new("problem", problem);
                                 yield return toolName is "Agent" or "Task"
                                     ? new("status", UiText.T("Объединяю результаты помощников"))
-                                    : new("step", (failed ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + toolName);
+                                    : new("step", (failed ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + toolName, Tool: toolName, Phase: failed ? "failed" : "completed");
                             }
                     if (type == "result")
                     {
@@ -533,14 +559,14 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     {
                         string? activity = itemType switch { "commandExecution" => UiText.T("Выполняю команду в рабочей папке"), "fileChange" => UiText.T("Обновляю файлы в рабочей папке"), "webSearch" => UiText.T("Ищу материалы в интернете"), "imageView" => UiText.T("Изучаю приложенное изображение"), _ => null };
                         if (activity is not null) yield return new("progress", activity);
-                        if (itemType == "mcpToolCall") yield return new("step", UiText.T("Выполняю ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
+                        if (itemType == "mcpToolCall") yield return new("step", UiText.T("Выполняю ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"), Tool: ProviderJson.Text(item, "tool"), Phase: "running");
                         if (itemType == "collabAgentToolCall") yield return new("progress", UiText.T("Помощники проверяют выбранные данные"));
                     }
                     if (name == "item/completed" && itemType == "mcpToolCall")
                     {
                         var problem = ToolDiagnostics.Describe(ProviderJson.Text(item, "tool") ?? "MCP", ProviderJson.Child(item, "result"),
                             ProviderJson.Text(item, "status") == "failed", ProviderJson.Child(item, "arguments"), ProviderJson.Child(item, "error"));
-                        if (rootEvent) yield return new("step", (problem is not null ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
+                        if (rootEvent) yield return new("step", (problem is not null ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + (ProviderJson.Text(item, "tool") ?? "CAD tool"), Tool: ProviderJson.Text(item, "tool"), Phase: problem is not null ? "failed" : "completed");
                         if (problem is not null) yield return new("problem", (rootEvent ? "" : UiText.T("Проблема у помощника\n")) + problem);
                     }
                     if (name == "item/completed" && rootEvent && itemType == "collabAgentToolCall")

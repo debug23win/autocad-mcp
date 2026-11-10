@@ -14,15 +14,10 @@ public sealed class SnapshotStore
         var bounded = new List<JsonElement>(); int chars = 0;
         foreach (var original in entities)
         {
-            var e = original;
-            int size = e.GetRawText().Length;
-            if (size > 256 * 1024)
-            {
-                e = Wire.Element(new { handle = e.Text("handle"), type = e.Text("type"), layer = e.Text("layer"),
-                    access = "partial", limitation = "entity_payload_limit" });
-                size = e.GetRawText().Length;
-            }
-            if (chars + size > 8 * 1024 * 1024) { truncated = true; break; }
+            if (limit > 0 && bounded.Count == limit) { truncated = true; break; }
+            var e = ReadPayloadBudget.BoundEntity(original);
+            int size = ReadPayloadBudget.Bytes(e);
+            if (chars + size > ReadPayloadBudget.SnapshotBytes) { truncated = true; break; }
             bounded.Add(e.Clone()); chars += size;
         }
         var snapshot = new Snapshot(Guid.NewGuid().ToString("N"), document, revision,

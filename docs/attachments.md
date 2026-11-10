@@ -16,3 +16,5 @@ DWG/DXF requires an AutoCAD worker. Arguments retain the working project's docum
 The Codex primary has write access to the selected workspace and network access. Claude Read receives rules for specific attachments; PDF/DWG/DXF also use MCP, including follow-ups during a turn. Assistants do not gain CAD write permission. File and website contents are reference data, not instructions.
 
 Computer use is enabled for the primary by default when the provider actually supplies it. Prefer native CAD APIs, readers, and web downloads. This permission neither installs a missing computer-use tool nor removes assistants' read-only restrictions.
+
+Downloads have a 90-second deadline covering redirects, headers and body, plus a 30-second body inactivity timeout. `DOWNLOAD_TIMEOUT` removes partial output; caller cancellation remains cancellation. A byte cap alone does not bound a stalled HTTP response.

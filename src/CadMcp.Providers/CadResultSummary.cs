@@ -27,6 +27,8 @@ public static class CadResultSummary
         int completed=items.Count(o=>o.Text("state")=="completed"), failed=items.Count(o=>o.Text("state")=="failed"), pending=items.Length-completed-failed;
         text.Append(UiText.T("Операций подтверждено: ")).Append(completed).Append(UiText.T("; ошибок: ")).Append(failed).Append(UiText.T("; ожидают завершения или проверки: ")).Append(pending).Append(".\n");
         if(data.TryGetProperty("truncated",out var truncated)&&truncated.ValueKind==JsonValueKind.True)text.Append(UiText.T("История операций ограничена; автоматическая проверка всего ответа может быть неполной. Требуется итоговая проверка всех объектов задания.\n"));
+        if(items.Any(o=>o.TryGetProperty("handles_truncated",out var limited)&&limited.ValueKind==JsonValueKind.True))
+            text.Append(UiText.T("Перечень изменённых объектов неполон; полная проверка операции не подтверждена.\n"));
         foreach(var item in items.Where(i=>i.TryGetProperty("error",out _)).Take(3))
             text.Append(UiText.T("\n- Ошибка AutoCAD: ")).Append(item.GetProperty("error").Text("message")?.Replace('\n',' ')).Append('.');
         if(review is { } result && result.TryGetProperty("verification",out var verification))

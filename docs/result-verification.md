@@ -77,3 +77,13 @@ Recommended photo workflow: identify known dimensions/assumptions → calibrate 
 ## Text and scrolling
 
 HTML updates only changed messages; completed text/images/formulas retain their DOM. Sequence numbers discard stale updates. While reading history, the first visible message and its position anchor scrolling; near the end, the chat follows new output. Image/formula height changes use the same anchor. Images reserve space using known dimensions. Content, tables, code, and math have explicit text colors in both themes. Streaming updates batch every 120 ms to reduce redraws.
+
+## Recovery provenance and unsupported acceptance
+
+Worker transport loss is `WORKER_TRANSPORT_LOST`. Mutation recovery also reconciles ambiguous legacy `INTERNAL_ERROR`, timeout and oversized-response failures by reading the original receipt once, never by resending the write. Status requests preserve document/session/owner scope. A foreign receipt is not accepted.
+
+Recovered historical results keep `historical:true`, `worker_reachable:false`, `current_state_verified:false` and `requires_reconciliation:true`. Previous save evidence is moved to `historical_document_state`; current `document_state.disk_save` is `unknown` and no current revision is asserted.
+
+Map actions with nonempty geometry acceptance criteria fail `UNSUPPORTED_MAP_EXPECTATIONS` before Map execution, including diagnostic criteria with `enforce:false`. Map API changes have no native geometry acceptance implementation; independent product-specific readback is required. An empty criteria object or `enforce` alone does not assert geometry acceptance.
+
+Implicitly changed linked/schedule tables participate in the batch's returned entities and live `entity_count`. Counts must include these actual dependency updates. Verification refuses incomplete C# target lists before reading any prefix.

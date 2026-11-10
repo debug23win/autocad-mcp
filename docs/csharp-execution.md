@@ -33,3 +33,11 @@ A DWG checkpoint is required before loading the assembly; checkpoint failure pre
 Code runs with full process trust. Failure rolls back the supplied host transaction, but cannot guarantee rollback of independent commits, files, external APIs, or event handlers. Checkpoints preserve the DWG database, not every external file. Never close/save unrelated documents. Read-only assistants cannot call cad_csharp.
 
 The primary Codex session receives workspace-write in the chosen working directory and network access; assistant profiles remain read-only. Directory permissions allow source-file storage; cad_csharp provides execution inside CAD.
+
+## Replay and complete verification
+
+The host checks the original operation status before requesting references or compiling. An existing receipt is returned only after matching source, source hash, session, document and original expected revision; changed requests return `OPERATION_ID_CONFLICT`. Pending/unknown existing operations are not compiled or submitted again. Historical receipts retain their provenance and cannot confirm the current drawing or disk save.
+
+Compilation uses a source-derived assembly name, ordered references and deterministic output. The journal fingerprints the public source request and scope, excluding generated `assembly_base64`; the exact received assembly remains in the original request. Newly accepted source uses references from the running worker. Replay returns the old receipt even if those references are no longer available.
+
+A serializable user return value over 256 KiB is rejected before the supplied transaction commits. This limit does not undo external full-trust effects. Changed handles are returned in full only when the change journal covers the operation and the list fits 192 KiB; otherwise `changed_handles_omitted:true` explicitly forbids whole-operation verification. `cad_verify(operation_id=...)` rejects incomplete lists and more than 500 targets with `VERIFY_TOO_LARGE`. Read the complete change evidence and verify explicit groups of up to 500 handles; account for all groups before claiming task-wide verification.

@@ -73,14 +73,14 @@ public sealed class McpHostTests
         var spds = await host.CallAsync("cad_spds_help", new { });
         using (var contract = JsonDocument.Parse(spds.GetProperty("content")[0].GetProperty("text").GetString()!))
             Assert.True(contract.RootElement.GetProperty("templates").GetArrayLength() > 0 && contract.RootElement.GetProperty("standards").GetArrayLength() == 3);
-        var edit = await host.CallAsync("cad_edit", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "change1", operations_json = "[{\"op\":\"text\",\"text\":\"Сеть ✓\"}]" });
+        var edit = await host.CallAsync("cad_edit", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "change1", operations_json = "[{\"op\":\"text\",\"position\":[0,0,0],\"height\":2.5,\"text\":\"Сеть ✓\"}]" });
         using var editBody = JsonDocument.Parse(edit.GetProperty("content")[0].GetProperty("text").GetString()!);
         Assert.Equal("cad_edit", editBody.RootElement.GetProperty("data").GetProperty("operation").GetString());
         Assert.Equal("change1", editBody.RootElement.GetProperty("data").GetProperty("payload").GetProperty("operation_id").GetString());
         var preview = await host.CallAsync("cad_edit_preview", new { session_id = "s", document_id = "d", operations_json = "[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]" });
         using (var previewBody = JsonDocument.Parse(preview.GetProperty("content")[0].GetProperty("text").GetString()!))
             Assert.Equal("cad_edit_preview", previewBody.RootElement.GetProperty("data").GetProperty("operation").GetString());
-        var bound = await host.CallAsync("cad_edit", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "change2", operations_json = "[]", preview_hash = "abc" });
+        var bound = await host.CallAsync("cad_edit", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "change2", operations_json = "[{\"op\":\"line\",\"start\":[0,0],\"end\":[1,1]}]", preview_hash = "abc" });
         using (var boundBody = JsonDocument.Parse(bound.GetProperty("content")[0].GetProperty("text").GetString()!))
             Assert.Equal("abc", boundBody.RootElement.GetProperty("data").GetProperty("payload").GetProperty("preview_hash").GetString());
         var status = await host.CallAsync("cad_operation_status", new { session_id = "s", document_id = "d", operation_id = "change1" });

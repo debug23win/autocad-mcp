@@ -158,14 +158,14 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 Wake();
                 return new(r.RequestId, "completed", new { cancellation_requested = requested, boundary = "transaction/action boundary; native kernel calls finish first; running AutoLISP requires Esc" }, documents.SessionId, r.DocumentId);
             }
-            return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId,r.DocumentId) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health(), document_availability = r.DocumentId is { } targetId && availability.TryGetValue(targetId, out var ready) ? ready : null }, documents.SessionId, r.DocumentId);
+            return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId, r.DocumentId, r.Data.TryGetProperty("verify_checkpoints", out var verify) && verify.ValueKind == JsonValueKind.True, ct) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health(), document_availability = r.DocumentId is { } targetId && availability.TryGetValue(targetId, out var ready) ? ready : null }, documents.SessionId, r.DocumentId);
         }
         ct.ThrowIfCancellationRequested();
         var source = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (MutationRecovery.IsMutation(r.Operation))
         {
             string id = EditPlan.RequiredText(r.Data, "operation_id");
-            if (r.Operation == "cad_edit") { EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
+            if (r.Operation == "cad_edit") { var plan = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.RequireSupported(plan, DrawingVerification.Parse(r.Data.Text("expectations_json"))); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
             lock (mutationGate)
             {
                 // Reading an existing receipt must also work when the queue is full, a dialog is open or AutoCAD quits.
@@ -369,7 +369,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_verify":
                 var reviewOptions = r.Data.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
                 reviewOptions["verified_document_id"] = state.Id;
-                data = DrawingReview.Verify(doc, tr, Wire.Element(reviewOptions), journal); break;
+                data = DrawingReview.Verify(doc, tr, Wire.Element(reviewOptions), journal, ct); break;
             case "cad_vertical_capabilities":data=VerticalEditing.Capabilities(doc.Database);break;
             case "cad_vertical_catalog":
                 data = Verticals.Catalog(doc.Database, tr); break;
@@ -469,25 +469,26 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     if (cachedSnapshot.Truncated || cachedSnapshot.Entities.Any(x => x.Text("access") != "structured")) status = "partial";
                     break;
                 }
-                var entities = new List<JsonElement>(); bool truncated = false;
                 var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead);
-                foreach (ObjectId id in space)
+                IEnumerable<JsonElement> ReadSnapshot()
                 {
-                    ct.ThrowIfCancellationRequested();
-                    if (entities.Count == limit) { truncated = true; break; }
-                    try
+                    foreach (ObjectId id in space)
                     {
-                        if (tr.GetObject(id, OpenMode.ForRead) is Entity entity)
+                        ct.ThrowIfCancellationRequested();
+                        JsonElement entityData;
+                        try
                         {
+                            if (tr.GetObject(id, OpenMode.ForRead) is not Entity entity) continue;
                             if (!BenchmarkTrace.Record(r, "snapshot_entity_begin:" + id.Handle.ToString())) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist snapshot native-read trace");
-                            entities.Add(Reader.Read(entity, tr));
+                            entityData = Reader.Read(entity, tr, ct: ct);
                             _ = BenchmarkTrace.Record(r, "snapshot_entity_end:" + id.Handle.ToString());
                         }
+                        catch (Autodesk.AutoCAD.Runtime.Exception error)
+                        { entityData = Wire.Element(new { handle = id.Handle.ToString(), access = "unsupported", error = error.ErrorStatus.ToString() }); }
+                        yield return entityData;
                     }
-                    catch (Autodesk.AutoCAD.Runtime.Exception error)
-                    { entities.Add(Wire.Element(new { handle = id.Handle.ToString(), access = "unsupported", error = error.ErrorStatus.ToString() })); }
                 }
-                var snapshot = snapshots.Add(state.Id, state.Revision, entities, truncated, scopeId, limit);
+                var snapshot = snapshots.Add(state.Id, state.Revision, ReadSnapshot(), false, scopeId, limit);
                 // Return metadata only; pages are bounded and fetched through cad_query.
                 data = SnapshotMetadata(snapshot, doc.Database.Insunits.ToString(), false);
                 if (snapshot.Truncated || snapshot.Entities.Any(x => x.Text("access") != "structured")) status = "partial";
@@ -521,7 +522,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 if (tr.GetObject(objectId, OpenMode.ForRead) is not Entity found || ReadingMetadata.LayoutOf(found.OwnerId,tr) is null || r.Operation=="cad_focus"&&found.OwnerId!=doc.Database.CurrentSpaceId)
                     throw new CadFault("UNSUPPORTED_SCOPE", "Entity reads support top-level model/layout objects; focus requires current space. Read nested instances through cad_search expand_blocks.");
                 if (r.Operation == "cad_focus") { doc.Editor.SetImpliedSelection([objectId]); data = new { handle = found.Handle.ToString(), selected = true }; }
-                else { var entityData = Reader.Read(found, tr); data = entityData; if (entityData.Text("access") != "structured") status = "partial"; }
+                else { var entityData = Reader.Read(found, tr, r.Data, ct); data = entityData; if (entityData.Text("access") != "structured") status = "partial"; }
                 break;
             default: throw new CadFault("UNSUPPORTED_OPERATION", r.Operation);
         }
@@ -632,7 +633,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         string? code = null;
         string? exportFormat = null, exportPath = null, exportLayout = null, exportMedia = null;
         string? publishFolder = null, publishLayouts = null;
-        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.Parse(r.Data.Text("expectations_json")); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
+        if (r.Operation == "cad_edit") { operations = EditPlan.Parse(EditPlan.RequiredText(r.Data, "operations_json")); DrawingVerification.RequireSupported(operations, DrawingVerification.Parse(r.Data.Text("expectations_json"))); EditPlan.RequirePreviewed(r.Data, r.DocumentId, r.ExpectedRevision, previewKey); }
         else if (r.Operation == "cad_export")
         {
             exportFormat = EditPlan.RequiredText(r.Data, "format");
@@ -766,11 +767,15 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (result is Task or ValueTask || result is not null && result.GetType().IsGenericType && result.GetType().GetGenericTypeDefinition() == typeof(ValueTask<>))
                 throw new CadFault("CSHARP_ASYNC_RESULT", "Run returned an asynchronous operation. Return a completed DTO; do not schedule CAD work outside the supplied transaction");
             var detached = Wire.Element(result ?? new { });
+            if (ReadPayloadBudget.Bytes(detached) > ReadPayloadBudget.EntityBytes) throw new CadFault("CSHARP_RESULT_TOO_LARGE", "Return a bounded DTO/handles, not full drawing geometry. The supplied transaction was not committed.");
             transaction.Commit(); committed = true;
             journal.Phase(id, "committed");
             WorkSafety.Phase(documents.SessionId, id, "committed", final: true);
             var changes = state.ChangesSince(beforeRevision).Where(c => c.Entity).Select(c => c.Handle.ToString("X")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            var response = new Response(request.RequestId, "completed", new { operation_id = id, checkpoint, source_sha256 = hash, result = new { value = detached, changed_handles = changes.Take(500).ToArray(), changed_handles_omitted = changes.Length > 500 },
+            var response = new Response(request.RequestId, "completed", new { operation_id = id, checkpoint, source_sha256 = hash, result = new { value = detached,
+                    changed_handles = state.DroppedThrough <= beforeRevision && changes.Sum(h => h.Length + 3) <= 192 * 1024 ? changes : null,
+                    changed_entity_count = state.DroppedThrough <= beforeRevision ? (int?)changes.Length : null,
+                    changed_handles_omitted = state.DroppedThrough > beforeRevision || changes.Sum(h => h.Length + 3) > 192 * 1024 },
                 transaction = "committed", rollback = "full_trust_code_external_effects_not_atomic", document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
             return journal.Complete(id, response);
         }
@@ -936,7 +941,6 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         state.Recalculating = true;
         try
         {
-            using var locked = doc.LockDocument();
             HashSet<long> managed;
             using (documents.ReadScope(doc))
             using (var check = doc.Database.TransactionManager.StartOpenCloseTransaction())
@@ -945,11 +949,15 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 managed.UnionWith(StructuralAssemblies.ScheduleHandles(doc.Database, check));
             }
             if (managed.Count == 0 || changed is not null && !changed.Overlaps(managed)) return;
+            using var locked = doc.LockDocument();
             using var undo = new UndoGroup(doc);
             using var tr = doc.Database.TransactionManager.StartTransaction();
             state.Author = "table_recalculation";
-            var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr);
-            TableLinks.Recalculate(doc.Database, tr);
+            var updated = new HashSet<long>();
+            var warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, changed, updated);
+            var affected = changed is null ? managed : new HashSet<long>(changed); affected.UnionWith(updated);
+            var dependencies = Wire.Element(TableLinks.Recalculate(doc.Database, tr, affected));
+            if (dependencies.TryGetProperty("warnings", out var dependencyWarnings)) warnings.AddRange(dependencyWarnings.EnumerateArray().Select(w => w.GetString()!));
             tr.Commit();
             state.TableError = warnings.Count == 0 ? null : string.Join("; ", warnings);
         }

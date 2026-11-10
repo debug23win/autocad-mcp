@@ -89,3 +89,17 @@ Optional subscription-backed probes use a recording CAD fixture and do not modif
 ## Agent evaluation
 
 `benchmarks/` grades actual post-run DWG state using hidden checks, hard failures (false success, unrequested deletion, out-of-scope edits, fabricated tools, unsupported writes, replay of unknown edits, bypassing Lisp denial), three runs per task, empty-run grader validation, and comparison against the previous release. See [benchmarks/README.md](../benchmarks/README.md); commands: `CadMcp.Host.exe --capture-evidence`, `--grade`, `--grade-selfcheck`.
+
+## Review safety regression suite
+
+Managed/MCP tests in `ReviewRegressionTests`, `ProviderWatchdogTests`, and `ReferenceDownloadTests` cover ambiguous transport recovery, historical save provenance, C# replay before compilation, incomplete verification targets, streaming snapshot budgets, table component selection, Map acceptance rejection before worker calls, checkpoint file evidence, silent Claude processes and stalled download bodies.
+
+On Windows with installed AutoCAD, build `tests/CadMcp.CoreProbe` and run a separate owned Core Console fixture:
+
+```powershell
+./scripts/test-autocad-core.ps1 -ReviewSafetyOnly
+```
+
+`CADMCPREVIEWSAFETY` refuses interactive AutoCAD and nonempty/out-of-directory drawings. It checks a 3000-vertex mesh's pages, manual removal of a linked table source followed by an unrelated edit, rejection of affected broken dependencies, explicit repair, incomplete C# verification targets, and survival/hash of the first of eleven recovery copies. Success removes only the copies created by this fixture; failures retain their paths in `result.json`. Compile success does not mean the probe ran.
+
+Run GUI Undo/Redo probes separately, including an open idle MCP chat; Core Console does not validate GUI command history. Test each supported installed product/runtime: AutoCAD 2025 .NET 8, updated 2025/2026 .NET 10, 2027, and available Civil/Map variants. Include a controlled post-commit disconnect and reopen checks. Record exact product/update and skipped prerequisites; a missing product is unperformed coverage.

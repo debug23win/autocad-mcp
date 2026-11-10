@@ -308,13 +308,18 @@ internal static class Edits
                 image_registration = imageRegistration });
         }
         // A restructured schedule fails this edit only when the edit touched that schedule or its sources.
-        var schedule_warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, touched.Select(id => id.Handle.Value).ToHashSet());
-        var table_dependencies = TableLinks.Recalculate(doc.Database, tr);
+        var updatedSchedules = new HashSet<long>();
+        var schedule_warnings = StructuralAssemblies.RefreshSchedules(doc.Database, tr, touched.Select(id => id.Handle.Value).ToHashSet(), updatedSchedules);
+        var changedTables = touched.Where(id => tr.GetObject(id, OpenMode.ForRead, true) is Table).Select(id => id.Handle.Value).ToHashSet();
+        changedTables.UnionWith(updatedSchedules);
+        var table_dependencies = TableLinks.Recalculate(doc.Database, tr, changedTables);
+        foreach (string handle in Wire.Element(table_dependencies).GetProperty("updated_tables").EnumerateArray().Select(h => h.GetString()!).Concat(updatedSchedules.Select(h => h.ToString("X"))))
+            touched.Add(NativeTables.Resolve(doc.Database, handle));
         // Read back the final database state while rollback is still possible. Failed readback aborts the transaction.
         var readback = touched.Select(id =>
         {
             var entity = (Entity)tr.GetObject(id, OpenMode.ForRead, true);
-            return entity.IsErased ? Wire.Element(new { handle = entity.Handle.ToString(), erased = true }) : Reader.Read(entity, tr);
+            return entity.IsErased ? Wire.Element(new { handle = entity.Handle.ToString(), erased = true }) : Reader.Read(entity, tr, ct: ct);
         }).ToArray();
         var acceptance = DrawingVerification.Evaluate(readback, doc.Database.Insunits.ToString(),
             expectations.ValueKind == JsonValueKind.Undefined ? Wire.Element(new { }) : expectations,
@@ -434,15 +439,18 @@ internal static class Edits
                 });
             case "polyline3d": return new Polyline3d();
             case "spline":
-                var fitPoints = new Point3dCollection();
+            {
+                using var fitPoints = new Point3dCollection();
                 foreach (var value in op.GetProperty("fit_points").EnumerateArray())
                 {
                     var fit = EditPlan.Point(value); fitPoints.Add(new Point3d(fit[0], fit[1], fit[2]));
                 }
                 var splineDegree = op.TryGetProperty("degree", out var requestedDegree) ? requestedDegree.GetInt32() : Math.Min(3, fitPoints.Count - 1);
                 return new Spline(fitPoints, Bool(op, "closed"), KnotParameterizationEnum.Chord, splineDegree, 0);
+            }
             case "mesh":
-                var meshVertices = new Point3dCollection();
+            {
+                using var meshVertices = new Point3dCollection();
                 foreach (var value in op.GetProperty("vertices").EnumerateArray())
                 {
                     var vertex = EditPlan.Point(value);
@@ -457,6 +465,7 @@ internal static class Edits
                 var mesh = new SubDMesh();
                 try { mesh.SetSubDMesh(meshVertices, meshFaces, 0); return mesh; }
                 catch { mesh.Dispose(); throw; }
+            }
             case "extrude":
                 var profileId = Resolve(db, tr, op, aliases);
                 var profile = Editable(db, tr, profileId, false);

@@ -89,12 +89,12 @@ internal static class DrawingSearch
                     try
                     {
                         if (entity is BlockReference || transform.IsEqualTo(Matrix3d.Identity))
-                            foreach (var property in Reader.Read(entity, tr).EnumerateObject()) fields[property.Name] = property.Value.Clone();
+                            foreach (var property in Reader.Read(entity, tr, ct: ct).EnumerateObject()) fields[property.Name] = property.Value.Clone();
                         else
                         {
                             using var copy = (Entity)entity.Clone();
                             try { copy.TransformBy(transform); } catch (Autodesk.AutoCAD.Runtime.Exception) { transformed = false; }
-                            foreach (var property in Reader.Read(transformed ? copy : entity, tr).EnumerateObject()) fields[property.Name] = property.Value.Clone();
+                            foreach (var property in Reader.Read(transformed ? copy : entity, tr, ct: ct).EnumerateObject()) fields[property.Name] = property.Value.Clone();
                         }
                         fields["coordinate_system"] = transformed ? "WCS" : "local";
                         if (!transformed) { fields["access"] = "partial"; fields["transform_limitation"] = "entity_cannot_be_transformed_without_changing_type"; }

@@ -37,3 +37,11 @@ Results over 512 KiB are archived under results/<worker-session>. `cad_result_ge
 `cad_render` with `attach=false` saves PNG and returns only path/metadata; each result estimates image tokens in `image_cost.approx_tokens`. Prefer text tools before images and crop by handles/bounds.
 
 These tools are built and MCP-contract tested; their initial implementation had not yet been validated in running AutoCAD. See [current validation](validation.md) and release-specific evidence.
+
+## Mesh and snapshot budgets
+
+`cad_entity_get` accepts `vertex_offset` (default 0) and `vertex_limit` (1..2000, default 2000) for SubDMesh. Vertices are read by native index, without obtaining the full native vertex collection. Follow `next_vertex_offset` until absent. `vertex_count` and `face_count` are total native counts; `vertices_truncated`, `face_array_complete`, and `geometry_complete` describe the returned page.
+
+The native API exposes a whole `FaceArray` only. It is requested only for meshes with at most 2000 vertices and 2000 faces, and included only up to 16000 indices. Larger face arrays are unavailable through this reader; vertex pagination does not make their topology complete. `access:partial` must remain explicit.
+
+Snapshots consume entity reads lazily, stopping at the requested count or 8 MiB of entity JSON. One bounded lookahead entity may be read to establish truncation. Individual materialized payloads over 256 KiB are reduced to identity, bounds and scalar measurements, marked partial. These limits prevent whole large-mesh extraction and unbounded snapshot accumulation; they do not establish a hard memory bound for every native property getter or arbitrary user C#.

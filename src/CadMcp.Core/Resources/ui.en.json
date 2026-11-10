@@ -416,5 +416,8 @@
   "Напишите запрос о чертеже или прикрепите файлы.": "Ask about your drawing or attach files.",
   "Скопировано": "Copied",
   "Не удалось скопировать": "Copy failed",
-  "Копировать": "Copy"
+  "Копировать": "Copy",
+  "Claude Code не передавал события слишком долго. Проверьте квитанции CAD; автоматического повтора нет.": "Claude Code sent no events for too long. Check CAD receipts; no automatic replay.",
+  "Claude Code не начал задачу за отведённое время. Автоматического повтора правок нет.": "Claude Code did not start within the time limit. Edits are not automatically replayed.",
+  "Перечень изменённых объектов неполон; полная проверка операции не подтверждена.\n": "The changed-entity list is incomplete; full operation verification is unconfirmed.\n"
 }

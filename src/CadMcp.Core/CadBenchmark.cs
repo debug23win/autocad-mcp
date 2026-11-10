@@ -93,7 +93,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
         private static void Success(Response response)
         {
             if (response.Error is { } error)
-                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN" or "BENCHMARK_SESSION_CHANGED" or "INTERNAL_ERROR" or "WORKER_UNAVAILABLE" or "TIMEOUT" or "TRANSPORT_ERROR",
+                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN" or "BENCHMARK_SESSION_CHANGED" or "INTERNAL_ERROR" or "WORKER_UNAVAILABLE" or "WORKER_TRANSPORT_LOST" or "TIMEOUT" or "TRANSPORT_ERROR",
                     error.Code is "LISP_DISABLED" or "LISP_DENIED" or "LISP_APPROVAL_UNAVAILABLE");
             if (response.Status != "completed") throw new Fault("INCOMPLETE_RESPONSE", "Expected completed response, got " + response.Status);
         }

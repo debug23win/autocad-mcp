@@ -79,8 +79,13 @@ public sealed class OperationJournal
     private Entry? BeginCore(string id, Request request)
     {
         Validate(id);
+        // Generated assembly bytes are a transport artifact, not part of the public C# request.
+        // A host restart may recompile the same source; that must return the existing receipt.
+        object data = request.Operation == "cad_csharp" && request.Data.ValueKind == JsonValueKind.Object
+            ? request.Data.EnumerateObject().Where(p => p.Name != "assembly_base64").ToDictionary(p => p.Name, p => p.Value.Clone())
+            : request.Data;
         var hash = Portable.Hash(JsonSerializer.SerializeToUtf8Bytes(new
-            { request.Operation, request.SessionId, request.DocumentId, request.ExpectedRevision, request.Data }, Wire.Json));
+            { request.Operation, request.SessionId, request.DocumentId, request.ExpectedRevision, Data = data }, Wire.Json));
         if (Find(id) is { } prior)
         {
             if (prior.Hash != hash) throw new CadFault("OPERATION_ID_CONFLICT", "Operation id belongs to a different request; read its status");
@@ -152,7 +157,8 @@ public sealed class OperationJournal
             state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State, phase = entry.Phase,
             operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
             error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
-            changed_entities = result.TryGetProperty("entity_count", out var count) && count.TryGetInt32(out int total) ? total
+            changed_entities = result.TryGetProperty("changed_entity_count", out var changedCount) && changedCount.ValueKind == JsonValueKind.Number && changedCount.TryGetInt32(out int changedTotal) ? changedTotal
+                : result.TryGetProperty("entity_count", out var count) && count.TryGetInt32(out int total) ? total
                 : result.TryGetProperty("entities", out var listed) && listed.ValueKind == JsonValueKind.Array ? (int?)listed.GetArrayLength() : null,
             handles = result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array ? changed.EnumerateArray().Select(h => h.GetString()).OfType<string>().ToArray()
                 : result.TryGetProperty("entities", out var es) && es.ValueKind == JsonValueKind.Array ? es.EnumerateArray().Where(e => e.Text("handle") is not null).Select(e => e.Text("handle")).ToArray() : null,

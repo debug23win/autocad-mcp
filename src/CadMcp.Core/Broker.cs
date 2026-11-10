@@ -81,6 +81,10 @@ public sealed class Broker(string descriptorRoot, string? receiptRoot = null)
         if (worker is null) return ArchivedReceipt(request) ?? throw new CadFault("SESSION_NOT_FOUND", "CAD session is unavailable");
         try { return await PipeClient.CallAsync(worker.PipeName, request, ct); }
         catch (Exception e) when (!ct.IsCancellationRequested && Wire.IsTransportFailure(e))
-        { if (ArchivedReceipt(request) is { } archived) return archived; throw; }
+        {
+            if (ArchivedReceipt(request) is { } archived) return archived;
+            return new(request.RequestId, "unknown", new { worker_reachable = false, execution_outcome = "unknown" },
+                request.SessionId, request.DocumentId, Error: new("WORKER_TRANSPORT_LOST", "Worker connection was lost; execution may have started. Reconcile the original operation receipt. " + e.Message));
+        }
     }
 }

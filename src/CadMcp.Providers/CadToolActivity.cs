@@ -3,6 +3,9 @@ namespace CadMcp.Providers;
 
 public static class CadToolActivity
 {
+    public static string Describe(string tool, string phase) => phase == "failed" ? UiText.T("Инструмент сообщил об ошибке; диагностика в чате") : Describe(tool);
+    public static bool ProducesVisibleResult(string tool, string phase) => phase == "completed" &&
+        new[] { "cad_edit", "cad_edit_preview", "cad_lisp", "cad_csharp", "cad_render" }.Contains(tool.Split("__", StringSplitOptions.None)[^1], StringComparer.OrdinalIgnoreCase);
     public static string Describe(string eventText)
     {
         bool failed = eventText.StartsWith(UiText.T("Ошибка:"), StringComparison.Ordinal);

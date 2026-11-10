@@ -25,7 +25,7 @@ internal static class DrawingReview
         }
         catch (System.Exception error) { return new { name = doc.Name, disk_save = "unknown", error = error.Message, automatic_save = false }; }
     }
-    public static object Verify(Document doc, Transaction tr, JsonElement options, OperationJournal journal)
+    public static object Verify(Document doc, Transaction tr, JsonElement options, OperationJournal journal, CancellationToken ct = default)
     {
         var handles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var aliases = new Dictionary<string, string>();
@@ -38,12 +38,7 @@ internal static class DrawingReview
             var outer = Wire.Element(entry.Result.Data ?? new { });
             var result = outer.TryGetProperty("result", out var r) ? r : outer;
             // A large edit lists every changed handle separately from its shortened readback.
-            if (result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array)
-            { foreach (var h in changed.EnumerateArray()) if (h.ValueKind == JsonValueKind.String && h.GetString() is { } handle) handles.Add(handle); }
-            else if (result.TryGetProperty("changed_handles_omitted", out var omitted) && omitted.ValueKind == JsonValueKind.True)
-                throw new CadFault("VERIFY_TOO_LARGE", "The operation changed too many entities to list; verify them in parts with handles_json (up to 500)");
-            else if (result.TryGetProperty("entities", out var entities)) foreach (var e in entities.EnumerateArray()) if (e.Text("handle") is { } handle) handles.Add(handle);
-            if (handles.Count > 500) throw new CadFault("VERIFY_TOO_LARGE", "The operation changed " + handles.Count + " entities; verify them in parts with handles_json (up to 500)");
+            handles.UnionWith(DrawingVerification.OperationHandles(result));
             if (result.TryGetProperty("results", out var records)) foreach (var record in records.EnumerateArray())
                 if (record.Text("id") is { } alias && record.Text("handle") is { } handle) aliases[alias] = handle;
             if (options.Text("expectations_json") is null) expectations = DrawingVerification.Parse(entry.Request?.Data.Text("expectations_json"));
@@ -58,10 +53,11 @@ internal static class DrawingReview
         if (handles.Count == 0) throw new CadFault("NO_VERIFICATION_TARGETS", "Provide handles or a completed native edit operation_id");
         if (handles.Count > 500) throw new CadFault("INVALID_HANDLES", "At most 500 entities per review");
         var readback = handles.Select(handle => {
+            ct.ThrowIfCancellationRequested();
             if (!long.TryParse(handle, System.Globalization.NumberStyles.HexNumber, null, out long value)) throw new CadFault("INVALID_HANDLE", handle);
             if (!doc.Database.TryGetObjectId(new Handle(value), out var id)) return Wire.Element(new { handle, missing = true, erased = true });
             var entity = tr.GetObject(id, OpenMode.ForRead, true) as Entity;
-            return entity is null || entity.IsErased ? Wire.Element(new { handle, erased = true }) : Reader.Read(entity, tr);
+            return entity is null || entity.IsErased ? Wire.Element(new { handle, erased = true }) : Reader.Read(entity, tr, ct: ct);
         }).ToArray();
         return new { verification = DrawingVerification.Evaluate(readback, doc.Database.Insunits.ToString(), expectations, aliases),
             entities = readback, document_state = DocumentState(doc), visual_fidelity = "requires_comparable_render_and_reference_review",

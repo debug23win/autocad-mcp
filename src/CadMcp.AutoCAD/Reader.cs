@@ -8,7 +8,7 @@ namespace CadMcp.AutoCAD;
 internal static class Reader
 {
     private static double[] P(Point3d p) => [p.X, p.Y, p.Z];
-    public static JsonElement Read(Entity e, Transaction tr)
+    public static JsonElement Read(Entity e, Transaction tr, JsonElement options = default, CancellationToken ct = default)
     {
         var item = new Dictionary<string, object?>
         {
@@ -64,14 +64,35 @@ internal static class Reader
                     .Select(i => P(spline.GetFitPointAt(i))).ToArray();
                 item["access"] = spline.NumFitPoints <= 2000 ? "structured" : "partial"; break;
             case SubDMesh mesh:
-                var meshVertices = mesh.Vertices.Cast<Point3d>().Select(P).ToArray();
-                var meshFaceArray = mesh.FaceArray.Cast<int>().ToArray();
+                var page = ReadPayloadBudget.VertexPage(mesh.NumberOfVertices, options.Number("vertex_offset", 0), options.Number("vertex_limit", ReadPayloadBudget.MeshVertices));
+                var meshVertices = new double[page.Count][];
+                for (int i = 0; i < page.Count; i++) { ct.ThrowIfCancellationRequested(); meshVertices[i] = P(mesh.GetVertexAt(page.Offset + i)); }
+                // FaceArray has no bounded accessor. Never request it for a large mesh.
+                int[]? meshFaceArray = null;
+                if (mesh.NumberOfVertices <= ReadPayloadBudget.MeshVertices && mesh.NumberOfFaces <= ReadPayloadBudget.MeshFaces)
+                {
+                    var faces = mesh.FaceArray;
+                    if (faces.Count <= ReadPayloadBudget.MeshFaceIndices) meshFaceArray = faces.Cast<int>().ToArray();
+                }
                 item["vertices"] = meshVertices;
                 item["face_array"] = meshFaceArray;
+                item["vertex_offset"] = page.Offset; item["next_vertex_offset"] = page.Next;
+                item["vertices_truncated"] = page.Offset != 0 || page.Next is not null;
+                item["face_array_complete"] = meshFaceArray is not null;
                 item["vertex_count"] = mesh.NumberOfVertices;
                 item["face_count"] = mesh.NumberOfFaces;
                 item["smooth_level"] = mesh.SmoothLevel;
-                item["access"] = "structured"; break;
+                bool complete = page.Offset == 0 && page.Next is null && meshFaceArray is not null;
+                item["geometry_complete"] = complete;
+                item["access"] = complete ? "structured" : "partial";
+                if (!complete)
+                {
+                    var limitations = new List<string>();
+                    if (page.Offset != 0 || page.Next is not null) limitations.Add("bounded_mesh_vertices; continue cad_entity_get with next_vertex_offset");
+                    if (meshFaceArray is null) limitations.Add("large_mesh_face_array_not_materialized");
+                    item["limitations"] = limitations;
+                }
+                break;
             case DBText text:
                 item["text"] = text.TextString; item["position"] = P(text.Position); item["rotation"] = text.Rotation; item["height"] = text.Height; item["access"] = "structured"; break;
             case MText text:
@@ -144,7 +165,7 @@ internal static class Reader
         var layer = (LayerTableRecord)tr.GetObject(e.LayerId, OpenMode.ForRead);
         item["layer_off"] = layer.IsOff; item["layer_frozen"] = layer.IsFrozen;
         ReadAttachedData(e, tr, item);
-        return Wire.Element(item);
+        return ReadPayloadBudget.BoundEntity(Wire.Element(item));
     }
 
     /// <summary>XData by application and the extension dictionary (XRecord values, nested keys), bounded.</summary>

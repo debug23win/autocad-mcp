@@ -218,3 +218,7 @@ Minimal Map fixture: registered B_OD table with known string/numeric fields assi
 ## Validation of this matrix design
 
 An independent reviewer matched all 49 rows against current `McpServerTool` attributes without omissions/duplicates. All nine fenced JSON templates parsed; both native `operations_json` (SOLID/ASSEMBLY) passed actual `EditPlan.Parse`, and SOLID criteria passed `DrawingVerification.Parse`. This verifies example contracts, not native execution or completion of the listed positive/conditional cases.
+
+## Safety regression dimensions
+
+Track three axes separately: tool contracts (the table above), individual `cad_edit` operation families, and native product/runtime scenarios. Managed/MCP evidence is not installed-AutoCAD evidence. Include transport loss after commit, historical receipts, C# exact replay, 500/501/2000 changed targets, large mesh pages/snapshot budgets, broken table sources and explicit repair, unsupported Map criteria, Claude startup/active silence, RU/EN runtime entry points, checkpoint retention/hash, and HTTP body stalls. See `ReviewRegressionTests` and `-ReviewSafetyOnly` in [validation](validation.md). The native probe and GUI/product matrix must be marked unperformed until their reports exist.
