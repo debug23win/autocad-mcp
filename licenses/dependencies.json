@@ -80,8 +80,10 @@
     "declared_license": "MIT",
     "content_hash": "PC3tuwZYnC+idaPuoC/AZpEdwrtX7qFpmnrfQkgobGIWiYmGi5MCRtl5mx6QrfMGQpK78X2lfIEoZDLg/qnuHg==",
     "notice_files": [
-      "licenses/dependencies/Microsoft.CodeAnalysis.Common-4.14.0-ThirdPartyNotices.rtf"
-    ]
+      "licenses/dependencies/Microsoft.CodeAnalysis.Common-4.14.0-ThirdPartyNotices.rtf",
+      "licenses/dependencies/Microsoft.CodeAnalysis-4.14.0-LICENSE.txt"
+    ],
+    "source_repository": "https://github.com/dotnet/roslyn/tree/8edf7bcd4f1594c3d68a6a567469f41dbd33dd1b"
   },
   {
     "id": "Microsoft.CodeAnalysis.CSharp",
@@ -89,8 +91,10 @@
     "declared_license": "MIT",
     "content_hash": "568a6wcTivauIhbeWcCwfWwIn7UV7MeHEBvFB2uzGIpM2OhJ4eM/FZ8KS0yhPoNxnSpjGzz7x7CIjTxhslojQA==",
     "notice_files": [
-      "licenses/dependencies/Microsoft.CodeAnalysis.CSharp-4.14.0-ThirdPartyNotices.rtf"
-    ]
+      "licenses/dependencies/Microsoft.CodeAnalysis.CSharp-4.14.0-ThirdPartyNotices.rtf",
+      "licenses/dependencies/Microsoft.CodeAnalysis-4.14.0-LICENSE.txt"
+    ],
+    "source_repository": "https://github.com/dotnet/roslyn/tree/8edf7bcd4f1594c3d68a6a567469f41dbd33dd1b"
   },
   {
     "id": "Microsoft.Extensions.AI.Abstractions",
