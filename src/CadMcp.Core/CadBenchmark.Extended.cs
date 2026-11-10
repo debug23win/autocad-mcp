@@ -110,7 +110,7 @@ public static class CadMcpScript {
             foreach (string tool in toolInventory!.Distinct(StringComparer.Ordinal).OrderBy(t => t == "cad_csharp" ? 0 : 1).ThenBy(t => t, StringComparer.Ordinal))
             {
                 string caseId = "tool_" + tool;
-                if (stopped || ct.IsCancellationRequested) { results.Add(new(caseId, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Stopped after unknown outcome/cancellation", [], [])); continue; }
+                if (stopped || ct.IsCancellationRequested) { results.Add(new(caseId, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Stopped after a preceding failure, unknown outcome or cancellation", [], [])); continue; }
                 progress?.Invoke(new("Полный бенчмарк: " + tool, document));
                 checks.Clear(); calls.Clear(); approvalMs = 0; var watch = Stopwatch.StartNew();
                 string status = "passed"; string? errorCode = null, message = null;
@@ -126,9 +126,9 @@ public static class CadMcpScript {
                     else await ToolCase(tool, ct);
                     if (checks.Count == 0) throw new Fault("EMPTY_VERIFICATION", "A tool invocation without assertions cannot pass");
                 }
-                catch (Fault error) { status = error.Unknown ? "unknown" : error.Skipped ? "skipped" : "failed"; errorCode = error.Code; message = error.Message; stopped |= error.Unknown; }
+                catch (Fault error) { status = error.Unknown ? "unknown" : error.Skipped ? "skipped" : "failed"; errorCode = error.Code; message = error.Message; stopped |= error.Unknown || !error.Skipped; }
                 catch (OperationCanceledException error) { status = "unknown"; errorCode = "CANCELLED_WAIT"; message = error.Message; stopped = true; }
-                catch (Exception error) { status = "failed"; errorCode = "BENCHMARK_ERROR"; message = error.Message; }
+                catch (Exception error) { bool uncertain = Wire.IsTransportFailure(error); status = uncertain ? "unknown" : "failed"; errorCode = uncertain ? "BENCHMARK_TRANSPORT_UNCERTAIN" : error is CadFault fault ? fault.Code : "BENCHMARK_ERROR"; message = error.Message; stopped = true; }
                 results.Add(new(caseId, tool, "MCP", status, watch.Elapsed.TotalMilliseconds, approvalMs, errorCode, message, checks.ToArray(), calls.ToArray()));
             }
         }

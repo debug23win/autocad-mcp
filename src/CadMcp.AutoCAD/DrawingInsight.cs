@@ -344,7 +344,7 @@ internal static class DrawingInsight
             catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { }
         using var db = new Database(false, true);
         bool dxf = path.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase);
-        try { if (dxf) db.DxfIn(path, ""); else { db.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.CloseInput(true); } }
+        try { if (dxf) db.DxfIn(path, null); else { db.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.CloseInput(true); } }
         catch (Autodesk.AutoCAD.Runtime.Exception error) { throw new CadFault("DWG_READ_FAILED", error.ErrorStatus + ": " + error.Message); }
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
         var outline = Outline(db, tr, Path.GetFileName(path), ct);

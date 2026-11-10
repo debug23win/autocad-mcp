@@ -225,6 +225,11 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP idle: " + error); }
         finally { inIdle = false; }
     }
+    private void RequireBenchmarkSession(Request request)
+    {
+        if (request.OwnerId is { } owner && owner.StartsWith("benchmark-", StringComparison.Ordinal) && benchmarkDocuments.TryGetValue(owner[10..], out var fixture))
+            BenchmarkIsolation.RequireFixtureOnly(App.DocumentManager.Cast<Document>().Select(d => documents.Register(d).Id), fixture);
+    }
     private void RunIdle()
     {
         Interlocked.Exchange(ref lastIdleTicks, DateTime.UtcNow.Ticks);
@@ -258,6 +263,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         var lispBefore=lisp;
         try
         {
+            RequireBenchmarkSession(job.Request);
+            if (!BenchmarkTrace.Record(job.Request, "begin")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist the benchmark native-call trace; this CAD operation was not started");
             if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
             response = Execute(job.Request, job.Token);
         }
@@ -270,6 +277,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (journal.Find(id)?.Result is null) response = journal.Complete(id, response);
             mutationOwners.TryRemove(id, out _); control.Complete(id);
         }
+        _ = BenchmarkTrace.Record(job.Request, "end", response.Error?.Code);
         job.Source.TrySetResult(response);
         // The next queued request needs another Idle, which an otherwise idle AutoCAD would not raise soon.
         if (!queue.IsEmpty) Wake();
@@ -469,7 +477,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     if (entities.Count == limit) { truncated = true; break; }
                     try
                     {
-                        if (tr.GetObject(id, OpenMode.ForRead) is Entity entity) entities.Add(Reader.Read(entity, tr));
+                        if (tr.GetObject(id, OpenMode.ForRead) is Entity entity)
+                        {
+                            if (!BenchmarkTrace.Record(r, "snapshot_entity_begin:" + id.Handle.ToString())) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist snapshot native-read trace");
+                            entities.Add(Reader.Read(entity, tr));
+                            _ = BenchmarkTrace.Record(r, "snapshot_entity_end:" + id.Handle.ToString());
+                        }
                     }
                     catch (Autodesk.AutoCAD.Runtime.Exception error)
                     { entities.Add(Wire.Element(new { handle = id.Handle.ToString(), access = "unsupported", error = error.ErrorStatus.ToString() })); }
@@ -534,6 +547,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (!Guid.TryParseExact(run, "N", out _) || request.OwnerId != "benchmark-" + run)
             throw new CadFault("INVALID_BENCHMARK_RUN", "Expected a fresh benchmark run identifier");
         if (benchmarkDocuments.ContainsKey(run)) throw new CadFault("BENCHMARK_RUN_EXISTS", "The test drawing for this run already exists; do not create it again");
+        BenchmarkIsolation.RequireEmpty(App.DocumentManager.Cast<Document>().Count());
         var original = App.DocumentManager.MdiActiveDocument;
         string folder = Wire.DataDirectory("benchmarks", documents.SessionId, run);
         Directory.CreateDirectory(folder);
@@ -770,6 +784,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     }
     private void StartLisp(LispJob job)
     {
+        RequireBenchmarkSession(job.Request);
+        if (!BenchmarkTrace.Record(job.Request, "lisp_queued")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist AutoLISP scheduling trace; script was not sent");
         job.Document.CommandCancelled += LispInterrupted;
         job.Document.CommandFailed += LispInterrupted;
         job.Document.LispWillStart += LispEvaluationStarting;
@@ -795,6 +811,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (!ReferenceEquals(lisp, job) || !job.AwaitingApproval) return;
         job.AwaitingApproval = false; job.Approval = null;
         if (!approved) { FinishLisp(job.Id, false, "The user declined this AutoLISP operation; nothing ran", started: false, code: "LISP_DENIED"); return; }
+        try { RequireBenchmarkSession(job.Request); }
+        catch (CadFault error) { FinishLisp(job.Id, false, error.Message, started: false, code: error.Code); return; }
         if (remember) CadSettings.RelaxForSession();
         // The window does not block AutoCAD: the user may have edited the drawing the script was written for.
         if (job.Document.IsDisposed || documents.Register(job.Document).Revision != job.Request.ExpectedRevision)
@@ -818,6 +836,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (job.AwaitingApproval) throw new CadFault("LISP_NOT_APPROVED", "The script started before the user confirmed it");
             if (job.StartBy <= DateTimeOffset.UtcNow) throw new CadFault("DEADLINE_EXPIRED", "LISP did not start before the request deadline");
             if (!ReferenceEquals(documents.Active(job.Request), job.Document)) throw new CadFault("DOCUMENT_MISMATCH", "Drawing changed before LISP execution");
+            RequireBenchmarkSession(job.Request);
+            if (!BenchmarkTrace.Record(job.Request, "lisp_begin")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist AutoLISP execution trace; body was not started");
             journal.Running(id);
             job.Started = true;
             RunningLispScript = id;
@@ -843,7 +863,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             success && sameDocument ? null : new(code ?? (!started && control.Cancelled(id)?"CANCELLED":"LISP_FAILED"), sameDocument || !started ? text.Substring(0, Math.Min(text.Length, 16384)) : "LISP changed or closed the active document; reconcile drawings"));
         Unsubscribe(job.Document);
         if (!job.Document.IsDisposed && documents.Register(job.Document) is { } lispState && lispState.Author == id) lispState.Author = null;
-        journal.Complete(id, response); mutationOwners.TryRemove(id, out _); control.Complete(id); WorkSafety.Phase(documents.SessionId, id, success ? "completed" : "failed", final: true);
+        journal.Complete(id, response); _ = BenchmarkTrace.Record(job.Request, started ? "lisp_end" : "lisp_not_started", response.Error?.Code); mutationOwners.TryRemove(id, out _); control.Complete(id); WorkSafety.Phase(documents.SessionId, id, success ? "completed" : "failed", final: true);
         }
         // Cleared last, so status readers see the job as active until its receipt is written, and cleared
         // even after a failure, so a broken callback cannot block every later mutation.
@@ -869,6 +889,11 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private void CheckLisp()
     {
         if (lisp is not { } job) return;
+        if (!job.Started)
+        {
+            try { RequireBenchmarkSession(job.Request); }
+            catch (CadFault error) { FinishLisp(job.Id, false, error.Message, started: false, code: error.Code); return; }
+        }
         if (job.Document.IsDisposed)
             FinishLisp(job.Id, false, "The drawing closed before the AutoLISP operation reported its result; reconcile the drawing", job.Started);
         else if (!job.Started && control.Cancelled(job.Id))
@@ -880,7 +905,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (!ReferenceEquals(App.DocumentManager.MdiActiveDocument, job.Document) || !job.Document.Editor.IsQuiescent) return;
             job.PendingStart = false;
             try { StartLisp(job); }
-            catch (System.Exception error) { Unsubscribe(job.Document); FinishLisp(job.Id, false, error.Message, started: false); }
+            catch (System.Exception error) { Unsubscribe(job.Document); FinishLisp(job.Id, false, error.Message, started: false, code: (error as CadFault)?.Code); }
         }
         else if (job.PendingStart)
             FinishLisp(job.Id, false, "The confirmed AutoLISP operation could not start: its drawing was not active or AutoCAD was busy with a command; nothing ran", started: false, code: "DEADLINE_EXPIRED");

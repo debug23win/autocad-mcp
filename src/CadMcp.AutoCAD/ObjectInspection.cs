@@ -41,7 +41,8 @@ internal static class ObjectInspection
             {
                 handle = H(id), type = obj.GetType().Name, dxf_name = id.ObjectClass.DxfName, layer = (obj as Entity)?.Layer,
                 proxy = obj switch { ProxyEntity p => Proxy(p.OriginalClassName, p.OriginalDxfName, p.ApplicationDescription, p.ProxyFlags, true), ProxyObject p => Proxy(p.OriginalClassName, p.OriginalDxfName, p.ApplicationDescription, p.ProxyFlags, false), _ => null },
-                palette = Palette(id, limit)
+                palette = Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument is { } active && active.Database.UnmanagedObject == db.UnmanagedObject
+                    ? Palette(id, limit) : new { error = "OPM requires the active document; inactive-drawing database metadata is available, but the internal Properties palette was not invoked" }
             });
         }
         return new { objects, note = "Values are as the Properties palette shows them in this AutoCAD, including names in its language; objects shown as their own object references are left out" };

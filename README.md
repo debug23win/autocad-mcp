@@ -2,9 +2,11 @@
 
 **English** | [Русский](README.ru.md)
 
-Version 0.11.6-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
+Version 0.11.7-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is currently in Russian.
+
+Version 0.11.7 restricts the native benchmark to an AutoCAD process with no open DWGs, stops after the first unexpected failure and records durable native-call traces. The reported native crash is not yet proven resolved. [Safety and limits](docs/in-app-benchmark.md).
 
 Version 0.11.6 fixes C# compilation when AutoCAD lists native DLLs as reference candidates, and clarifies chat continuation and input availability after the provider finishes. [Changes](CHANGELOG.md#0116-preview).
 

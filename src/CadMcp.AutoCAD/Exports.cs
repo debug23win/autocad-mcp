@@ -231,11 +231,12 @@ internal static class Exports
         // How far the plot got: a failure part way still ends what was begun, in reverse order, before the engine is
         // destroyed, so AutoCAD is not left inside a plot.
         int stage = 0;
+        using var page = new PlotPageInfo(); // Keep the page alive through EndPage and all failure cleanup.
         try
         {
             engine.BeginPlot(null, null); stage = 1;
             engine.BeginDocument(info, document.Name, null, 1, true, path); stage = 2;
-            using (var page = new PlotPageInfo()) engine.BeginPage(page, info, true, null);
+            engine.BeginPage(page, info, true, null);
             stage = 3;
             engine.BeginGenerateGraphics(null); stage = 4;
             engine.EndGenerateGraphics(null); stage = 3;

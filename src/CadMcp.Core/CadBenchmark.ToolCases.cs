@@ -185,7 +185,7 @@ public sealed partial class CadBenchmark
         private async Task ArchiveCase(CancellationToken ct)
         {
             Extra("line"); // require the large MText fixture created by real C#
-            var response = await Call("cad_search", new { options_json = "{\"scope\":\"model\",\"layer\":\"B_ARCHIVE\",\"details\":true,\"limit\":500}" }, ct);
+            var response = await ReadCall("cad_search", new { options_json = "{\"scope\":\"model\",\"layer\":\"B_ARCHIVE\",\"details\":true,\"limit\":500}" }, ct);
             if (response.Error is not null || response.Status is not ("completed" or "partial")) Success(response);
             var envelope = Data(response);
             string archive = envelope.Text("archive_id") ?? throw new Fault("ARCHIVE_NOT_CREATED", "Large response did not create a real archive");

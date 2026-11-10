@@ -12,6 +12,7 @@ public sealed class BenchmarkMcpSession : IAsyncDisposable
     private readonly Task<string> errors;
     private readonly SemaphoreSlim gate = new(1, 1);
     private int nextId;
+    private readonly Dictionary<string, string[]> requiredArguments = new(StringComparer.Ordinal);
     public IReadOnlyList<string> Tools { get; private set; } = [];
     public List<JsonElement> Evidence { get; } = [];
     private BenchmarkMcpSession(Process process) { this.process = process; lines = new(process.StandardOutput.BaseStream); errors = ProviderProcess.DrainErrors(process); }
@@ -27,7 +28,11 @@ public sealed class BenchmarkMcpSession : IAsyncDisposable
             await session.Request("initialize", new { protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "cad_mcp_benchmark", version = Wire.Version } }, ct);
             await session.process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             var tools = await session.Request("tools/list", new { }, ct);
-            session.Tools = tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()!).Order(StringComparer.Ordinal).ToArray();
+            var descriptors = tools.GetProperty("tools").EnumerateArray().ToArray();
+            session.Tools = descriptors.Select(t => t.GetProperty("name").GetString()!).Order(StringComparer.Ordinal).ToArray();
+            foreach (var tool in descriptors)
+                session.requiredArguments[tool.GetProperty("name").GetString()!] = tool.TryGetProperty("inputSchema", out var schema) && schema.TryGetProperty("required", out var required)
+                    ? required.EnumerateArray().Select(x => x.GetString()!).ToArray() : [];
             return session;
         }
         catch { await session.DisposeAsync(); throw; }
@@ -61,6 +66,9 @@ public sealed class BenchmarkMcpSession : IAsyncDisposable
         if (request.SessionId is not null) args["session_id"] = request.SessionId;
         if (request.DocumentId is not null) args["document_id"] = request.DocumentId;
         if (request.ExpectedRevision is not null) args["expected_revision"] = request.ExpectedRevision;
+        if (!requiredArguments.TryGetValue(request.Operation, out var required)) throw new CadFault("BENCHMARK_TOOL_NOT_ADVERTISED", request.Operation + " is not in tools/list");
+        var missing = required.Where(name => !args.TryGetValue(name, out var value) || value is null || value is JsonElement element && element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined).ToArray();
+        if (missing.Length > 0) throw new CadFault("BENCHMARK_ARGUMENTS_INVALID", request.Operation + ": required MCP arguments are missing: " + string.Join(", ", missing) + "; tool was not invoked");
         var result = await Request("tools/call", new { name = request.Operation, arguments = args }, ct);
         var images = new List<object>();
         foreach (var content in result.GetProperty("content").EnumerateArray())

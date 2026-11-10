@@ -23,7 +23,7 @@ public static class MdiProbe
         void Check(bool ok,string text){if(!ok)throw new InvalidOperationException(text);checks.Add(text);File.WriteAllText(Path.Combine(root,"phase.txt"),text);}
         try
         {
-            foreach(string name in new[]{"project-A","project-B"})
+            foreach(string name in new[]{"project-A","project-B","tab-reopen"})
             {
                 string path=Path.Combine(root,name+".dwg");using(var seed=new Database(true,true)){seed.Insunits=UnitsValue.Millimeters;seed.SaveAs(path,DwgVersion.Current);}
                 owned.Add(DocumentCollectionExtension.Open(App.DocumentManager,path,false));
@@ -36,8 +36,7 @@ public static class MdiProbe
             string benchmarkRun=Guid.NewGuid().ToString("N");
             var benchmarkFixture=await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),"benchmark_create",documents.SessionId,
                 Data:Wire.Element(new{run_id=benchmarkRun}),OwnerId:"benchmark-"+benchmarkRun),CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
-            Check(benchmarkFixture.Error is null&&benchmarkFixture.DocumentId!=sa.Id&&benchmarkFixture.DocumentId!=sb.Id,"Benchmark creates its own new drawing identity");
-            var benchmarkDoc=App.DocumentManager.Cast<Document>().Single(d=>documents.Register(d).Id==benchmarkFixture.DocumentId);owned.Add(benchmarkDoc);
+            Check(benchmarkFixture.Error?.Code == "BENCHMARK_SESSION_NOT_EMPTY", "Benchmark refuses to start in a process with existing drawings before creating any fixture");
             try
             {
                 await dispatcher.Enqueue(new(Guid.NewGuid().ToString("N"),"cad_edit",documents.SessionId,sa.Id,sa.Revision,
@@ -55,8 +54,8 @@ public static class MdiProbe
             await workspace.Refresh(revealHidden:true);
             Check(workspace.ProjectPanels.ContainsKey(sa.Id)&&workspace.TabCount==tabCount,"Explicit drawing refresh restores a manually hidden chat tab");
             // Reopen a separate saved fixture: its new document id must replace the old tab, not duplicate its history.
-            string reopenedPath=benchmarkDoc.Name;string oldBenchmarkId=benchmarkFixture.DocumentId!;
-            benchmarkDoc.CloseAndDiscard();owned.Remove(benchmarkDoc);await workspace.Refresh();
+            var reopenFixture = owned[2]; string reopenedPath=reopenFixture.Name;string oldBenchmarkId=documents.Register(reopenFixture).Id;
+            reopenFixture.CloseAndDiscard();owned.Remove(reopenFixture);await workspace.Refresh();
             var reopenedBenchmark=DocumentCollectionExtension.Open(App.DocumentManager,reopenedPath,false);owned.Add(reopenedBenchmark);
             await workspace.Refresh();string reopenedBenchmarkId=documents.Register(reopenedBenchmark).Id;
             Check(!workspace.ProjectPanels.ContainsKey(oldBenchmarkId)&&workspace.ProjectPanels.ContainsKey(reopenedBenchmarkId)&&workspace.TabCount==tabCount,"Reopened DWG replaces the old binding without adding a duplicate chat slot");
