@@ -13,7 +13,7 @@ public sealed record ProviderOptions(string Executable, string McpExecutable, st
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
-public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null);
+public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null, CodexRateLimits? RateLimits = null);
 public interface IChatProvider
 {
     string? SessionId { get; set; }
@@ -346,6 +346,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
 public sealed class CodexProvider(ProviderOptions options) : IChatProvider
 {
     public string? SessionId { get; set; }
+    internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan EventSilenceTimeout { get; set; } = TimeSpan.FromMinutes(5);
     private readonly LiveInput live = new();
     public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
     public string[] Arguments() => Arguments(null);
@@ -358,11 +360,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         "-c", "mcp_servers.cad.env.CAD_MCP_PRIMARY_THREAD_FILE="+JsonSerializer.Serialize(CadSubagentPolicy.PrimaryThreadFile(options)),
         .. options.CadEnvironment.SelectMany(p => new[] {"-c", "mcp_servers.cad.env." + p.Key + "=" + JsonSerializer.Serialize(p.Value)}),
         .. (options.MaxSubagents>0?CadSubagentPolicy.Arguments(options, warnings):Array.Empty<string>()),
+        "-c", "sandbox_workspace_write.network_access=true",
         "-c", "agents.enabled=" + (options.MaxSubagents > 0 ? "true" : "false"),
         "-c", "agents.max_concurrent_threads_per_session=" + Math.Max(1, options.MaxSubagents),
         // The user authorized direct CAD edits. `never` disables approval dialogs, but does
         // not approve side-effecting MCP tools. Grant the local CAD server explicitly;
-        // keep the filesystem sandbox and other servers' policies unchanged.
+        // The primary may write its selected working directory; review helpers retain read-only profiles.
         "-c", "mcp_servers.cad.default_tools_approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_edit.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_export.approval_mode=\"approve\"",
@@ -384,6 +387,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         string? activeTurnId = null;
         var usageTracker = new CodexUsageTracker(SessionId is not null);
         var answer = new CodexAnswerBuffer();
+        var startupClock = Stopwatch.StartNew();
+        var lastHeartbeat = TimeSpan.FromSeconds(-1);
         int resumeRetries = 0;
         using var writes = new SemaphoreSlim(1,1);
         async Task Send(object data)
@@ -397,16 +402,37 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
             activeTurnId = turnId;
             live.Open((id,input,token)=> Send(new { id,method="turn/steer",@params=new {threadId=SessionId,expectedTurnId=turnId,input=LiveInput.CodexContent(input)} }));
         }
-        async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
+        async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write" } });
+        async Task<JsonDocument?> ReadNext()
+        {
+            bool starting = activeTurnId is null;
+            TimeSpan budget = starting ? StartupTimeout - startupClock.Elapsed : EventSilenceTimeout;
+            string message = starting ? "Codex не начал задачу за отведённое время. Сессия остановлена; автоматического повтора правок нет." : "Codex не передавал события слишком долго. Сессия остановлена; принятые AutoCAD операции нужно проверить, автоматического повтора нет.";
+            if (budget <= TimeSpan.Zero) throw new IOException(message);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(budget);
+            using var stopSilentProcess = deadline.Token.Register(() => ProviderProcess.Stop(p));
+            try
+            {
+                var document = await lines.ReadAsync(deadline.Token);
+                if (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { document?.Dispose(); throw new IOException(message); }
+                return document;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new IOException(message); }
+            catch (IOException error) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { throw new IOException(message, error); }
+        }
         try
         {
             await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = Wire.Version } } });
-            while (await lines.ReadAsync(ct) is { } doc)
+            while (await ReadNext() is { } doc)
             {
                 using (doc)
                 {
                     var e = doc.RootElement;
                     if (e.ValueKind != JsonValueKind.Object) continue;
+                    // Protocol activity includes messages intentionally hidden from the transcript.
+                    // It must still keep the liveness indicator and silence deadline accurate.
+                    if (startupClock.Elapsed - lastHeartbeat >= TimeSpan.FromSeconds(1))
+                    { lastHeartbeat = startupClock.Elapsed; yield return new("heartbeat", ""); }
                     bool isRequestOrEvent = e.TryGetProperty("method", out var method);
                     int? replyId = ProviderJson.Id(e);
                     if (replyId is >= 100 && !isRequestOrEvent)
@@ -417,6 +443,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     }
                     if (!isRequestOrEvent && e.TryGetProperty("error", out var error))
                     {
+                        if (replyId == 5) { yield return new("rate_limits", "нет данных"); continue; }
                         string message = ErrorMessage(error);
                         if (replyId == 2 && SessionId is not null && message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase) && resumeRetries < 3)
                         {
@@ -434,7 +461,9 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         {
                             await Send(new { method = "initialized", @params = new { } });
                             await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
+                            await Send(new { id = 5, method = "account/rateLimits/read", @params = new { } });
                         }
+                        else if (id == 5) yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(result));
                         else if (id == 4)
                         {
                             if (ProviderJson.Child(result, "data") is not { ValueKind: JsonValueKind.Array } data)
@@ -451,7 +480,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                             yield return new("model", model!);
                             yield return new("effort", effort!);
                             if (SessionId is null)
-                                await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "read-only" } });
+                                await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write" } });
                             else await Resume();
                         }
                         else if (id == 2)
@@ -470,6 +499,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (!isRequestOrEvent) continue;
                     string? name = method.ValueKind == JsonValueKind.String ? method.GetString() : null;
                     var parameters = ProviderJson.Child(e, "params");
+                    if (name == "account/rateLimits/updated") yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(parameters));
                     string? eventThread = ProviderJson.Text(parameters, "threadId");
                     bool rootEvent = eventThread is null || eventThread == SessionId;
                     if (name == "thread/tokenUsage/updated" && usageTracker.Observe(parameters, SessionId, activeTurnId) is { } usage)
@@ -491,15 +521,19 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     var item = ProviderJson.Child(parameters, "item");
                     if (rootEvent && name is "item/started" or "item/completed") answer.Item(item, name == "item/completed");
                     string? itemType = ProviderJson.Text(item, "type");
+                    if (rootEvent && name == "item/completed" && itemType == "agentMessage" && ProviderJson.Text(item, "phase") == "commentary" && ProviderJson.Text(item, "text") is { Length: > 0 } commentary)
+                        yield return new("progress", commentary.Length > 1200 ? commentary[..1200] + "…" : commentary);
                     if (name == "item/started" && rootEvent)
                     {
+                        string? activity = itemType switch { "commandExecution" => "Выполняю команду в рабочей папке", "fileChange" => "Обновляю файлы в рабочей папке", "webSearch" => "Ищу материалы в интернете", "imageView" => "Изучаю приложенное изображение", _ => null };
+                        if (activity is not null) yield return new("progress", activity);
                         if (itemType == "mcpToolCall") yield return new("step", "Выполняю " + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
-                        if (itemType == "collabAgentToolCall") yield return new("status", "Помощники анализируют задачу");
+                        if (itemType == "collabAgentToolCall") yield return new("progress", "Помощники проверяют выбранные данные");
                     }
                     if (name == "item/completed" && rootEvent && itemType == "mcpToolCall")
                         yield return new("step", (ProviderJson.Text(item, "status") == "failed" ? "Ошибка: " : "Завершено: ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
                     if (name == "item/completed" && rootEvent && itemType == "collabAgentToolCall")
-                        yield return new("status", "Объединяю результаты помощников");
+                        yield return new("progress", "Проверяю результаты помощников");
                     if (name == "error")
                     {
                         if (ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True) yield return new("status", "Codex восстанавливает соединение");

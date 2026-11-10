@@ -1,5 +1,102 @@
 [
   {
+    "id": "DocumentFormat.OpenXml",
+    "version": "3.1.1",
+    "declared_license": "MIT",
+    "content_hash": "2z9QBzeTLNNKWM9SaOSDMegfQk/7hDuElOsmF77pKZMkFRP/GHA/W/4yOAQD9kn15N/FsFxHn3QVYkatuZghiA==",
+    "notice_files": [
+      "licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "DocumentFormat.OpenXml.Framework",
+    "version": "3.1.1",
+    "declared_license": "MIT",
+    "content_hash": "6APEp/ElZV58S/4v8mf4Ke3ONEDORs64MqdD64Z7wWpcHANB9oovQsGIwtqjnKihulOj7T0a6IxHIHOfMqKOng==",
+    "notice_files": [
+      "licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "HarfBuzzSharp",
+    "version": "8.3.1.5",
+    "declared_license": "MIT",
+    "content_hash": "K0+U7592Ne10BCuHZrZYIbaYUQy20CsYM9A3+Xjz3UpLPjs6nosbQtDYp2PueWJ7AQ5/htbyO8WqnUe+uf8AAQ==",
+    "notice_files": [
+      "licenses/dependencies/HarfBuzzSharp-8.3.1.5-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "HarfBuzzSharp.NativeAssets.Linux",
+    "version": "8.3.1.5",
+    "declared_license": "MIT",
+    "content_hash": "Rvm05tL7QTNEGrhcrfvN/J5j7SGjGclp8J70JTQW4498U4+4cPC5yovn5V1l6ngSGufK6Ck47JVp6alYwhkGKg==",
+    "notice_files": [
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.Linux-8.3.1.5-LICENSE.txt",
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.Linux-8.3.1.5-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "HarfBuzzSharp.NativeAssets.macOS",
+    "version": "8.3.1.5",
+    "declared_license": "MIT",
+    "content_hash": "TWSbMOIBiGvCTnR2MUlmhnP92L7qwYmpDXSNOkYQUh6Iuc7W7Y3z/Q+X3N6scvbZbDmfbZjqbNUqDEz/JzpwBg==",
+    "notice_files": [
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.macOS-8.3.1.5-LICENSE.txt",
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.macOS-8.3.1.5-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "HarfBuzzSharp.NativeAssets.Win32",
+    "version": "8.3.1.5",
+    "declared_license": "MIT",
+    "content_hash": "p95FW4SwP50qD4cq6e2/P5DP7As6c6aQU5qHvsdCKorX5GFLHUMIx/zQgiLvB871xQrhdN24sZyMbCufnTHvsQ==",
+    "notice_files": [
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.Win32-8.3.1.5-LICENSE.txt",
+      "licenses/dependencies/HarfBuzzSharp.NativeAssets.Win32-8.3.1.5-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "Markdig",
+    "version": "1.3.2",
+    "declared_license": "BSD-2-Clause",
+    "content_hash": "fZgOC/3CswUrndjDTac70aQpYdtxbW5+5bRumR7vzvI2HJbkmgKisB1c9oT+GA6v0jB/JDR9BLa9FiPzQmaK6A==",
+    "notice_files": [
+      "licenses/dependencies/Markdig-1.3.2-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "Microsoft.CodeAnalysis.Analyzers",
+    "version": "3.11.0",
+    "declared_license": "MIT",
+    "content_hash": "v/EW3UE8/lbEYHoC2Qq7AR/DnmvpgdtAMndfQNmpuIMx/Mto8L5JnuCfdBYtgvalQOtfNCnxFejxuRrryvUTsg==",
+    "notice_files": [
+      "licenses/dependencies/Microsoft.CodeAnalysis.Analyzers-3.11.0-ThirdPartyNotices.txt"
+    ]
+  },
+  {
+    "id": "Microsoft.CodeAnalysis.Common",
+    "version": "4.14.0",
+    "declared_license": "MIT",
+    "content_hash": "PC3tuwZYnC+idaPuoC/AZpEdwrtX7qFpmnrfQkgobGIWiYmGi5MCRtl5mx6QrfMGQpK78X2lfIEoZDLg/qnuHg==",
+    "notice_files": [
+      "licenses/dependencies/Microsoft.CodeAnalysis.Common-4.14.0-ThirdPartyNotices.rtf",
+      "licenses/dependencies/Microsoft.CodeAnalysis-4.14.0-LICENSE.txt"
+    ],
+    "source_repository": "https://github.com/dotnet/roslyn/tree/8edf7bcd4f1594c3d68a6a567469f41dbd33dd1b"
+  },
+  {
+    "id": "Microsoft.CodeAnalysis.CSharp",
+    "version": "4.14.0",
+    "declared_license": "MIT",
+    "content_hash": "568a6wcTivauIhbeWcCwfWwIn7UV7MeHEBvFB2uzGIpM2OhJ4eM/FZ8KS0yhPoNxnSpjGzz7x7CIjTxhslojQA==",
+    "notice_files": [
+      "licenses/dependencies/Microsoft.CodeAnalysis.CSharp-4.14.0-ThirdPartyNotices.rtf",
+      "licenses/dependencies/Microsoft.CodeAnalysis-4.14.0-LICENSE.txt"
+    ],
+    "source_repository": "https://github.com/dotnet/roslyn/tree/8edf7bcd4f1594c3d68a6a567469f41dbd33dd1b"
+  },
+  {
     "id": "Microsoft.Extensions.AI.Abstractions",
     "version": "10.5.2",
     "declared_license": "MIT",
@@ -278,6 +375,16 @@
     ]
   },
   {
+    "id": "Microsoft.Web.WebView2",
+    "version": "1.0.4258.31",
+    "declared_license": "Microsoft WebView2 SDK license",
+    "content_hash": "sHVZ2MQrHT1J3q5/6csn0fIP27rzpTO/RRC+wPQDrZheB7T4t2n+vVbY6SdCKr4WRV9s/gmBM3PPMWWJtoDzMg==",
+    "notice_files": [
+      "licenses/dependencies/WebView2-1.0.4258.31-LICENSE.txt",
+      "licenses/dependencies/WebView2-1.0.4258.31-NOTICE.txt"
+    ]
+  },
+  {
     "id": "ModelContextProtocol",
     "version": "1.4.1",
     "declared_license": "Apache-2.0",
@@ -290,6 +397,108 @@
     "declared_license": "Apache-2.0",
     "content_hash": "G/hOBZkJsvF3MSy0sOvXdxca5uRe2Sb4xk7xRuTWNZI45khVBjOLo6nSzGilctIICavNVxbxUF908fLYI9RxkQ==",
     "notice_files": []
+  },
+  {
+    "id": "PdfPig.Filters.Dct.JpegLibrary",
+    "version": "0.1.16.1",
+    "declared_license": "Apache-2.0",
+    "content_hash": "hrRFum/uUkc0hTSy2NR/R8GgER1wu/b70/7CqsQ6S7DXpNVEJHZP1xBhNfobY6jkX3Y8NOhHfjx2oAQOAoZ6nQ==",
+    "notice_files": [
+      "licenses/dependencies/PdfPig.Filters.Dct.JpegLibrary-0.1.16.1-LICENSE.txt",
+      "licenses/dependencies/PdfPig.Filters.Dct.JpegLibrary-0.1.16.1-UglyToad.PdfPig.Filters.Dct.JpegLibrary_Jpeg_LICENSE",
+      "licenses/dependencies/PdfPig.Filters.Dct.JpegLibrary-0.1.16.1-UglyToad.PdfPig.Filters.Dct.JpegLibrary_Jpeg_THIRD-PARTY-NOTICES.md"
+    ],
+    "source_repository": "https://github.com/BobLd/UglyToad.PdfPig.Filters.Dct.JpegLibrary/tree/3085d5ce409dece935706a843f6f661b34f1c00d"
+  },
+  {
+    "id": "PdfPig.Filters.Jbig2.PdfboxJbig2",
+    "version": "0.1.16.2",
+    "declared_license": "Apache-2.0",
+    "content_hash": "14X7BepMrqbzT3Pj6P6GjhWkBILRWk8b2QIfjgIjiHE72pw16pQ1ReDWD6LLtOpJpIYVSr3l1nFVb8zO4UZMCw==",
+    "notice_files": [
+      "licenses/dependencies/PdfPig.Filters.Jbig2.PdfboxJbig2-0.1.16.2-LICENSE.txt",
+      "licenses/dependencies/PdfPig.Filters.Jbig2.PdfboxJbig2-0.1.16.2-NOTICE.txt"
+    ],
+    "source_repository": "https://github.com/BobLd/UglyToad.PdfPig.Filters.Jbig2.PdfboxJbig2/tree/bed0ed488c97b49a1355f2440b96e82c88aee01c"
+  },
+  {
+    "id": "PdfPig.Filters.Jpx.OpenJpeg",
+    "version": "0.1.16.1",
+    "declared_license": "BSD-2-Clause",
+    "content_hash": "xh2rTwiwHFpLnVf2exGsLCuG+LwleZImeYCyKXaYK3aU161t4z15kdYkHyZJRnsboJMkN7o/y1YQUmstnFcCdw==",
+    "notice_files": [
+      "licenses/dependencies/PdfPig.Filters.Jpx.OpenJpeg-0.1.16.1-LICENSE.txt"
+    ],
+    "source_repository": "https://github.com/BobLd/UglyToad.PdfPig.Filters.Jpx.OpenJpeg/tree/8b39066335b4d48ecfdaa3191df87d70feff2398"
+  },
+  {
+    "id": "PdfPig.Rendering.Skia",
+    "version": "0.1.16.7",
+    "declared_license": "Apache-2.0",
+    "content_hash": "NnjqgW1DFpm/iNDZbWHkZ92V81QW1NzX/gqAWlu8D7IFmJzDM7lqHlyz6cZtYFllSwgefiYMMKxBx9fBR30Bcg==",
+    "notice_files": [
+      "licenses/dependencies/PdfPig.Rendering.Skia-0.1.16.7-LICENSE.txt",
+      "licenses/dependencies/PdfPig.Rendering.Skia-0.1.16.7-NOTICE.txt"
+    ],
+    "source_repository": "https://github.com/BobLd/PdfPig.Rendering.Skia/tree/3fe6a72e11c5fdbd82404b94cd76336c8960f08f"
+  },
+  {
+    "id": "SkiaSharp",
+    "version": "3.119.4",
+    "declared_license": "MIT",
+    "content_hash": "53NOSUZ1Us+91Sm0uCkIivh/k7jOowRErZT2sIWwPFN9mLUvdxnE6rS4sWo4255+Rd2MWUSF+j0NMZHD6Cke+Q==",
+    "notice_files": [
+      "licenses/dependencies/SkiaSharp-3.119.4-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "SkiaSharp.HarfBuzz",
+    "version": "3.119.4",
+    "declared_license": "MIT",
+    "content_hash": "YkN+X5fW9hXFlkoYaxDfYHuSE7SzIHlYMdWarmk03WOad1Rur8zJqGp1dkYp69FGpFxBVgnd/euiJnDPfr3WZQ==",
+    "notice_files": [
+      "licenses/dependencies/SkiaSharp.HarfBuzz-3.119.4-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "SkiaSharp.NativeAssets.Linux.NoDependencies",
+    "version": "3.119.4",
+    "declared_license": "MIT",
+    "content_hash": "iFnpOfZoim2SwhSPy0EJNZtQAaWM7D0A6Q1YvquwOXUdQAFrSy81Tfb1I4c0IHrrQnoVjcZPcwOc1+VM2ja77w==",
+    "notice_files": [
+      "licenses/dependencies/SkiaSharp.NativeAssets.Linux.NoDependencies-3.119.4-LICENSE.txt",
+      "licenses/dependencies/SkiaSharp.NativeAssets.Linux.NoDependencies-3.119.4-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "SkiaSharp.NativeAssets.macOS",
+    "version": "3.119.4",
+    "declared_license": "MIT",
+    "content_hash": "fgBOWEqbY012x7gMfJU4ezgz6dfhJb30Z6YdW35h85Zoe39+a8YNbAAwL29ihPfWoppg5AjvyKNzD1oCvlqWwA==",
+    "notice_files": [
+      "licenses/dependencies/SkiaSharp.NativeAssets.macOS-3.119.4-LICENSE.txt",
+      "licenses/dependencies/SkiaSharp.NativeAssets.macOS-3.119.4-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "SkiaSharp.NativeAssets.Win32",
+    "version": "3.119.4",
+    "declared_license": "MIT",
+    "content_hash": "XOpbx/4CReO2wYsq2s6rbvdauc6dntG4Zv499sHGTJ87bwZaFXszFkwql3+FIZMc8kUPeaj3Mx2ezIJmo8a1Kg==",
+    "notice_files": [
+      "licenses/dependencies/SkiaSharp.NativeAssets.Win32-3.119.4-LICENSE.txt",
+      "licenses/dependencies/SkiaSharp.NativeAssets.Win32-3.119.4-THIRD-PARTY-NOTICES.txt"
+    ]
+  },
+  {
+    "id": "System.Collections.Immutable",
+    "version": "9.0.0",
+    "declared_license": "MIT",
+    "content_hash": "QhkXUl2gNrQtvPmtBTQHb0YsUrDiDQ2QS09YbtTTiSjGcf7NBqtYbrG/BE06zcBPCKEwQGzIv13IVdXNOSub2w==",
+    "notice_files": [
+      "licenses/dependencies/System.Collections.Immutable-9.0.0-LICENSE.TXT",
+      "licenses/dependencies/System.Collections.Immutable-9.0.0-THIRD-PARTY-NOTICES.TXT"
+    ]
   },
   {
     "id": "System.Diagnostics.DiagnosticSource",
@@ -311,6 +520,16 @@
     ]
   },
   {
+    "id": "System.IO.Packaging",
+    "version": "8.0.1",
+    "declared_license": "MIT",
+    "content_hash": "KYkIOAvPexQOLDxPO2g0BVoWInnQhPpkFzRqvNrNrMhVT6kqhVr0zEb6KCHlptLFukxnZrjuMVAnxK7pOGUYrw==",
+    "notice_files": [
+      "licenses/dependencies/System.IO.Packaging-8.0.1-LICENSE.txt",
+      "licenses/dependencies/System.IO.Packaging-8.0.1-NOTICE.txt"
+    ]
+  },
+  {
     "id": "System.IO.Pipelines",
     "version": "10.0.7",
     "declared_license": "MIT",
@@ -326,6 +545,16 @@
     "content_hash": "e06Z0ebrVhLOPZjqkJ3FkhGEobJu7T7WEIZPNtZW2Vr8eULbxwZg64i4SYeCVcaCdHLST/G4DOGnYp9QcIzzKA==",
     "notice_files": [
       "licenses/dependencies/System.Net.ServerSentEvents-10.0.7-THIRD-PARTY-NOTICES.TXT"
+    ]
+  },
+  {
+    "id": "System.Reflection.Metadata",
+    "version": "9.0.0",
+    "declared_license": "MIT",
+    "content_hash": "ANiqLu3DxW9kol/hMmTWbt3414t9ftdIuiIU7j80okq2YzAueo120M442xk1kDJWtmZTqWQn7wHDvMRipVOEOQ==",
+    "notice_files": [
+      "licenses/dependencies/System.Reflection.Metadata-9.0.0-LICENSE.TXT",
+      "licenses/dependencies/System.Reflection.Metadata-9.0.0-THIRD-PARTY-NOTICES.TXT"
     ]
   },
   {
@@ -345,40 +574,5 @@
     "notice_files": [
       "licenses/dependencies/System.Text.Json-10.0.6-THIRD-PARTY-NOTICES.TXT"
     ]
-  },
-  {
-    "id": "Microsoft.Web.WebView2",
-    "version": "1.0.4258.31",
-    "declared_license": "Microsoft WebView2 SDK license",
-    "content_hash": "sHVZ2MQrHT1J3q5/6csn0fIP27rzpTO/RRC+wPQDrZheB7T4t2n+vVbY6SdCKr4WRV9s/gmBM3PPMWWJtoDzMg==",
-    "notice_files": ["licenses/dependencies/WebView2-1.0.4258.31-LICENSE.txt", "licenses/dependencies/WebView2-1.0.4258.31-NOTICE.txt"]
-  },
-  {
-    "id": "DocumentFormat.OpenXml",
-    "version": "3.1.1",
-    "declared_license": "MIT",
-    "content_hash": "2z9QBzeTLNNKWM9SaOSDMegfQk/7hDuElOsmF77pKZMkFRP/GHA/W/4yOAQD9kn15N/FsFxHn3QVYkatuZghiA==",
-    "notice_files": ["licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"]
-  },
-  {
-    "id": "DocumentFormat.OpenXml.Framework",
-    "version": "3.1.1",
-    "declared_license": "MIT",
-    "content_hash": "6APEp/ElZV58S/4v8mf4Ke3ONEDORs64MqdD64Z7wWpcHANB9oovQsGIwtqjnKihulOj7T0a6IxHIHOfMqKOng==",
-    "notice_files": ["licenses/dependencies/OpenXml-3.1.1-LICENSE.txt"]
-  },
-  {
-    "id": "Markdig",
-    "version": "1.3.2",
-    "declared_license": "BSD-2-Clause",
-    "content_hash": "fZgOC/3CswUrndjDTac70aQpYdtxbW5+5bRumR7vzvI2HJbkmgKisB1c9oT+GA6v0jB/JDR9BLa9FiPzQmaK6A==",
-    "notice_files": ["licenses/dependencies/Markdig-1.3.2-LICENSE.txt"]
-  },
-  {
-    "id": "System.IO.Packaging",
-    "version": "8.0.1",
-    "declared_license": "MIT",
-    "content_hash": "KYkIOAvPexQOLDxPO2g0BVoWInnQhPpkFzRqvNrNrMhVT6kqhVr0zEb6KCHlptLFukxnZrjuMVAnxK7pOGUYrw==",
-    "notice_files": ["licenses/dependencies/System.IO.Packaging-8.0.1-LICENSE.txt", "licenses/dependencies/System.IO.Packaging-8.0.1-NOTICE.txt"]
   }
 ]

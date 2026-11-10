@@ -114,7 +114,7 @@ public sealed class ProviderTests
             Assert.Contains(events, e => e.Kind == "model" && e.Text == "available-model");
             Assert.Contains(events, e => e.Kind == "reasoning_summary" && e.Text.Contains("размеры"));
             Assert.Equal(2, events.Count(e => e.Kind == "step" && e.Text.Contains("cad_search")));
-            Assert.Contains(events, e => e.Kind == "status" && e.Text.Contains("Помощники"));
+            Assert.Contains(events, e => e.Kind == "progress" && e.Text.Contains("Помощники"));
         }
         else Assert.Contains(events, e => e.Kind == "step" && e.Text == "Завершено: mcp__cad__cad_edit");
         Assert.DoesNotContain(events, e => e.Kind == "cad_result");
@@ -394,7 +394,7 @@ public sealed class ProviderTests
     }
 
     [Fact]
-    public void Codex_grants_CAD_tools_without_global_permission_changes()
+    public void Codex_grants_CAD_and_workspace_network_access_without_unrestricted_filesystem_access()
     {
         var arguments = new CodexProvider(Options).Arguments();
         Assert.True(arguments.Contains("mcp_servers.cad.enabled=true") && arguments.Contains("mcp_servers.cad.default_tools_approval_mode=\"approve\""), "CAD server permission missing");
@@ -402,6 +402,7 @@ public sealed class ProviderTests
         var command = arguments.Single(a => a.StartsWith("mcp_servers.cad.command="));
         Assert.Equal(Options.McpExecutable, JsonSerializer.Deserialize<string>(command["mcp_servers.cad.command=".Length..]));
         Assert.True(arguments.Contains("agents.enabled=true") && arguments.Contains("agents.max_concurrent_threads_per_session=3"), "Subagent limit missing");
+        Assert.Contains("sandbox_workspace_write.network_access=true", arguments);
         Assert.Contains("agents.enabled=false", new CodexProvider(Options with { MaxSubagents = 0 }).Arguments());
     }
 }

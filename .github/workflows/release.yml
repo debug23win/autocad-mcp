@@ -77,6 +77,8 @@ jobs:
           }
           dotnet test tests/CadMcp.Tests/CadMcp.Tests.csproj -c Release --no-build --logger "trx;LogFileName=CadMcp.Tests.trx" --results-directory "$env:RUNNER_TEMP/test-results"
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          dotnet run --project tests/CadMcp.ChatPanelProbe/CadMcp.ChatPanelProbe.csproj -c Release --no-build -- --native-theme-only
+          if ($LASTEXITCODE -ne 0) { throw 'Native WPF theme and saved-selection checks failed' }
 
       - name: Official Codex (pinned checksums)
         shell: pwsh

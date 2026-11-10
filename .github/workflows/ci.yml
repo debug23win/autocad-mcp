@@ -62,3 +62,16 @@ jobs:
           name: test-results
           path: TestResults
           if-no-files-found: ignore
+
+      - name: Native WPF theme and saved selections
+        shell: pwsh
+        run: dotnet run --project tests/CadMcp.ChatPanelProbe/CadMcp.ChatPanelProbe.csproj -c Release --no-build -- --native-theme-only
+
+      - name: Upload chat theme images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-theme
+          include-hidden-files: true
+          path: .runtime/panel-probe-*/panel*.png
+          if-no-files-found: ignore

@@ -56,8 +56,12 @@ internal sealed class ChatPanel : UserControl
     private int currentAssistantIndex = -1;
     private DateTimeOffset turnStarted, lastSignal;
     private string currentActivity = "Готово";
+    private readonly TextBlock quota = new() { Text = "Лимиты Codex: нет данных", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3) };
+    private readonly System.Windows.Controls.CheckBox showProgress = new() { Content = "Показывать ход работы", IsChecked = true, Margin = new Thickness(0, 4, 0, 4) };
     private readonly SolidColorBrush panelBrush = new(), controlBrush = new(), foregroundBrush = new(), borderBrush = new();
     private readonly ChatStateStore store;
+    private readonly ChatPreferencesStore preferences;
+    private ChatPreferences? lastPreferences;
     private readonly StringBuilder streamedText = new();
     private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private string codexExecutable = "codex.exe", claudeExecutable = "claude.exe";
@@ -77,10 +81,11 @@ internal sealed class ChatPanel : UserControl
     private bool settingChoices, firstLoad, restoring;
     private readonly string brokerPipe;
     public ChatPanel() : this(null) { }
-    internal ChatPanel(ChatStateStore? stateStore,string? projectDirectory=null,string? brokerPipe=null)
+    internal ChatPanel(ChatStateStore? stateStore,string? projectDirectory=null,string? brokerPipe=null,ChatPreferencesStore? preferences=null)
     {
         this.brokerPipe = brokerPipe ?? Wire.BrokerPipe;
         store = stateStore ?? new(Wire.DataDirectory("chat"));
+        this.preferences = preferences ?? new();
         var assemblyDir = Path.GetDirectoryName(typeof(ChatPanel).Assembly.Location)!;
         var installedHost = Path.GetFullPath(Path.Combine(assemblyDir, "..", "Host", "CadMcp.Host.exe"));
         if (File.Exists(installedHost)) host.Text = installedHost;
@@ -93,7 +98,16 @@ internal sealed class ChatPanel : UserControl
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
         catch (System.Exception e) { activity.Text = "История не восстановлена: " + e.Message; }
-        if(restored is null && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
+        bool hadProjectHistory = restored is not null;
+        if (this.preferences.Load() is { } choices)
+        {
+            showProgress.IsChecked = choices.ShowProgress;
+            var state = State();
+            Restore(state with { Provider = choices.Provider, CodexModel = choices.CodexModel, CodexReasoningEffort = choices.CodexEffort,
+                ClaudeModel = choices.ClaudeModel, ClaudeReasoningEffort = choices.ClaudeEffort }, imported: false);
+        }
+        lastPreferences = Preferences();
+        if(!hadProjectHistory && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
         InstallThemeStyles();
         var root = new DockPanel { Margin = new Thickness(8), AllowDrop = true }; Content = root;
         root.PreviewDragOver += (_, e) =>
@@ -141,6 +155,7 @@ internal sealed class ChatPanel : UserControl
             previousProvider = provider.SelectedIndex; adapter = null;
             ApplyProviderChoices();
             SetBusy(false);
+            Persist();
             if (!restoring && IsLoaded) _ = RefreshModels();
         };
         model.SelectionChanged += (_, _) =>
@@ -198,6 +213,10 @@ internal sealed class ChatPanel : UserControl
         ApplyProviderChoices();
         SetBusy(false);
         settings.Children.Add(activity);
+        settings.Children.Add(quota);
+        settings.Children.Add(showProgress);
+        showProgress.Checked += (_, _) => Persist(); showProgress.Unchecked += (_, _) => Persist();
+        activity.TextWrapping = TextWrapping.Wrap;
         flushTimer.Tick += (_, _) => FlushText();
         progressTimer.Tick += (_, _) => UpdateProgress();
         transcript.Selected += index => { selectedAnswer = index; activity.Text = "Ответ выбран для сохранения в Word"; };
@@ -329,6 +348,16 @@ internal sealed class ChatPanel : UserControl
                 var descriptors = new Broker(Wire.WorkerRoot).Discover();
                 if (descriptors.Count != 1) { cadContext = null; drawing.Text = descriptors.Count == 0 ? "AutoCAD не подключён: загрузите CAD MCP" : "Открыто несколько сессий: запустите чат из нужного AutoCAD"; return; }
                 CadSessionId = descriptors[0].SessionId;
+            }
+            if (CadDocumentId is not null)
+            {
+                var runtime = await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_runtime_status", CadSessionId, CadDocumentId), timeout.Token);
+                if (runtime.Error is null && runtime.Data is JsonElement status && status.TryGetProperty("document_availability", out var availability) && availability.ValueKind == JsonValueKind.Object &&
+                    availability.TryGetProperty("read_available", out var readable) && readable.ValueKind == JsonValueKind.False)
+                {
+                    activity.Text = "Чертёж занят: " + (availability.Text("command_in_progress") is { Length: > 0 } command ? command : availability.Text("reason"));
+                    return;
+                }
             }
             var context = await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_context", CadSessionId, CadDocumentId), timeout.Token);
             if (context.Error is { } error) throw new IOException(error.Message);
@@ -487,6 +516,10 @@ internal sealed class ChatPanel : UserControl
         running = new(); acceptingInput = true; SetBusy(true);
         var answerClock = Stopwatch.StartNew();
         ProviderTokenUsage? tokenUsage = null;
+        CodexRateLimits? rateLimits = null;
+        bool codexTurn = provider.SelectedIndex == 0;
+        quota.Visibility = codexTurn ? Visibility.Visible : Visibility.Collapsed;
+        if (codexTurn) quota.Text = "Лимиты Codex: обновляю…";
         bool answerCompleted = false;
         turnStarted = lastSignal = DateTimeOffset.Now;
         currentActivity = "Подключение";
@@ -503,7 +536,7 @@ internal sealed class ChatPanel : UserControl
             input.Clear(); attachments.Clear(); RefreshAttachments(); RenderChat();
             await BrokerBootstrap.EnsureAsync(host.Text, running.Token, brokerPipe);
             await RefreshCad();
-            initialDocumentId = cadContext?.DocumentId; initialSessionId = cadContext?.SessionId;
+            initialDocumentId = CadDocumentId ?? cadContext?.DocumentId; initialSessionId = CadSessionId ?? cadContext?.SessionId;
             var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
             var selectedModel = provider.SelectedIndex == 0 ? chosenModel : chosenClaudeModel;
             var selectedEffort = provider.SelectedIndex == 0 ? chosenEffort : chosenClaudeEffort;
@@ -526,6 +559,8 @@ internal sealed class ChatPanel : UserControl
             {
                 lastSignal = DateTimeOffset.Now;
                 if (item.Kind == "usage") tokenUsage = item.Usage;
+                if (item.Kind == "rate_limits") { rateLimits = item.RateLimits; quota.Text = rateLimits?.Display() ?? "Лимиты Codex: нет данных"; }
+                if (item.Kind == "progress") RecordProgress(item.Text);
                 if (item.Kind == "completed") answerCompleted = true;
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }
@@ -535,7 +570,8 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "reasoning_summary" && !quietCodex) UpdateAssistant(line => line with { ReasoningSummary = (line.ReasoningSummary ?? "") + item.Text });
                 if (item.Kind == "step")
                 {
-                    if (!quietCodex) currentActivity = CadToolActivity.Describe(item.Text);
+                    currentActivity = CadToolActivity.Describe(item.Text);
+                    if (item.Text.StartsWith("Выполняю", StringComparison.Ordinal)) RecordProgress(currentActivity);
                     visibleCadResult |= CadToolActivity.ProducesVisibleResult(item.Text);
                 }
                 if (item.Kind == "status" && !quietCodex) currentActivity = item.Text;
@@ -560,7 +596,7 @@ internal sealed class ChatPanel : UserControl
             acceptingInput=false;
             while(followups.TryDequeue(out var pending)) SetDelivery(pending.Line,"Не отправлено: ход завершён. Текст сохранён в истории; отправьте повторно.");
             progressTimer.Stop(); flushTimer.Stop(); FlushText(); answerClock.Stop();
-            UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) });
+            UpdateAssistant(line => line with { Text = line.Text + AnswerMetrics.Footer(answerClock.Elapsed, tokenUsage, answerCompleted) + (codexTurn ? "\n" + (rateLimits?.Display() ?? "Лимиты Codex: нет данных") : "") });
             Persist(); running.Dispose(); running = null; currentAssistantIndex = -1; SetBusy(false); }
     }
     private async Task AddFollowup()
@@ -710,7 +746,22 @@ internal sealed class ChatPanel : UserControl
             chosenClaudeModel, chosenClaudeEffort, CadSessionId, CadDocumentId);
     }
     private void Persist()
-    { try { store.Save(State()); } catch (System.Exception e) { activity.Text = "История не сохранена: " + e.Message; } }
+    {
+        try
+        {
+            store.Save(State());
+            var choices = Preferences();
+            if (!restoring && !settingChoices && choices != lastPreferences) { preferences.Save(choices); lastPreferences = choices; }
+        }
+        catch (System.Exception e) { activity.Text = "История или выбор модели не сохранены: " + e.Message; }
+    }
+    private ChatPreferences Preferences() => new(provider.SelectedIndex, chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort, showProgress.IsChecked == true);
+    private void RecordProgress(string text)
+    {
+        if (showProgress.IsChecked != true || string.IsNullOrWhiteSpace(text)) return;
+        currentActivity = text;
+        UpdateAssistant(line => line with { Steps = (line.Steps ?? []).TakeLast(29).LastOrDefault() == text ? line.Steps : (line.Steps ?? []).TakeLast(29).Append(text).ToArray() });
+    }
     /// <param name="imported">
     /// A history file chosen by the user may come from anyone. Its program paths are ignored: loading it
     /// must never decide which executable this panel starts. Only the panel's own saved state restores them.
@@ -796,8 +847,9 @@ internal sealed class ChatPanel : UserControl
         catch (System.Exception) { next = SystemColors.WindowColor.R < 128; }
         if (darkTheme == next && panelBrush.Color.A != 0) return;
         darkTheme = next;
-        panelBrush.Color = next ? Color.FromRgb(37, 40, 45) : Color.FromRgb(245, 246, 248);
-        controlBrush.Color = next ? Color.FromRgb(47, 52, 59) : Colors.White;
+        ChatTheme.Apply(this, next);
+        panelBrush.Color = next ? Color.FromRgb(57, 67, 81) : Color.FromRgb(245, 246, 248);
+        controlBrush.Color = next ? Color.FromRgb(48, 57, 70) : Colors.White;
         foregroundBrush.Color = next ? Color.FromRgb(239, 242, 245) : Color.FromRgb(32, 35, 42);
         borderBrush.Color = next ? Color.FromRgb(82, 89, 99) : Color.FromRgb(190, 197, 207);
         void Paint(DependencyObject node)
@@ -810,7 +862,6 @@ internal sealed class ChatPanel : UserControl
                 control.BorderBrush = borderBrush;
                 // Windows' default ComboBox template keeps a light selection field
                 // even when hosted in a dark AutoCAD palette.
-                if (control is ComboBox && next) control.Foreground = Brushes.Black;
             }
             foreach (var child in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>()) Paint(child);
         }

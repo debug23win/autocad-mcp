@@ -4,6 +4,10 @@
     <ProjectReference Include="../CadMcp.Core/CadMcp.Core.csproj" />
     <PackageReference Include="ModelContextProtocol" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="PdfPig.Rendering.Skia" Version="0.1.16.7" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.4" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
     <EmbeddedResource Include="Resources/*.json;Resources/*.md" LogicalName="CadMcp.Host.Resources.%(Filename)%(Extension)" />
     <InternalsVisibleTo Include="CadMcp.Tests" />
   </ItemGroup>

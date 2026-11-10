@@ -9,4 +9,5 @@
     <Content Include="../../src/CadMcp.AutoCAD/Resources/Chat/**" Link="Resources/Chat/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../../src/CadMcp.AutoCAD/GlobalUsings.cs" Link="GlobalUsings.cs" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../../src/CadMcp.AutoCAD/ChatTheme.cs" Link="ChatTheme.cs" /></ItemGroup>
 </Project>

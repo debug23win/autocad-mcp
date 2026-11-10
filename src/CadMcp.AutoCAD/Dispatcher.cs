@@ -10,11 +10,17 @@ namespace CadMcp.AutoCAD;
 
 internal sealed class Dispatcher(Documents documents) : IDisposable
 {
-    private readonly ConcurrentQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source, DateTimeOffset Enqueued)> queue = new();
+    private readonly DocumentWorkQueue<(Request Request, CancellationToken Token, TaskCompletionSource<Response> Source, DateTimeOffset Enqueued)> queue = new();
+    private readonly ConcurrentDictionary<string, DrawingAvailability> availability = new();
+    private readonly string[] csharpReferences = ((AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string)?.Split(Path.PathSeparator) ?? [])
+        .Concat([typeof(Database).Assembly.Location, typeof(Document).Assembly.Location, typeof(App).Assembly.Location, typeof(Wire).Assembly.Location])
+        .Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     private readonly object mutationGate = new();
     private readonly OperationControl control = new();
     private readonly ConcurrentDictionary<string, string> mutationOwners = new();
     private readonly ConcurrentDictionary<string, string> benchmarkDocuments = new();
+    private readonly Dictionary<string, Document?> benchmarkOriginal = new();
+    private readonly Dictionary<string, (Request Request, CancellationToken Token)> benchmarkGates = new();
     private readonly SnapshotStore snapshots = new();
     private readonly OperationJournal journal = new(Wire.DataDirectory("operations", documents.SessionId));
     private readonly ResultArchive archive = new(Wire.DataDirectory("results", documents.SessionId));
@@ -56,8 +62,39 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private int modalDepth;
     private volatile bool quitting;
     private volatile string? busyReason;
+    private void RefreshAvailability()
+    {
+        var active = App.DocumentManager.MdiActiveDocument;
+        bool globalBusy = quitting || ModalFor is not null || lisp is { Started: true };
+        bool activation = App.DocumentManager.DocumentActivationEnabled && App.DocumentManager.IsApplicationContext;
+        var live = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Document doc in App.DocumentManager)
+        {
+            var state = documents.Register(doc); live.Add(state.Id);
+            string command = doc.CommandInProgress;
+            bool quiet = string.IsNullOrWhiteSpace(command) && (!ReferenceEquals(active, doc) || doc.Editor.IsQuiescent);
+            bool ownLisp = lisp is { } job && ReferenceEquals(job.Document, doc);
+            bool canSwitch = active is null || ReferenceEquals(active, doc) || active.Editor.IsQuiescent || activation;
+            string? reason = globalBusy ? "AutoCAD is modal, closing or evaluating AutoLISP" : !quiet ? "Command " + command + " is active in " + Path.GetFileName(doc.Name) : ownLisp ? "This drawing is reserved for AutoLISP" : !canSwitch ? "AutoCAD currently disables document activation" : null;
+            availability[state.Id] = new(state.Id, Path.GetFileName(doc.Name), !globalBusy && quiet && !ownLisp, !globalBusy && quiet && !ownLisp && canSwitch, command, reason, DateTimeOffset.UtcNow);
+        }
+        foreach (string id in availability.Keys) if (!live.Contains(id)) availability.TryRemove(id, out _);
+    }
+    private bool CanRun(Request request)
+    {
+        if (ModalFor is not null || lisp is { Started: true }) return false;
+        if (request.Operation == "cad_documents") return true;
+        if (request.Operation == "benchmark_create") return App.DocumentManager.MdiActiveDocument?.Editor.IsQuiescent != false;
+        if (request.DocumentId is null || !availability.TryGetValue(request.DocumentId, out var ready)) return true; // let Execute report scope/closed errors
+        bool writing = !CadOperations.ReadOnly.Contains(request.Operation) || CadOperations.ActivatesDocument(request.Operation);
+        bool available = writing ? ready.WriteAvailable : ready.ReadAvailable;
+        if (request.Operation == "cad_render" && App.DocumentManager.MdiActiveDocument?.Editor.IsQuiescent == false) available = false;
+        if (!available) busyReason = ready.Reason;
+        return available;
+    }
     public void Start()
     {
+        RefreshAvailability();
         App.Idle += Idle; documents.Closing += DocumentClosing;
         App.EnterModal += EnterModal; App.LeaveModal += LeaveModal; App.BeginQuit += BeginQuit; App.QuitAborted += QuitAborted;
         // Core Console has no main window; Wake is then a no-op and Idle still runs on its own schedule.
@@ -96,6 +133,13 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     }
     public async Task<Response> Enqueue(Request r, CancellationToken ct)
     {
+        if (r.Operation == "csharp_references")
+        {
+            if (r.SessionId != documents.SessionId || r.DocumentId is null || !availability.ContainsKey(r.DocumentId)) throw new CadFault("DOCUMENT_CLOSED", "Pinned drawing is unavailable");
+            var loaded = AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).Select(a => a.Location).Where(File.Exists);
+            var references = csharpReferences.Concat(loaded).Concat(new[] { Path.Combine(Path.GetDirectoryName(typeof(Database).Assembly.Location)!, "AcDbMgdBrep.dll") }).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            return new(r.RequestId, "completed", new { references }, documents.SessionId, r.DocumentId);
+        }
         if (r.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true && r.Operation is not ("benchmark_create" or "cad_documents"))
         {
             string run = r.OwnerId["benchmark-".Length..];
@@ -114,7 +158,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 Wake();
                 return new(r.RequestId, "completed", new { cancellation_requested = requested, boundary = "transaction/action boundary; native kernel calls finish first; running AutoLISP requires Esc" }, documents.SessionId, r.DocumentId);
             }
-            return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId,r.DocumentId) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health() }, documents.SessionId, r.DocumentId);
+            return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId,r.DocumentId) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health(), document_availability = r.DocumentId is { } targetId && availability.TryGetValue(targetId, out var ready) ? ready : null }, documents.SessionId, r.DocumentId);
         }
         ct.ThrowIfCancellationRequested();
         var source = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -127,6 +171,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 // Reading an existing receipt must also work when the queue is full, a dialog is open or AutoCAD quits.
                 if (journal.Find(id) is not null) return Replay(r, id, journal.Begin(id, r)!);
                 ThrowIfUnavailable();
+                if (r.DocumentId is { } docId && availability.TryGetValue(docId, out var ready) && !ready.WriteAvailable && DateTimeOffset.UtcNow - ready.ObservedAt < TimeSpan.FromSeconds(3))
+                    throw new CadFault("DOCUMENT_BUSY", "Operation was not accepted and no changes started. " + ready.Reason + ". Check cad_runtime_status.document_availability before submitting; do not interrupt the user's command.");
                 if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full");
                 if (journal.Begin(id, r) is { } prior) return Replay(r, id, prior);
                 mutationOwners[id] = r.RequestId;
@@ -186,7 +232,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (quitting) return;
         // All database access occurs here, on the CAD application thread.
         CheckLisp();
-        if (!queue.TryPeek(out var pending))
+        RefreshAvailability();
+        if (!queue.TryTake(p => p.Request.DocumentId ?? "", p => CanRun(p.Request), p => p.Token.IsCancellationRequested || p.Request.Deadline <= DateTimeOffset.UtcNow, out var pending))
         {
             var doc=App.DocumentManager.MdiActiveDocument;
             if(doc is not null&&doc.Editor.IsQuiescent&&lisp is null)RecalculateTables(doc);
@@ -194,7 +241,6 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         }
         if (pending.Token.IsCancellationRequested || pending.Request.Deadline <= DateTimeOffset.UtcNow)
         {
-            queue.TryDequeue(out _);
             var expired = Response.Fail(pending.Request, pending.Token.IsCancellationRequested ? "CANCELLED" : "DEADLINE_EXPIRED",
                 "Request stopped before execution; no drawing changes were started" + (pending.Token.IsCancellationRequested ? "" : ": " + Blocker()));
             if (MutationRecovery.IsMutation(pending.Request.Operation))
@@ -203,16 +249,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (!queue.IsEmpty) Wake();
             return;
         }
-        var active = App.DocumentManager.MdiActiveDocument;
-        if (active is not null && !active.Editor.IsQuiescent)
-        {
-            string command = "";
-            try { command = active.CommandInProgress; } catch (System.Exception) { }
-            busyReason = "command in progress" + (string.IsNullOrWhiteSpace(command) ? "" : ": " + command) + " in " + System.IO.Path.GetFileName(active.Name);
-            return;
-        }
         busyReason = null;
-        if (!queue.TryDequeue(out var job)) return;
+        var job = pending;
         Response response;
         var originalDocument=App.DocumentManager.MdiActiveDocument;
         bool activate=CadOperations.ActivatesDocument(job.Request.Operation);
@@ -220,7 +258,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         var lispBefore=lisp;
         try
         {
-            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
+            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
             response = Execute(job.Request, job.Token);
         }
         catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
@@ -240,7 +278,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         if (r.Operation == "benchmark_create") return CreateBenchmark(r);
-        if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId);
+        if (r.Operation == "benchmark_activate" || r.Operation == "benchmark_gate" || r.Operation == "benchmark_settle_gate") return BenchmarkControl(r);
+        if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId,r.DocumentId);
+        if (r.Operation == "cad_csharp") return RunCSharp(r, ct);
         if (r.Operation is "cad_operation_status" or "cad_operation_list") return OperationStatus(r);
         if (r.Operation is "cad_edit" or "cad_lisp" or "cad_export" or "cad_publish") return Mutate(r, ct);
         bool readOnly = CadOperations.ReadOnly.Contains(r.Operation);
@@ -289,7 +329,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_properties": data = ObjectInspection.Properties(doc.Database, tr, r.Data, ct); break;
             case "cad_proxies": data = ObjectInspection.Proxies(doc.Database, tr, r.Data, ct); break;
             case "cad_outline": data = DrawingInsight.Outline(doc.Database, tr, System.IO.Path.GetFileName(doc.Name), ct, DraftingPlan.Integer(r.Data, "text_sample", 0, 200, 40), DraftingPlan.Integer(r.Data, "layer_limit", 1, 5000, 100)); break;
-            case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct); break;
+            case "cad_file_inspect": data = DrawingInsight.InspectFile(EditPlan.RequiredText(r.Data, "path"), ct, r.Data); break;
             case "cad_changes": data = DrawingInsight.Changes(state, tr, r.Data); break;
             case "cad_edit_preview":
                 var previewPlan = EditPlan.RequiredText(r.Data, "operations_json");
@@ -505,6 +545,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             var doc = DocumentCollectionExtension.Open(App.DocumentManager, path, false);
             var state = documents.Register(doc);
             benchmarkDocuments[run] = state.Id;
+            benchmarkOriginal[run] = original;
             return new(request.RequestId, "completed", new { benchmark_fixture = true, run_id = run, path, units = "Millimeters" }, documents.SessionId, state.Id, state.Revision);
         }
         finally
@@ -512,6 +553,36 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (original is not null && !original.IsDisposed) App.DocumentManager.MdiActiveDocument = original;
         }
 #endif
+    }
+    private Response BenchmarkControl(Request request)
+    {
+        string run = request.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true ? request.OwnerId[10..] : "";
+        if (!benchmarkDocuments.TryGetValue(run, out var target) || request.DocumentId != target) throw new CadFault("BENCHMARK_SCOPE_MISMATCH", "Benchmark control requires its own registered fixture");
+        var doc = documents.Active(request, false, true); var state = documents.Register(doc);
+        if (request.Operation == "benchmark_activate")
+        {
+            bool restore = request.Data.TryGetProperty("restore", out var flag) && flag.GetBoolean();
+            if (!restore) benchmarkOriginal[run] = App.DocumentManager.MdiActiveDocument;
+            var next = restore ? benchmarkOriginal.GetValueOrDefault(run) : doc;
+            if (next is not null && !next.IsDisposed) App.DocumentManager.MdiActiveDocument = next;
+            return new(request.RequestId, "completed", new { restored = restore, active_document_id = next is null ? null : documents.Register(next).Id }, documents.SessionId, state.Id, state.Revision);
+        }
+        string id = "benchmark_cancel_" + run;
+        if (request.Operation == "benchmark_gate")
+        {
+            if (benchmarkGates.ContainsKey(run)) throw new CadFault("BENCHMARK_GATE_EXISTS", "Cancellation fixture already exists");
+            var planned = request with { RequestId = Guid.NewGuid().ToString("N"), Operation = "cad_edit", ExpectedRevision = state.Revision,
+                Data = Wire.Element(new { operation_id = id, operations_json = "[{\"op\":\"line\",\"start\":[30000,30000],\"end\":[30100,30000]}]" }) };
+            journal.Begin(id, planned); mutationOwners[id] = planned.RequestId;
+            benchmarkGates[run] = (planned, control.Accept(id, planned)); control.Phase(id, "benchmark_waiting_gate");
+            return new(request.RequestId, "completed", new { operation_id = id, state = "queued", gate = "closed; nothing executed" }, documents.SessionId, state.Id, state.Revision);
+        }
+        if (!benchmarkGates.TryGetValue(run, out var gate)) throw new CadFault("BENCHMARK_GATE_MISSING", "Cancellation fixture is unavailable");
+        if (!gate.Token.IsCancellationRequested) throw new CadFault("BENCHMARK_CANCEL_FAILED", "Expected actual cancellation before releasing the gate");
+        benchmarkGates.Remove(run);
+        var cancelled = Response.Fail(gate.Request, "CANCELLED", "Own benchmark operation cancelled at the gate before execution");
+        journal.Complete(id, cancelled); mutationOwners.TryRemove(id, out _); control.Complete(id);
+        return new(request.RequestId, "completed", new { operation_id = id, cancelled_before_execution = true }, documents.SessionId, state.Id, state.Revision);
     }
     private static object SnapshotMetadata(Snapshot snapshot, string units, bool cached) => new { snapshot_id = snapshot.Id, captured = snapshot.Entities.Count,
         truncated = snapshot.Truncated, coverage = snapshot.Entities.GroupBy(x => x.Text("access") ?? "unsupported").ToDictionary(x => x.Key, x => x.Count()),
@@ -539,7 +610,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return prior.Result is { } result ? result with { RequestId = r.RequestId, Data = new { replayed = true, result = result.Data } }
                 : new(r.RequestId, "queued", new { operation_id = id, state = prior.State, replayed = true }, documents.SessionId, state.Id, state.Revision);
         }
-        if (lisp is { } pending) throw new CadFault("BUSY_LISP", pending.AwaitingApproval
+        if (lisp is { } pending && (pending.Started || ReferenceEquals(pending.Document, doc))) throw new CadFault("BUSY_LISP", pending.AwaitingApproval
             ? "AutoLISP operation " + pending.Id + " waits for the user's confirmation in AutoCAD; no other change runs until the user confirms or declines it or it is withdrawn with cad_cancel"
             : "An AutoLISP operation is queued/running; read its status before another mutation");
         documents.Active(r);
@@ -642,6 +713,60 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             var response = new Response(r.RequestId, "failed", new { operation_id = id, checkpoint, transaction = committed ? "committed" : mapOperation ? "map_api_outcome_unknown" : outsideTransaction ? "outside_transaction_outcome_unknown" : exportFormat is not null || publishFolder is not null ? "file_output_may_be_partial" : "not_committed", partial_changes_possible=committed||mapOperation||outsideTransaction }, documents.SessionId, state.Id, state.Revision, new(fault, error.Message));
             return journal.Complete(id, response);
         }
+    }
+    private Response RunCSharp(Request request, CancellationToken ct)
+    {
+        var doc = documents.Active(request); var state = documents.Register(doc);
+        string id = EditPlan.RequiredText(request.Data, "operation_id");
+        long beforeRevision = state.Revision;
+        object? checkpoint = null; bool started = false, committed = false;
+        System.Runtime.Loader.AssemblyLoadContext? load = null;
+        try
+        {
+            string code = EditPlan.RequiredText(request.Data, "code");
+            if (code.Length > 262144) throw new CadFault("INVALID_CSHARP", "Source exceeds 262144 characters");
+            string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)));
+            if (request.Data.Text("source_sha256") != hash) throw new CadFault("CSHARP_SOURCE_MISMATCH", "Source hash changed");
+            byte[] bytes = Convert.FromBase64String(EditPlan.RequiredText(request.Data, "assembly_base64"));
+            if (bytes.Length > 4 * 1024 * 1024) throw new CadFault("CSHARP_TOO_LARGE", "Assembly exceeds 4 MiB");
+            using var locked = doc.LockDocument(); ct.ThrowIfCancellationRequested();
+            control.Phase(id, "checkpoint");
+            using (documents.ReadScope(doc)) checkpoint = WorkSafety.Checkpoint(doc, documents.SessionId, state.Id, id);
+            WorkSafety.Start(documents.SessionId, request, checkpoint);
+            journal.Running(id); control.Phase(id, "running"); state.Author = id;
+            using var undo = new UndoGroup(doc);
+            using var transaction = doc.Database.TransactionManager.StartTransaction();
+            started = true;
+            load = new System.Runtime.Loader.AssemblyLoadContext("cadmcp-script-" + Guid.NewGuid().ToString("N"), isCollectible: true);
+            using var stream = new MemoryStream(bytes);
+            var assembly = load.LoadFromStream(stream);
+            var method = assembly.GetType("CadMcpScript")?.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                null, [typeof(Database), typeof(Transaction), typeof(CancellationToken)], null)
+                ?? throw new CadFault("CSHARP_ENTRYPOINT", "Expected public static object CadMcpScript.Run(Database, Transaction, CancellationToken)");
+            if (method.ReturnType != typeof(object))
+                throw new CadFault("CSHARP_ENTRYPOINT", "Run must return object synchronously, not Task or ValueTask; return a completed serializable DTO");
+            object? result;
+            try { result = method.Invoke(null, [doc.Database, transaction, ct]); }
+            catch (System.Reflection.TargetInvocationException error) { throw error.InnerException ?? error; }
+            ct.ThrowIfCancellationRequested();
+            if (result is Task or ValueTask || result is not null && result.GetType().IsGenericType && result.GetType().GetGenericTypeDefinition() == typeof(ValueTask<>))
+                throw new CadFault("CSHARP_ASYNC_RESULT", "Run returned an asynchronous operation. Return a completed DTO; do not schedule CAD work outside the supplied transaction");
+            var detached = Wire.Element(result ?? new { });
+            transaction.Commit(); committed = true;
+            journal.Phase(id, "committed");
+            WorkSafety.Phase(documents.SessionId, id, "committed", final: true);
+            var changes = state.ChangesSince(beforeRevision).Where(c => c.Entity).Select(c => c.Handle.ToString("X")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var response = new Response(request.RequestId, "completed", new { operation_id = id, checkpoint, source_sha256 = hash, result = new { value = detached, changed_handles = changes.Take(500).ToArray(), changed_handles_omitted = changes.Length > 500 },
+                transaction = "committed", rollback = "full_trust_code_external_effects_not_atomic", document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
+            return journal.Complete(id, response);
+        }
+        catch (System.Exception error)
+        {
+            return journal.Complete(id, new Response(request.RequestId, "failed", new { operation_id = id, checkpoint, transaction = committed ? "committed" : "not_committed", partial_changes_possible = started,
+                note = "The host transaction aborts on failure; arbitrary code may have committed or changed external state. Reconcile before retrying." }, documents.SessionId, state.Id, state.Revision,
+                new(error is CadFault fault ? fault.Code : error is OperationCanceledException ? "CANCELLED" : "CSHARP_EXECUTION_FAILED", error.Message)));
+        }
+        finally { if (state.Author == id) state.Author = null; load?.Unload(); }
     }
     private void StartLisp(LispJob job)
     {

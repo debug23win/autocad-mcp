@@ -77,12 +77,17 @@ internal static class FakeCodex
                 threadModel = e.GetProperty("params").GetProperty("model").GetString();
                 if (!e.GetProperty("params").GetProperty("developerInstructions").GetString()!.Contains("cad_edit_help")) throw new Exception("Missing stable CAD instructions");
                 if (e.GetProperty("params").GetProperty("approvalPolicy").GetString() != "never" ||
-                    e.GetProperty("params").GetProperty("sandbox").GetString() != "read-only")
-                    throw new Exception("CAD permission fix widened filesystem permissions");
+                    e.GetProperty("params").GetProperty("sandbox").GetString() != "workspace-write")
+                    throw new Exception("Primary Codex did not receive the user-authorized workspace-write sandbox");
             }
             if (method == "thread/resume" && e.GetProperty("params").GetProperty("threadId").GetString() == "retry-thread" && writerErrors++ == 0)
                 Console.WriteLine("{\"id\":2,\"error\":{\"code\":-32600,\"message\":\"thread already has an active writer\"}}");
             else if (method is "thread/start" or "thread/resume") Console.WriteLine("{\"id\":2,\"result\":{\"thread\":{\"id\":\"test-thread\"}}}");
+            if (method == "account/rateLimits/read")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 5, result = new { ordinaryUsageAllowed = true, rateLimits = new { primary = new { usedPercent = 15, windowDurationMins = 300, resetsAt = 1900000000L }, secondary = new { usedPercent = 30, windowDurationMins = 10080, resetsAt = 1900100000L } } } }));
+                continue;
+            }
             if (method != "turn/start") continue;
             var inputs = e.GetProperty("params").GetProperty("input");
             var prompt = inputs[0].GetProperty("text").GetString()!;
@@ -107,6 +112,22 @@ internal static class FakeCodex
                 return;
             }
             if (prompt == "SILENT") { await Task.Delay(TimeSpan.FromMinutes(1)); return; }
+            if (prompt == "SILENT_ACTIVE")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "silent-turn" } } }));
+                await Task.Delay(TimeSpan.FromMinutes(1)); return;
+            }
+            if (prompt == "HEARTBEAT")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "heartbeat-turn" } } }));
+                for (int i = 0; i < 6; i++)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { method = "item/commandExecution/outputDelta", @params = new { threadId = "test-thread", delta = "hidden service output" } }));
+                    await Task.Delay(250);
+                }
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "item/agentMessage/delta", @params = new { threadId = "test-thread", delta = "Готово" } }));
+                Console.WriteLine(JsonSerializer.Serialize(new { method = "turn/completed", @params = new { threadId = "test-thread", turn = new { status = "completed" } } })); return;
+            }
             if (prompt == "USAGE")
             {
                 Console.WriteLine(JsonSerializer.Serialize(new { id = 3, result = new { turn = new { id = "usage-turn" } } }));
