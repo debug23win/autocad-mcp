@@ -26,7 +26,14 @@ internal static class PdfRepair
         if (text.Contains("%CADMCP_PDF_REPAIR", StringComparison.Ordinal)) return false;
         var trailer = Regex.Match(text, @"trailer\s*<<(?<fields>.*?)>>\s*startxref\s*(?<offset>\d+)",
             RegexOptions.Singleline | RegexOptions.RightToLeft | RegexOptions.CultureInvariant);
-        if (!trailer.Success) throw new CadFault("PDF_INVALID", "AutoCAD PDF has no readable trailer");
+        if (!trailer.Success)
+        {
+            // Valid PDFs may use xref streams instead of a classic trailer. Leave them
+            // untouched only after the independent strict reader accepts the exported page.
+            stream.Dispose(); // release the exclusive handle before path-based verification
+            _ = PdfVerification.Check(path);
+            return false;
+        }
         string fields = trailer.Groups["fields"].Value;
         string size = Find(fields, @"/Size\s+(\d+)");
         string root = Find(fields, @"/Root\s+(\d+\s+\d+\s+R)");

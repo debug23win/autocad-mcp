@@ -116,7 +116,7 @@ public sealed class ReviewRegressionTests
             if (r.Operation == "cad_operation_status")
             {
                 var entry = journal.Find("original-op");
-                return Task.FromResult(new Response(r.RequestId, "completed", new { state = entry?.State ?? "not_found", original_request = entry?.Request, result = entry?.Result }, "s", "d"));
+                return Task.FromResult(new Response(r.RequestId, "completed", new { state = entry?.State ?? "not_found", original_request = OperationJournal.ReplayRequest(entry?.Request), result = entry?.Result }, "s", "d"));
             }
             if (r.Operation == "csharp_references") { compilations++; return Task.FromResult(new Response(r.RequestId, "completed", new { references }, "s", "d")); }
             Assert.Equal("cad_csharp", r.Operation);

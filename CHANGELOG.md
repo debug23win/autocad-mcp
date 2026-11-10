@@ -8,11 +8,13 @@
 - Инструкции в `docs` переведены на английский; добавлена карта исходников. Команды, примеры кода и ограничения сохранности DWG сохранены.
 - Выбор русского или английского в установщике сохраняется отдельно от настроек провайдера. Панель, подписи чата, статусы, метрики, отчёты бенчмарка и окна подтверждения AutoLISP используют язык установки; основной агент и помощники получают тот же язык ответа по умолчанию. Для прежних установок без настройки остаётся русский.
 - Английская документация не меняет язык интерфейса. Тексты пользователя, история ответов и данные DWG автоматически не переводятся; язык AutoCAD и культура его потоков не меняются.
-- Проверено: 625/625 managed/MCP-тестов, сборка 15 проектов без предупреждений, RU/EN HTML-чат в Chromium. Установка и полный интерфейс на Windows требуют отдельной проверки.
+- Проверено: 633/633 managed/MCP-тестов, сборка 15 проектов без предупреждений, RU/EN HTML-чат в Chromium. Установка и полный интерфейс на Windows требуют отдельной проверки.
 
 - Review fixes R1–R9: reconcile worker transport loss without resending mutations; preserve historical receipt provenance and unknown current save state; bound mesh vertex reads and stream snapshot accumulation; isolate table dependency components; make C# compilation/replay deterministic and return prior receipts before compilation; reject incomplete verification targets and unsupported Map acceptance; bound Claude startup/event silence; localize .NET 10 ribbon entry points.
 - Recovery copies remain until explicit user cleanup, with optional existence/hash diagnostics. HTTP downloads have total/body-inactivity deadlines. Native Point3dCollection ownership is explicit; tool phases use structured events instead of translated strings.
 - Added managed/MCP regression coverage and an isolated `-ReviewSafetyOnly` native probe. Native AutoCAD/product validation is pending; these changes do not establish the cause or resolution of the reported AutoCAD 2027 fatal crash.
+
+- Conservative follow-up fixes: expected Host errors retain structured codes; C# operation status omits generated DLL bytes while keeping durable replay evidence; reads share the queue admission gate with writes; valid xref-stream PDFs pass strict verification without classic repair; temporary native collections are disposed explicitly. C#/network permissions, native transaction boundaries and recovery retention policy are unchanged.
 
 ## 0.11.7-preview
 

@@ -180,7 +180,17 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 queue.Enqueue((r, control.Accept(id, r), source, DateTimeOffset.UtcNow));
             }
         }
-        else { ThrowIfUnavailable(); if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full"); queue.Enqueue((r, ct, source, DateTimeOffset.UtcNow)); }
+        else
+        {
+            // All admissions share the mutation gate: a read cannot fill the last slot
+            // between a writer's capacity check, durable acceptance and enqueue.
+            lock (mutationGate)
+            {
+                ThrowIfUnavailable();
+                if (queue.Count >= 32) throw new CadFault("BUSY", "CAD queue is full");
+                queue.Enqueue((r, ct, source, DateTimeOffset.UtcNow));
+            }
+        }
         Wake();
         return await Portable.Await(source.Task, ct).ConfigureAwait(false);
     }
@@ -211,7 +221,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         if (entry is not null && entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to a different drawing");
         bool active = entry?.State is "completed" or "failed" or "cancelled" || mutationOwners.ContainsKey(id) || lisp?.Id == id;
         return new(r.RequestId, "completed", new { operation_id = id, state = entry is null ? "not_found" : active ? entry.State : "unknown",
-            phase = control.PhaseOf(id) ?? entry?.Phase, result = entry?.Result, original_request = entry?.Request, persistence = journal.Persistence,
+            phase = control.PhaseOf(id) ?? entry?.Phase, result = entry?.Result, original_request = OperationJournal.ReplayRequest(entry?.Request), persistence = journal.Persistence,
             retry = "Replay only the original exact request with its operation_id. Unknown/not_found never proves no changes." }, documents.SessionId, r.DocumentId);
     }
     private void Idle(object? sender, EventArgs e)

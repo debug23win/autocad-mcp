@@ -711,7 +711,8 @@ internal static class Edits
             var id = aliases.TryGetValue(key, out var alias) ? alias : Handle(db, key);
             var e = Editable(db, tr, id, false);
             if (e is not Circle && (e is not Polyline p || !p.Closed)) throw new CadFault("INVALID_HATCH_BOUNDARY", "Expected a closed polyline or circle");
-            hatch.AppendLoop(first ? HatchLoopTypes.Outermost : HatchLoopTypes.Default, new ObjectIdCollection([id])); first = false;
+            using var boundaryIds = new ObjectIdCollection([id]);
+            hatch.AppendLoop(first ? HatchLoopTypes.Outermost : HatchLoopTypes.Default, boundaryIds); first = false;
         }
         hatch.EvaluateHatch(true);
     }

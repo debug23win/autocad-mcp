@@ -76,6 +76,13 @@ public sealed class OperationJournal
     {
         lock (sync) return BeginCore(id, request);
     }
+    /// <summary>Public replay input. The journal retains the compiled artifact; status polls do not copy it into model context.</summary>
+    public static Request? ReplayRequest(Request? request)
+    {
+        if (request is not { Operation: "cad_csharp" } || request.Data.ValueKind != JsonValueKind.Object) return request;
+        return request with { Data = Wire.Element(request.Data.EnumerateObject().Where(p => p.Name != "assembly_base64")
+            .ToDictionary(p => p.Name, p => p.Value.Clone())) };
+    }
     private Entry? BeginCore(string id, Request request)
     {
         Validate(id);

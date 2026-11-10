@@ -95,7 +95,16 @@ public sealed class CadTools
     internal static Task<Response> RequestAsync(string operation, string session, string document, object data, CancellationToken ct) => ScopedResponse(operation, session, document, data, null, ct);
     private static async Task<CallToolResult> Call(string operation,string? session,string? document,object data,long? revision,CancellationToken ct)
     {
-        return Result(await ScopedResponse(operation,session,document,data,revision,ct));
+        try { return Result(await ScopedResponse(operation,session,document,data,revision,ct)); }
+        catch (CadFault error) { return HostError(error.Code, error.Message); }
+    }
+    internal static CallToolResult HostError(string code, string message) => new() { IsError = true,
+        Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new { code, message }, Wire.Json) }] };
+    private static CallToolResult ReadReference(Func<CallToolResult> read)
+    {
+        try { return read(); }
+        catch (CadFault error) { return HostError(error.Code, error.Message); }
+        catch (JsonException error) { return HostError("INVALID_JSON", error.Message); }
     }
     private static CallToolResult Result(Response response) =>
         new() { IsError=response.Error is not null,Content=[new TextContentBlock {Text=JsonSerializer.Serialize(response,Wire.Json)}] };
@@ -181,7 +190,7 @@ public sealed class CadTools
     [McpServerTool(Name = "cad_lisp", ReadOnly = false, Destructive = true, Idempotent = false), Description("Last-resort fallback only for a specific AutoCAD/vendor operation absent from cad_edit_help and not expressible with native C# composition. Native C# includes meshes and advanced solid modeling. Executes code inside progn; supply all command-s arguments, no interactive prompts; prefer -COMMAND line forms. Use global command and option names with an underscore prefix (\"_.-LAYER\", \"_C\") so the script also works in localized AutoCAD. Running object snaps are suspended and FILEDIA/CMDDIA are 0 while it runs. The user's policy may require confirmation in AutoCAD: the response then says waiting_for_user_confirmation_in_AutoCAD; tell the user and poll cad_operation_status. LISP_DENIED/LISP_DISABLED mean the user refused: do not work around it. Opening, closing or switching drawings is rejected. Returns QUEUED: poll cad_operation_status and verify resulting geometry or files. Errors can leave partial changes. Never retry with a new id after an uncertain result.")]
     public static Task<CallToolResult> Lisp(string session_id, string document_id, long expected_revision, string operation_id, string code, CancellationToken ct) =>
         Call("cad_lisp", session_id, document_id, new { operation_id, code }, expected_revision, ct);
-    [McpServerTool(Name = "cad_operation_status", ReadOnly = true), Description("Read a durable operation receipt immediately even while AutoCAD is busy: queued/running/completed/failed/unknown/not_found. Returns the original exact request for safe replay, never create a fresh operation_id after timeout. Archived receipts remain readable after worker restart but are historical and cannot confirm current geometry or disk save.")]
+    [McpServerTool(Name = "cad_operation_status", ReadOnly = true), Description("Read a durable operation receipt immediately even while AutoCAD is busy: queued/running/completed/failed/unknown/not_found. Returns public replay inputs; C# compiled artifacts stay in the journal. Never create a fresh operation_id after timeout. Archived receipts remain readable after worker restart but are historical and cannot confirm current geometry or disk save.")]
     public static Task<CallToolResult> OperationStatus(string session_id, string document_id, string operation_id, CancellationToken ct) =>
         Call("cad_operation_status", session_id, document_id, new { operation_id }, null, ct);
     [McpServerTool(Name = "cad_operation_list", ReadOnly = true), Description("List up to 100 recent operations for a drawing, including state, acceptance checks, changed-entity counts and disk-save evidence. since is an optional ISO-8601 time. Receipts are accessible while CAD is busy; do not mistake them for fresh geometry.")]
@@ -265,7 +274,7 @@ public sealed class CadTools
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CalibratedReference> References = new();
     private static readonly System.Collections.Concurrent.ConcurrentQueue<string> ReferenceOrder = new();
     [McpServerTool(Name = "cad_reference_calibrate", ReadOnly = true), Description("Calibrate a user reference image by its actual pixel dimensions and SHA256. model similarity needs 2..20 known pixel/world anchors for an orthographic image; projective needs 4..20 coplanar anchors for perspective. control_points_json:[{pixel:[x,y],world:[x,y,z]}]. Coordinates follow displayed EXIF orientation and top-left origin. Returns planar transform and residuals, not hidden 3D geometry. One known segment cannot calibrate arbitrary perspective.")]
-    public static CallToolResult ReferenceCalibrate(string image_path, string control_points_json, string model = "similarity", bool invert_pixel_y = true)
+    public static CallToolResult ReferenceCalibrate(string image_path, string control_points_json, string model = "similarity", bool invert_pixel_y = true) => ReadReference(() =>
     {
         var image = ReferenceImage.Read(image_path); using var controls = JsonDocument.Parse(control_points_json);
         var fit = PhotoReference.Fit(controls.RootElement, image.Width, image.Height, model, invert_pixel_y);
@@ -275,9 +284,9 @@ public sealed class CadTools
             model, invert_pixel_y, matrix=fit.Matrix, world_z=fit.Z, rms_error=fit.RmsError, max_error=fit.MaxError,
             scale_evidence="user_supplied_known_world_anchors", lifetime="MCP_host_session",
             limitations=new[]{"calibration_applies_to_one_known_plane","hidden_geometry_and_full_3D_scale_are_not_inferred"} },Wire.Json) }] };
-    }
+    });
     [McpServerTool(Name = "cad_reference_point", ReadOnly = true), Description("Map 1..100 [x,y] pairs through a photo calibration. direction pixel_to_world or world_to_pixel. Verifies source image hash before using the transform; returns world XYZ on the calibrated plane.")]
-    public static CallToolResult ReferencePoint(string reference_id, string points_json, string direction = "pixel_to_world")
+    public static CallToolResult ReferencePoint(string reference_id, string points_json, string direction = "pixel_to_world") => ReadReference(() =>
     {
         if(!References.TryGetValue(reference_id,out var reference))throw new CadFault("REFERENCE_NOT_FOUND","Recalibrate this reference in the current MCP host session");
         if(ReferenceImage.Read(reference.Image.Path).Sha256!=reference.Image.Sha256)throw new CadFault("REFERENCE_CHANGED","Reference image changed; recalibrate before mapping");
@@ -287,16 +296,16 @@ public sealed class CadTools
         var mapped=points.RootElement.EnumerateArray().Select(p=> { if(p.ValueKind!=JsonValueKind.Array||p.GetArrayLength()!=2)throw new CadFault("INVALID_POINTS","Supply [x,y]");
             var v=EditPlan.Point(p); return direction=="pixel_to_world"?reference.Fit.PixelToWorld(v[0],v[1]):reference.Fit.WorldToPixel(v[0],v[1]); }).ToArray();
         return new(){Content=[new TextContentBlock{Text=JsonSerializer.Serialize(new{reference_id,direction,coordinates=mapped,rms_error=reference.Fit.RmsError},Wire.Json)}]};
-    }
+    });
     [McpServerTool(Name = "cad_reference_compare", ReadOnly = true), Description("Compare reference and real rendered silhouettes in comparable views. Supply actual reference_image_path and rendered_image_path (cad_render returns local_image_path), plus two polygons of normalized [0..1,0..1] coordinates traced from those images. Computes approximate silhouette IoU and sampled boundary deviation. This checks supplied contours, not automatic vision or hidden 3D/detail fidelity. Review both images and major features before claiming a match.")]
     public static CallToolResult ReferenceCompare(string reference_image_path, string rendered_image_path, string reference_contour_json,
-        string rendered_contour_json, double minimum_iou = .85, double maximum_deviation = .05)
+        string rendered_contour_json, double minimum_iou = .85, double maximum_deviation = .05) => ReadReference(() =>
     {
         var reference=ReferenceImage.Read(reference_image_path); var rendered=ReferenceImage.Read(rendered_image_path);
         using var a=JsonDocument.Parse(reference_contour_json); using var b=JsonDocument.Parse(rendered_contour_json);
         var result=ReferenceComparison.Compare(a.RootElement,b.RootElement,minimum_iou,maximum_deviation);
         return new(){Content=[new TextContentBlock{Text=JsonSerializer.Serialize(new{reference=reference.Metadata,rendered=rendered.Metadata,comparison=result},Wire.Json)}]};
-    }
+    });
     [McpServerTool(Name = "cad_image_register", ReadOnly = true), Description("Calibrate one cad_render image to the DWG WCS XY plane using 3..20 point pairs. control_points_json: [{\"pixel\":[x,y],\"world\":[x,y,z]},...]. Pixels have top-left origin; WCS Z must be common. Returns 2D affine transform, corners and RMS/max residual. Registration is kept for up to 8 images in the current worker session and does not modify the DWG.")]
     public static Task<CallToolResult> ImageRegister(string session_id, string document_id, long expected_revision, string image_id, string control_points_json, CancellationToken ct) =>
         Call("cad_image_register", session_id, document_id, new { image_id, control_points_json }, expected_revision, ct);

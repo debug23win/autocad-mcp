@@ -50,6 +50,9 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Services.AddMcpServer(options => options.ServerInstructions = CadTools.ServerInstructions).WithStdioServerTransport().WithTools<CadTools>()
     .WithRequestFilters(filters=>filters.AddCallToolFilter(next=>async(context,ct)=>
-    {using var access=CadAccess.Scope(context.Params?.Meta);return await next(context,ct);}));
+    {
+        try { using var access=CadAccess.Scope(context.Params?.Meta);return await next(context,ct); }
+        catch (CadFault error) { return CadTools.HostError(error.Code, error.Message); }
+    }));
 await builder.Build().RunAsync();
 return 0;

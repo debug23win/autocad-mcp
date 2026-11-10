@@ -16,7 +16,7 @@ public sealed class Broker(string descriptorRoot, string? receiptRoot = null)
         if (entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Archived operation belongs to a different drawing");
         return new(r.RequestId, "completed", new { operation_id = id,
             state = entry.State is "queued" or "running" ? "unknown" : entry.State, phase = entry.Phase, result = entry.Result,
-            original_request = entry.Request, historical = true, worker_reachable = false,
+            original_request = OperationJournal.ReplayRequest(entry.Request), historical = true, worker_reachable = false,
             retry = "Do not replay in a new worker session. Historical receipt does not prove current geometry or disk save." }, r.SessionId, r.DocumentId);
     }
     public IReadOnlyList<WorkerDescriptor> Discover()

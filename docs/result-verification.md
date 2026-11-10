@@ -87,3 +87,7 @@ Recovered historical results keep `historical:true`, `worker_reachable:false`, `
 Map actions with nonempty geometry acceptance criteria fail `UNSUPPORTED_MAP_EXPECTATIONS` before Map execution, including diagnostic criteria with `enforce:false`. Map API changes have no native geometry acceptance implementation; independent product-specific readback is required. An empty criteria object or `enforce` alone does not assert geometry acceptance.
 
 Implicitly changed linked/schedule tables participate in the batch's returned entities and live `entity_count`. Counts must include these actual dependency updates. Verification refuses incomplete C# target lists before reading any prefix.
+
+`cad_operation_status.original_request` preserves public C# replay inputs (source, source hash, document/session, expected revision and operation ID) but omits generated `assembly_base64`. The complete compiled artifact remains in the durable journal. Replay through `cad_csharp` still checks the original public request and returns its receipt before compilation. Other operation requests are unchanged.
+
+Expected Host failures such as drawing-pin mismatch, helper write denial and missing photo calibration return structured `code`/`message` with MCP `isError:true`; SDK generic text no longer hides these codes. This does not weaken the underlying denial or imply that earlier CAD calls were rolled back.
