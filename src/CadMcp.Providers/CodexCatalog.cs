@@ -52,7 +52,7 @@ public static class CodexCatalog
         using var process = Process.Start(ProviderProcess.StartInfo(options, new CodexProvider(options).Arguments())) ?? throw new IOException("Не удалось запустить Codex");
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
         var stderr = ProviderProcess.DrainErrors(process);
-        var lines = new ProviderLines(process.StandardOutput);
+        var lines = new ProviderLines(process.StandardOutput.BaseStream);
         var entries = new List<JsonElement>();
         var cursors = new HashSet<string>();
         async Task Send(object data)
