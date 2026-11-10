@@ -80,7 +80,7 @@ public static class ClaudeCatalog
         using var process = Process.Start(ProviderProcess.StartInfo(options, arguments)) ?? throw new IOException("Не удалось запустить Claude Code");
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
         var stderr = ProviderProcess.DrainErrors(process);
-        var lines = new ProviderLines(process.StandardOutput);
+        var lines = new ProviderLines(process.StandardOutput.BaseStream);
         const string requestId = "cad_mcp_models";
         try
         {

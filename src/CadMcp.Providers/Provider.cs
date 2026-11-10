@@ -180,7 +180,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         using var p = Process.Start(start) ?? throw new IOException("Cannot start Claude Code");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
         var stderr = ProviderProcess.DrainErrors(p);
-        var lines = new ProviderLines(p.StandardOutput);
+        var lines = new ProviderLines(p.StandardOutput.BaseStream);
         Task<JsonDocument?>? reading = null;
         bool completed = false, streamed = false, initialized = false, thinking = false;
         string? limitWarning = null;
@@ -380,7 +380,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         using var p = Process.Start(ProviderProcess.StartInfo(options, Arguments(warnings))) ?? throw new IOException("Cannot start Codex");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
         var stderr = ProviderProcess.DrainErrors(p);
-        var lines = new ProviderLines(p.StandardOutput);
+        var lines = new ProviderLines(p.StandardOutput.BaseStream);
         foreach (var warning in warnings) yield return new("status", warning);
         var models = new List<JsonElement>();
         string? model = null, effort = null;

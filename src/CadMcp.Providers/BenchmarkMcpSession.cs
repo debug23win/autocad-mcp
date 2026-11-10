@@ -14,7 +14,7 @@ public sealed class BenchmarkMcpSession : IAsyncDisposable
     private int nextId;
     public IReadOnlyList<string> Tools { get; private set; } = [];
     public List<JsonElement> Evidence { get; } = [];
-    private BenchmarkMcpSession(Process process) { this.process = process; lines = new(process.StandardOutput); errors = ProviderProcess.DrainErrors(process); }
+    private BenchmarkMcpSession(Process process) { this.process = process; lines = new(process.StandardOutput.BaseStream); errors = ProviderProcess.DrainErrors(process); }
     public static async Task<BenchmarkMcpSession> StartAsync(string executable, string brokerPipe, string runId, CancellationToken ct)
     {
         var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8 };

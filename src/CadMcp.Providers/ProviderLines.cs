@@ -9,6 +9,34 @@ namespace CadMcp.Providers;
 /// </summary>
 internal sealed class ProviderLines(TextReader reader, int maximumChars = ProviderLines.DefaultMaximumChars)
 {
+    // StreamReader.ReadAsync may fill the requested character buffer after a complete line,
+    // blocking on a live pipe whose writer is waiting for our reply. Read available bytes instead.
+    internal ProviderLines(Stream pipe, int maximumChars = DefaultMaximumChars) : this(new PipeTextReader(pipe), maximumChars) { }
+
+    private sealed class PipeTextReader(Stream pipe) : TextReader
+    {
+        private readonly byte[] bytes = new byte[8192];
+        private readonly char[] decoded = new char[Encoding.UTF8.GetMaxCharCount(8192)];
+        private readonly Decoder decoder = Encoding.UTF8.GetDecoder();
+        private int position, length;
+        private bool ended, first = true;
+        public override async ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+        {
+            if (buffer.IsEmpty) return 0;
+            while (position == length)
+            {
+                if (ended) return 0;
+                int count = await pipe.ReadAsync(bytes, cancellationToken);
+                ended = count == 0;
+                position = 0;
+                length = decoder.GetChars(bytes.AsSpan(0, count), decoded, flush: ended);
+                if (first && length > 0) { first = false; if (decoded[0] == '\uFEFF') position = 1; }
+            }
+            int copied = Math.Min(buffer.Length, length - position);
+            decoded.AsMemory(position, copied).CopyTo(buffer); position += copied;
+            return copied;
+        }
+    }
     // Tool results with base64 images are legitimately several megabytes long.
     public const int DefaultMaximumChars = 32 * 1024 * 1024;
     private const int KeptNotes = 8;
