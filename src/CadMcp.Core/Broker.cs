@@ -16,7 +16,7 @@ public sealed class Broker(string descriptorRoot, string? receiptRoot = null)
         if (entry.DocumentId != r.DocumentId) throw new CadFault("DOCUMENT_MISMATCH", "Archived operation belongs to a different drawing");
         return new(r.RequestId, "completed", new { operation_id = id,
             state = entry.State is "queued" or "running" ? "unknown" : entry.State, phase = entry.Phase, result = entry.Result,
-            original_request = entry.Request, historical = true, worker_reachable = false,
+            original_request = OperationJournal.ReplayRequest(entry.Request), historical = true, worker_reachable = false,
             retry = "Do not replay in a new worker session. Historical receipt does not prove current geometry or disk save." }, r.SessionId, r.DocumentId);
     }
     public IReadOnlyList<WorkerDescriptor> Discover()
@@ -81,6 +81,10 @@ public sealed class Broker(string descriptorRoot, string? receiptRoot = null)
         if (worker is null) return ArchivedReceipt(request) ?? throw new CadFault("SESSION_NOT_FOUND", "CAD session is unavailable");
         try { return await PipeClient.CallAsync(worker.PipeName, request, ct); }
         catch (Exception e) when (!ct.IsCancellationRequested && Wire.IsTransportFailure(e))
-        { if (ArchivedReceipt(request) is { } archived) return archived; throw; }
+        {
+            if (ArchivedReceipt(request) is { } archived) return archived;
+            return new(request.RequestId, "unknown", new { worker_reachable = false, execution_outcome = "unknown" },
+                request.SessionId, request.DocumentId, Error: new("WORKER_TRANSPORT_LOST", "Worker connection was lost; execution may have started. Reconcile the original operation receipt. " + e.Message));
+        }
     }
 }

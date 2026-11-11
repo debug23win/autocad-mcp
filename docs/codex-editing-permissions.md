@@ -1,21 +1,21 @@
-# Исправление доступа к CAD в 0.2.1
+# CAD permission fix in 0.2.1
 
-При запуске панели версия 0.2.0 задавала `approvalPolicy="never"`, но не задавала политику разрешения MCP-инструментов изменения. Поэтому Codex мог отклонить `cad_edit` до обращения к AutoCAD: инструмент требовал подтверждения, а запросить его было нельзя.
+Panel version 0.2.0 set `approvalPolicy="never"` without granting MCP editing-tool approval. Codex could therefore reject `cad_edit` before contacting AutoCAD: approval was required but could not be requested.
 
-В версии 0.2.1 аргументы запуска каждого собственного процесса Codex явно включают локальный сервер `cad` и режим `approve` для него. Отдельные настройки `cad_edit`, `cad_lisp`, `cad_focus` также имеют `approval_mode="approve"`, чтобы существующая настройка отдельного инструмента не перекрыла разрешение по умолчанию. Объявления MCP сохраняют реальные признаки изменения и разрушительности; они не маскируются под чтение.
+Since 0.2.1, every panel-owned Codex process explicitly configures the local `cad` server in `approve` mode. `cad_edit`, `cad_lisp`, and `cad_focus` also receive `approval_mode="approve"`, preventing an existing per-tool setting from overriding the server default. MCP declarations retain their actual mutation/destructiveness annotations; they are not disguised as reads.
 
-Файловая песочница остаётся `read-only`, диалоги подтверждения — `never`. Разрешения других MCP-серверов и общий файл `.codex/config.toml` не меняются. При продолжении разговора запускается новый процесс с теми же аргументами, затем вызывается `thread/resume`. Новая версия не требует очистки истории.
+In that version, the filesystem sandbox remained `read-only` and approval dialogs remained `never`. Other MCP servers and the global `.codex/config.toml` were unchanged. Resuming starts a new process with the same arguments, then calls `thread/resume`; clearing history is unnecessary.
 
-Настройки основаны на [официальном справочнике OpenAI](https://learn.chatgpt.com/docs/config-file/config-reference).
+Settings follow the [official OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-## Проверка
+## Validation
 
-- Сборка: без ошибок и предупреждений.
-- 21 автономный тест: PASS; подставной CLI проверяет аргументы CAD и сохранение файловой песочницы при start/resume.
-- Настоящий Codex CLI 0.154.0: `config/read` подтвердил эффективные разрешения трёх инструментов.
-- Модель `gpt-6-astra`, выбранная из каталога авторизованного аккаунта, выполнила `cad_edit`, `cad_lisp`, `cad_focus` и проверку состояния на отдельном записывающем broker. Ни одного запроса подтверждения не было.
-- Те же вызовы прошли после остановки первого процесса CLI и восстановления диалога во втором процессе.
+- Build: no warnings or errors.
+- 21 offline tests passed; a fake CLI verifies CAD arguments and sandbox preservation on start/resume.
+- Real Codex CLI 0.154.0: `config/read` confirmed effective permissions for all three tools.
+- Account-catalog model `gpt-6-astra` executed `cad_edit`, `cad_lisp`, `cad_focus`, and status checks against a separate writable broker without approval requests.
+- The same calls passed after stopping the first CLI process and resuming the conversation in a second one.
 
-Этот тест проверяет реальную политику доступа Codex и доставку вызова в наш MCP host. Broker работает в уникальном тестовом канале и не соединяется с AutoCAD. Проверка не подтверждает геометрию, работу Undo или качество рисунка в настоящем DWG.
+This checks real Codex permissions and delivery to our MCP host. The broker uses a unique test pipe and does not connect to AutoCAD. It does not validate geometry, Undo, or drawing quality in a real DWG.
 
-Воспроизведение из корня репозитория: `tests/CadMcp.Tests/bin/Release/net8.0-windows/CadMcp.Tests.exe --live-codex-approval-test <путь-к-codex.exe>`. Проверка отдельно от автономных тестов использует действующую подписку; результат сохраняется в `.runtime/approval-probe-*/result.json`.
+From the repository root: `tests/CadMcp.Tests/bin/Release/net8.0-windows/CadMcp.Tests.exe --live-codex-approval-test <path-to-codex.exe>`. This optional test uses the active subscription separately from offline tests and saves `.runtime/approval-probe-*/result.json`.

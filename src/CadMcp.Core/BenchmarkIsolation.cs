@@ -5,7 +5,7 @@ public static class BenchmarkIsolation
 {
     public static void RequireEmpty(int openDocuments)
     {
-        if (openDocuments != 0) throw new CadFault("BENCHMARK_SESSION_NOT_EMPTY", "Для нативного бенчмарка нужен отдельный процесс AutoCAD без открытых DWG. Откройте CAD MCP в отдельной сессии и закройте её стартовый пустой чертёж. Эта проверка не закрывает, не сохраняет и не изменяет чертежи.");
+        if (openDocuments != 0) throw new CadFault("BENCHMARK_SESSION_NOT_EMPTY", UiText.T("Для нативного бенчмарка нужен отдельный процесс AutoCAD без открытых DWG. Откройте CAD MCP в отдельной сессии и закройте её стартовый пустой чертёж. Эта проверка не закрывает, не сохраняет и не изменяет чертежи."));
     }
     public static void RequireFixtureOnly(IEnumerable<string> openDocuments, string fixture)
     {

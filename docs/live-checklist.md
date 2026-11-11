@@ -1,51 +1,52 @@
-# Исторический план проверки 3Б (0.1, чтение) — рабочий DWG требует согласования
+# Historical phase 3B checklist (0.1, reading): working DWG requires agreement
 
-Нужен выбранный пользователем DWG со смешанными объектами. Работать на отдельной копии; записать исходный хеш и состояние DBMOD. Подготовить вручную эталонные значения 5–10 объектов, включая размер с подменой текста, дуговую полилинию, блок и СПДС.
+Use a user-selected mixed-object DWG on a separate copy. Record original hash/DBMOD. Manually establish reference values for 5–10 objects, including overridden dimension text, arc polyline, block, and SPDS.
 
-1. Загрузить DLL через NETLOAD в AutoCAD 2025, открыть палитру и проверить создание/удаление worker descriptor.
-2. Запустить broker и внешний MCP-клиент; получить context и убедиться, что имя, единицы, пространство, document_id верны.
-3. Создать snapshot, проверить количество верхнеуровневых объектов относительно AutoCAD, доступность и признаки усечения. Проверить страницы и русский текст.
-4. Прочитать эталонные объекты по handle, сверить координаты и длины с CAD. Проверить выбор объекта, неверный handle, переключение DWG и устаревшую ревизию.
-5. Получить PNG. Сравнить с видом AutoCAD: дуги, тексты, размеры, СПДС, слои. Не принимать геометрически искажённый preview как достоверное изображение. Проверить, что API не изменил DWG.
-6. Для СПДС составить таблицу: класс, отображение, обычные свойства, доступные специальные параметры. Реализованный общий reader не заменяет этот эксперимент.
-7. Проверить штатную авторизацию Codex и Claude Code. По одному диалогу: модель вызывает MCP, получает изображение и объясняет выбранный участок. Зафиксировать передаваемые данные и фактические ограничения подписок.
-8. Проверить Stop при ожидании модели и занятом CAD, параллельные обращения двух клиентов, закрытие документа и завершение CAD. Недоступная сессия должна давать понятную ошибку.
-9. Повторить базовое чтение в профиле Map 3D. Это не тест вертикальных объектов Map.
-10. Сверить DBMOD/сохранённую копию; инструментов записи в прототипе нет. Отдельно отметить временное выделение и возможные особенности самого Enabler при открытии файла.
+1. NETLOAD the DLL in AutoCAD 2025, open the palette, and check worker descriptor creation/removal.
+2. Start broker/external MCP client; verify context name, units, space, and document_id.
+3. Snapshot: compare top-level entity count with AutoCAD, availability/truncation, pages, and Russian text.
+4. Read reference handles; compare coordinates/lengths. Check selection, invalid handle, DWG switching, and stale revision.
+5. Capture PNG; compare arcs/text/dimensions/SPDS/layers with AutoCAD. Reject geometrically distorted previews. Verify no DWG change.
+6. For SPDS, record class, display, ordinary properties, and special parameters. The generic reader does not replace this experiment.
+7. Check official Codex/Claude authentication. One conversation each: model calls MCP, receives an image, explains the selected region. Record transmitted data and actual subscription limits.
+8. Check Stop during model waits/busy CAD, concurrent clients, document closure, and CAD exit. Unavailable sessions must return clear errors.
+9. Repeat basic reads under Map 3D. This does not validate Map vertical objects.
+10. Compare DBMOD/saved copy. The 0.1 prototype has no write tools; separately note temporary selection and enabler-specific open behavior.
 
-Результат: журнал с версиями, подтверждёнными возможностями, ошибками и примерами ответов. Текущий объём — AutoCAD, Map 3D и Civil 3D 2025–2027; LT и более ранние версии исключены. Тест одной установки не подтверждает остальные продукты или полноценное СПДС-редактирование.
-## Дополнение для 0.2.0 — редактирование
+Deliver a log of versions, confirmed capabilities, errors, and response examples. Current scope is AutoCAD, Map 3D, and Civil 3D 2025–2027, excluding LT/earlier releases. One installation cannot validate others or full SPDS editing.
 
-На отдельном тестовом DWG проверьте: создание каждого вида сущностей; слой, русские TEXT/MTEXT; вставку, копирование и преобразование блоков с атрибутами; размеры и штриховки; чтение результатов и Ctrl+Z; ошибку второй операции с фактическим откатом первой; старую ревизию и повтор того же operation_id; обновление кэша после ручной правки; AutoLISP, его ошибку, Esc и состояние операции; восстановление чата после перезапуска.
+## 0.2.0 editing addendum
 
-`tests/CadMcp.NativeProbe` компилирует производственный исполнитель в отдельную DLL, создаёт новый пустой DWG и не открывает пользовательские файлы. Прежняя остановка запуска из-за отсутствующего профиля устранена. 29 сентября 2026 AutoCAD 2025 и Map 3D 2025 прошли по 20 GUI-проверок, включая Undo, AutoLISP, Esc и переключение документов. Подробности текущего состояния — [проверка 0.3.0](../CHANGELOG.md#030-preview). Проверка смешанных рабочих DWG, специальных СПДС/вертикальных объектов и остальных установок остаётся отдельным этапом.
+On a separate fixture DWG, test every entity type; layers/Russian TEXT/MTEXT; attributed-block insertion/copy/transform; dimensions/hatches; readback/Ctrl+Z; second-action failure rolling back the first; stale revision/exact operation_id replay; cache invalidation after manual edits; Lisp/error/Esc/status; chat restoration after restart.
 
-Программа чтения этапа 3Б выше сохранена как историческая; пункт об отсутствии инструментов записи относится к 0.1.
+`tests/CadMcp.NativeProbe` compiles the production executor into a separate DLL and creates a blank DWG without user files. Its old missing-profile startup failure was fixed. On September 29, 2026, AutoCAD 2025 and Map 3D 2025 each passed 20 GUI checks, including Undo, Lisp, Esc, and document switching. See [0.3.0 evidence](../CHANGELOG.md#030-preview). Mixed working DWGs, special SPDS/vertical objects, and other installations remain separate work.
 
-## Дополнение для 0.11.2 — аварийные завершения и Claude Code
+Phase 3B above is historical; the no-write-tools statement applies to 0.1.
 
-В AutoCAD эти шаги для 0.11.2 ещё не выполнялись. Работать на копиях DWG.
+## 0.11.2 crash and Claude Code addendum
 
-1. Запустить пробу `scripts/test-autocad-gui.ps1 -Command CADMCPSHEETREGEN -TimeoutSeconds 1200`; для AutoCAD 2026 добавить `-AutoCADDir`. Все варианты должны пройти, включая `render_then_edit` и `frame_explode`. Если AutoCAD упадёт, последняя строка `.progress` называет шаг.
-2. Повторить план операции, на которой AutoCAD упал: `-Plan <квитанция из %LOCALAPPDATA%\CadMcp\operations>`.
-3. В чате оформить лист А1: рамка СПДС, таблица с формулами, примечания. После каждого хода панель делает превью. Сделать три таких хода, затем `REGEN` и переключение листов. Аварий быть не должно.
-4. Разбить основную надпись СПДС через `explode`, отменить (Ctrl+Z), закрыть чертёж без сохранения. Аварий быть не должно.
-5. После правки без таблиц и блоков изменение видно сразу, без `REGEN`. Слой, выключенный правкой `layer`, гаснет.
-6. Claude Code: обновить список моделей, выбрать модель и уровень рассуждений. Ответ должен быть подписан ими. Приложить PDF из папки со скобками в имени, задать вопрос с поиском в интернете.
+These 0.11.2 steps had not yet been run in AutoCAD. Use DWG copies.
 
-## Дополнение для 0.11.1 — изоляция абзацев и динамические вставки
+1. Run `scripts/test-autocad-gui.ps1 -Command CADMCPSHEETREGEN -TimeoutSeconds 1200`; add `-AutoCADDir` for 2026. All variants, including `render_then_edit`/`frame_explode`, must pass. After a crash, the last `.progress` line identifies the step.
+2. Replay the failed operation plan using `-Plan <receipt from %LOCALAPPDATA%\CadMcp\operations>`.
+3. In chat, prepare an A1 sheet with SPDS frame, formula table, and notes. Each turn receives an automatic preview. Repeat three turns, then `REGEN` and switch layouts; no crashes.
+4. `explode` an SPDS title block, undo with Ctrl+Z, then close without saving; no crashes.
+5. Non-table/non-block edits must display immediately without `REGEN`; layers disabled by `layer` must turn off.
+6. Claude: refresh models, select model/effort, verify answer attribution. Attach a PDF from a directory containing parentheses and ask a web-search question.
 
-Core Console прошёл 22 проверки 8 октября 2026; полный интерфейс проверяется отдельно на копиях DWG.
+## 0.11.1 paragraph isolation and dynamic inserts
 
-1. Создать близкие строки TEXT с совпадающими координатами XY в модели, на двух листах, в двух определениях блоков и на разных Z. `cad_text_units(scope: all, include: text,block_definitions)` не должен объединять разные пространства/блоки/отметки. Перевести один корректный абзац и убедиться, что остальные надписи сохранились.
-2. Вставить динамический блок дважды, изменить параметр второго вхождения. Заменить TEXT в определении через `text_replace` с `include: [text,block_definitions]`. Обе вставки должны показывать новый текст, сохранив разные значения параметров; Ctrl+Z должен вернуть текст одним шагом.
+Core Console passed 22 checks on October 8, 2026; full GUI needs separate DWG-copy validation.
 
-## Дополнение для 0.11.0 — свойства, прокси, перевод текста и скругление
+1. Create nearby matching-XY TEXT lines in model, two layouts, two block definitions, and different Z planes. `cad_text_units(scope: all, include: text,block_definitions)` must not group across spaces/blocks/elevations. Translate one valid paragraph; other text must remain unchanged.
+2. Insert one dynamic block twice and alter the second insert's parameter. Replace definition TEXT with `text_replace`, `include: [text,block_definitions]`. Both inserts must show new text while retaining distinct parameters; Ctrl+Z restores text in one step.
 
-Работать на отдельных копиях DWG. В 0.11.0 эти шаги ещё не выполнялись.
+## 0.11.0 properties, proxies, translation, and fillets
 
-1. Собрать `tests/CadMcp.CoreProbe` и запустить `scripts/test-autocad-core.ps1`: проба создаёт свой пустой DWG и проверяет скругление прямоугольника, перевод абзаца из трёх строк TEXT, MTEXT с кодом цвета и многострочного атрибута (текст и ширина после `text_fit` читаются заново), пропуск текста на заблокированном слое и чтение прокси и свойств.
-2. В полном AutoCAD вызвать `cad_properties` для отрезка, MTEXT, динамического блока и (в Civil 3D или Map 3D) объекта вертикали; сверить значения с палитрой «Свойства». Повторить 50 раз подряд и выполнить сборку мусора (`(gc)` или долгую работу) — AutoCAD не должен падать.
-3. Открыть в обычном AutoCAD чертёж Civil 3D или другого модуля: `cad_proxies` должен перечислить группы прокси, а с `handles_json` — разобранную графику; чертёж после этого не помечается изменённым.
-4. На чертеже с абзацами TEXT, MTEXT с форматированием, атрибутами (однострочными и многострочными), мультивыносками, таблицами и динамическим блоком: `cad_text_units`, затем `text_translate` через `cad_edit_preview` и `cad_edit`. Проверить на экране, что текст остался в рамках, символы `%%c`/`%%d` не исказились, `overflow` назван верно, анонимные копии динамического блока показывают перевод, а Ctrl+Z возвращает исходный текст одним шагом.
-5. `polyline_fillet` на полилиниях с шириной, дугами и короткими сегментами: сравнить с командой СОПРЯЖЕНИЕ, опция «Полилиния», того же радиуса.
+Use separate DWG copies. These steps had not yet been performed for 0.11.0.
+
+1. Build `tests/CadMcp.CoreProbe`; run `scripts/test-autocad-core.ps1`. It creates a blank DWG and checks rectangle fillets, three-line TEXT paragraph translation, color-coded MTEXT, multiline attributes (text/width reread after `text_fit`), locked-layer skips, proxies, and properties.
+2. In full AutoCAD, compare `cad_properties` for a line, MTEXT, dynamic block, and Civil/Map object with the Properties palette. Repeat 50 times, then trigger GC (`(gc)` or prolonged work); no crashes.
+3. Open a Civil/other-enabler DWG in plain AutoCAD. `cad_proxies` must list groups and inspect graphics through `handles_json` without dirtying the drawing.
+4. With TEXT paragraphs, formatted MTEXT, single/multiline attributes, mleaders, tables, and a dynamic block, run `cad_text_units`, then `text_translate` through `cad_edit_preview`/`cad_edit`. Visually verify frames, `%%c`/`%%d`, accurate `overflow`, translated anonymous dynamic copies, and one-step Ctrl+Z.
+5. Compare `polyline_fillet` on variable-width/arc/short-segment polylines with FILLET's Polyline option at the same radius.

@@ -1,60 +1,62 @@
-# Встроенный бенчмарк
+# Built-in benchmark
 
-Начиная с 0.11.5-preview, кнопка **«Бенчмарк»** в окне CAD MCP запускает фиксированный набор проверок без ручного ввода сценариев и без обращения к моделям. Другие задания в чатах перед запуском должны завершиться. С 0.11.7 полный нативный прогон допускается только в отдельном процессе AutoCAD, где нет открытых DWG.
+Since 0.11.5-preview, **Benchmark** runs fixed checks without manual scenario prompts or model calls. Other chat tasks must finish first. Since 0.11.7, full native runs require a separate AutoCAD process with no open DWGs.
 
-Сначала запустите отдельную сессию AutoCAD, откройте из неё CAD MCP, затем закройте её стартовый пустой чертёж. Нажмите «Бенчмарк» и не открывайте другие DWG до конца. Плагин сам не закрывает и не сохраняет пользовательские документы. Core проверяет отсутствие документов до setup, worker повторяет проверку на CAD-потоке до создания файла и открывания fixture. Перед последующими нативными вызовами и фактическим началом отложенного Lisp разрешён только принадлежащий прогону DWG. Другие AutoCAD-процессы эта проверка не затрагивает.
+Start a separate AutoCAD instance, open CAD MCP from it, then close its initial empty drawing. Press Benchmark and do not open other DWGs until completion. The plugin never closes/saves user documents. Core checks for zero documents before setup; the worker repeats the check on the CAD thread before file/fixture creation. Subsequent native calls and actual deferred Lisp startup require only the owned fixture to be open. Other AutoCAD processes are unaffected.
 
-Рабочий документ не служит тестовой площадкой. Плагин создаёт отдельный новый DWG с миллиметрами и уникальным именем `CADMCP_Benchmark_<id>.dwg`; runner сверяет, что его document_id отсутствовал среди открытых документов до запуска. Worker дополнительно связывает run_id с этим документом и отклоняет benchmark-запросы к другим DWG. Смена вкладки не меняет целевой документ выполняющегося прогона. Тестовый чертёж остаётся открытым для разбора; автоматического сохранения результатов геометрии и удаления тестовых объектов после прогона нет.
+The working drawing is never the fixture. The plugin creates a new millimeter DWG named `CADMCP_Benchmark_<id>.dwg`; the runner verifies its document_id was absent before startup. The worker binds run_id to that document and rejects benchmark requests targeting others. Tab switching cannot change the run target. The fixture remains open for inspection; geometry is not automatically saved or cleaned up.
 
-## Проверки
+## Checks
 
-| Группа | Что проверяется отдельным чтением |
+| Group | Independently read assertions |
 |---|---|
-| C#: контур | Замкнутая полилиния, четыре вершины, длина 600 и площадь 20000; независимый takeoff |
-| C#: Unicode | Точная замена Ø108 на Ø114 в двух TEXT и одном MTEXT |
-| C#: блоки | Две вставки, повороты 0/90°, по одной линии длиной 100 и 50, координаты WCS |
-| C#: преобразования | Копия, поворот, масштаб; отдельное чтение перемещённого исходника до удаления; проверка оставшейся копии |
-| C#: таблицы | Локальная формула и связанная таблица: 10/20 → 15/30 после изменения источника |
-| C#: поиск | 12 точек, страницы 5/5/2, переходы offset, уникальность handles, тип и координаты |
-| Генерация C# | Нативный `cad_edit` создаёт линию длиной 100 и окружность радиусом 10; поиск перечитывает геометрию |
-| Генерация AutoLISP | Фиксированный код с `entmake` создаёт аналогичную геометрию; после квитанции выполняется отдельный поиск |
+| C#: contour | Closed polyline, four vertices, length 600, area 20000; independent takeoff. |
+| C#: Unicode | Exact Ø108 → Ø114 replacement in two TEXT and one MTEXT. |
+| C#: blocks | Two inserts, 0/90° rotations, one 100-unit and one 50-unit line, WCS coordinates. |
+| C#: transforms | Copy/rotate/scale; moved original read before erase, then remaining copy checked. |
+| C#: tables | Local/linked formulas: 10/20 → 15/30 after source update. |
+| C#: search | 12 points, 5/5/2 pages, offsets, unique handles, types/coordinates. |
+| C# generation | Native `cad_edit` creates a 100-unit line and radius-10 circle; search rereads geometry. |
+| AutoLISP generation | Fixed `entmake` code creates equivalent geometry; independent search follows the receipt. |
 
-Базовый C#-сценарий использует нативный cad_edit. Дополнительный cad_csharp действительно компилирует полный C# source и выполняет его в worker: линия/окружность, solid box объёмом 6000, duplicate-control и 200 длинных MText для архива. Исходники/планы/AutoLISP входят в evidence; код генерации фиксированный, модель не вызывается.
+The baseline C# case uses native cad_edit. Additional cad_csharp compiles full C# source and executes it in the worker: line/circle, volume-6000 box, duplicate control, and 200 long MText entities for archiving. Evidence includes source/plans/Lisp. Generation is fixed; no model is called.
 
-AutoLISP подчиняется текущей пользовательской политике `CADMCPLISP`. При необходимости AutoCAD показывает обычное окно подтверждения. Бенчмарк не отключает запросы, не меняет политику и не обходит отказ пользователя. `queued` ещё не означает успех: runner опрашивает квитанцию, проверяет её идентификатор, состояние и документ, затем читает полученную геометрию. Отказ или недоступность подтверждения отмечаются как SKIPPED; неизвестный исход — UNKNOWN, дальнейшие записи прекращаются.
+Lisp follows current `CADMCPLISP` policy. AutoCAD shows normal approval when needed. The benchmark never disables prompts, changes policy, or bypasses refusal. `queued` is not success: the runner polls and verifies receipt ID/state/document before reading geometry. Denial/unavailable approval is SKIPPED; uncertain outcomes are UNKNOWN and stop further writes.
 
-## Отчёт
+## Report
 
-Вкладка тестового DWG получает ответ с таблицей тестов и итогом `пройдено/всего`. Его можно скопировать обычной кнопкой ответа. JSON сохраняется в `%LOCALAPPDATA%\CadMcp\benchmarks\<run_id>\report.json`; он содержит запросы, ответы, проверки, ошибки и время. Тестовый DWG находится под `%LOCALAPPDATA%\CadMcp\benchmarks\<worker_session>\<run_id>\`.
+The fixture chat receives a case table and `passed/total`; use the normal Copy button. JSON at `%LOCALAPPDATA%\CadMcp\benchmarks\<run_id>\report.json` includes requests, responses, assertions, errors, and timing. Fixture DWG: `%LOCALAPPDATA%\CadMcp\benchmarks\<worker_session>\<run_id>\`.
 
-`Stopwatch` измеряет время каждого кейса и всего прогона. Общее время включает подготовку документа, обращения к AutoCAD и ожидание подтверждения AutoLISP. `approval_wait_ms` отдельно учитывает наблюдаемую по квитанциям фазу ожидания; точность ограничена периодом опроса. Эти времена описывают весь pipeline и не являются чистым сравнением CPU-скорости C# и AutoLISP.
+`Stopwatch` measures each case and the entire run, including setup, CAD calls, and Lisp approval waits. `approval_wait_ms` separately counts observed receipt approval phases, limited by polling frequency. Times describe the whole pipeline, not pure C#/Lisp CPU speed.
 
-Счётчики: `total = passed + failed + skipped + unknown`. Полный успех — только `passed == total`; отсутствие ошибок при пропущенном AutoLISP не даёт полного PASS. Неполные, усечённые и архивированные чтения не принимаются как доказательство. При неизвестном исходе принятой операции запрос не отправляется повторно с новым id.
+Counters satisfy `total = passed + failed + skipped + unknown`; full success requires `passed == total`. Skipped Lisp prevents full PASS even with no failures. Incomplete/truncated/archived reads are not proof. Never resubmit an accepted operation with unknown outcome under a new ID.
 
-Кнопка **«Остановить бенчмарк»** прекращает ожидание и планирование последующих проверок. Уже принятую AutoCAD-операцию нельзя считать отменённой: в отчёте сохраняется UNKNOWN. Не подтверждайте оставшееся окно AutoLISP, если выполнение больше не нужно; выполняющийся AutoLISP останавливается средствами AutoCAD. Закрытие вкладки тестового чата также останавливает ожидание, но не закрывает сам DWG.
+**Stop benchmark** ends waiting and future scheduling. Already accepted CAD operations cannot be assumed cancelled; the report retains UNKNOWN. Decline any remaining Lisp prompt if execution is no longer wanted; stop running Lisp through AutoCAD. Closing the fixture chat stops waiting but does not close the DWG.
 
-## Верификация реализации
+## Implementation verification
 
-Независимый агент добавил `CadBenchmarkTests`: положительный контроль и негативные случаи для изоляции документа, неверной геометрии, неполных чтений, дублей и offset, квитанций, смены scope/единиц/пространства, отмены, двойного запуска и AutoLISP. Эти тесты работают с имитируемым CAD-протоколом. Нативная проверка в установленном AutoCAD, особенно 2027 и окна подтверждения Lisp, остаётся отдельным этапом. `CADMCPGUISTABILITY` дополнительно проверяет отказ создания benchmark fixture при уже открытых DWG и отказ записи вне собственного fixture.
+An independent agent added `CadBenchmarkTests`: positive control and negatives for document isolation, geometry, incomplete reads, duplicate pages/offsets, receipts, scope/unit/space changes, cancellation, duplicate starts, and Lisp. These use simulated CAD protocols. Native installed-AutoCAD verification, especially 2027/Lisp dialogs, remains separate. `CADMCPGUISTABILITY` also checks fixture-creation refusal with open drawings and write refusal outside the owned fixture.
 
-## Полное покрытие MCP в 0.11.5
+## Full MCP coverage in 0.11.5
 
-Основная кнопка теперь запускает первые 8 функциональных групп и 49 сценариев по inventory настоящего tools/list. Все tool-вызовы идут через отдельный stdio MCP host: проверяются public schema, pin/owner, JSON и image content. Внутренними worker-запросами остаются только создание/активация fixture и управляемый cancellation gate. Новый рекламируемый tool без сценария даёт BENCHMARK_CASE_MISSING.
+The main button runs eight functional groups plus 49 scenarios from real tools/list inventory. Calls use a dedicated stdio MCP host, exercising public schemas, pin/owner, JSON, and image content. Only fixture creation/activation and a controlled cancellation gate are internal worker requests. Advertised tools without cases produce BENCHMARK_CASE_MISSING.
 
-Включены native/настоящая C#/AutoLISP генерация, независимые размеры и solid topology, масса/recipe сборки, Unicode и table graph, snapshot/query, реальный архив больше 512 КиБ до EOF, side-file DWG/DXF с проверкой неизменности hash, PDF text/page/image, реальный loopback HTTP download и SHA-256, render/registration, positive и negative contour/topology controls, checkpoint/receipts/отмена до исполнения, PDF публикация и чтение реального файла. PDF driver/media проверяются в catalog; пользовательские принтеры не используются.
+Coverage includes native/actual C#/Lisp generation, independent dimensions/solid topology, assembly mass/recipe, Unicode/table graph, snapshot/query, real >512 KiB archives to EOF, side-file DWG/DXF with unchanged hashes, PDF text/page/image, loopback HTTP download/SHA-256, render/registration, positive/negative contour/topology controls, checkpoints/receipts/pre-execution cancellation, PDF publishing and actual file rereading. PDF devices/media come from catalog; user printers are not used.
 
-В отчёте отдельно тесты и tools с пройденными утверждениями/всего. Повторное использование доказательств первых групп не добавляет копии вызовов к счётчику. Частичные данные, противоречащие expected/actual, подмена handles и незавершённый архив не дают PASS. Запросы имеют ограничение ожидания; после неизвестного исхода новые записи прекращаются.
+Reports separate tests from tools with checked assertions/total. Reusing baseline evidence does not duplicate call counts. Partial data, inconsistent expected/actual, substituted handles, and incomplete archives cannot pass. Requests have bounded waits; unknown outcomes stop new writes.
 
-Civil/Map и proprietary proxy positive-ветки требуют подходящего продукта/объекта. Runner выполняет доступные discovery/обычные read-контракты и помечает отсутствующую positive fixture как SKIPPED. Пустой proxy catalog и отсутствие Civil API не считаются полноценным положительным покрытием. Отсутствие PDF driver/media также SKIPPED. Все эти случаи уменьшают покрытие и не дают полного успеха.
+Civil/Map and proprietary-proxy positive branches need the appropriate product/object. Discovery/ordinary-read contracts run where available; missing positive fixtures are SKIPPED. Empty proxy catalogs/unavailable Civil APIs do not count as positive coverage. Missing PDF devices/media are also SKIPPED. All reduce coverage and prevent full success.
 
-JSON теперь содержит result, mcp_inventory и mcp_calls с аргументами, JSON evidence и hash/декодированием PNG. Файлы сценариев находятся в benchmarks/<run_id>/files отдельно от рабочего DWG. CadCalls — число логических запросов runner, включая setup; внутренние служебные вызовы host/tool отдельно не суммируются.
+JSON includes result, mcp_inventory, and mcp_calls with arguments, JSON evidence, and PNG hashes/decoding. Scenario files live in benchmarks/<run_id>/files, apart from the working DWG. CadCalls counts logical runner requests including setup, not extra host/tool-internal service calls.
 
-[Независимая матрица](benchmark-tool-matrix.md) описывает 49 инструментов, prerequisites и границы проверки. Протокольные тесты и компиляция реального C# payload против официальных SDK refs не означают нативного прогона AutoCAD.
+The [independent matrix](benchmark-tool-matrix.md) defines 49 tools, prerequisites, and verification limits. Protocol tests and real C# payload compilation against official SDK references do not constitute native AutoCAD execution.
 
-## Разбор нативного сбоя
+## Native crash investigation
 
-Отдельный DWG внутри рабочего AutoCAD не изолирует остальные файлы от fatal native crash всего процесса. Именно поэтому начиная с 0.11.7 нужен отдельный AutoCAD без открытых документов. Первая неожиданная ошибка останавливает последующие кейсы; потеря транспорта/сессии имеет исход UNKNOWN, а не разрешение продолжать записи. Ожидаемые отрицательные проверки внутри кейса и явно недоступные условия могут завершиться без остановки всего набора.
+A separate DWG in a working AutoCAD process cannot isolate other files from a fatal process-wide native crash. Hence 0.11.7 requires a separate instance with no documents. The first unexpected failure stops later cases. Lost transport/session yields UNKNOWN, never permission to continue writes. Expected negative checks and explicitly unavailable prerequisites may finish without stopping the suite.
 
-Все чтения передают обязательную ревизию в реальную MCP-схему. Полный базовый прогон дополнительно проверяется через настоящий stdio host в CI, а обязательные поля сверяются с tools/list перед вызовом. JSON-отчёт содержит фактические requests/responses; файл native-trace.jsonl рядом содержит durable begin/end границы нативных вызовов, отдельные этапы чтения snapshot и фактического исполнения Lisp. Trace не содержит аргументов, кода и геометрии. Begin без end указывает границу, где пропало подтверждение, а не доказывает причину crash или rollback; commit проверяется по существующей квитанции/WorkSafety.
+All reads supply mandatory revisions to the real MCP schema. CI runs the complete baseline through actual stdio host, and required fields are checked against tools/list before invocation. report.json preserves requests/responses. Adjacent native-trace.jsonl durably records native begin/end boundaries, snapshot read stages, and actual Lisp execution. It excludes arguments/source/geometry. Begin without end identifies missing confirmation, not crash causality or rollback; consult existing receipts/WorkSafety for commit state.
 
-Сообщённый пользователем fatal crash в AutoCAD 2027 пока не воспроизведён в среде разработки. Потеря соединения на cad_query не доказывает, что причина в Query: до неё выполнялись нативные OPM и печать. Для локализации нужны report.json, native-trace.jsonl из нового прогона, сообщение Autodesk и при наличии crash dump. Результаты managed/MCP тестов не заменяют нативную проверку.
+The reported AutoCAD 2027 fatal crash has not been reproduced in development. A lost connection during the cad_query case does not establish Query as the cause; native OPM/plotting ran earlier. Localization requires report.json, native-trace.jsonl from a new run, the Autodesk error, and any available crash dump. Managed/MCP tests cannot replace native validation.
+
+Coverage must be reported on three independent axes: MCP tools with positive/negative contracts, native edit-operation families, and installed product/runtime failure scenarios. A tool invocation or `cad_edit` PASS does not establish all 98 edit operations. The current report's tool coverage is only the first axis; native safety checks remain separate, using `-ReviewSafetyOnly` and GUI probes described in [validation](validation.md). Do not combine them into a single unsupported full-coverage percentage.

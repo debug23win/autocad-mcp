@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Globalization;
 using System.Text.Json;
 
@@ -9,9 +10,9 @@ public static class AnswerMetrics
 {
     public static string Footer(TimeSpan elapsed, ProviderTokenUsage? usage, bool completed = true)
     {
-        string tokens = usage is null ? "нет данных" :
-            $"{usage.Total.ToString("N0", CultureInfo.GetCultureInfo("ru-RU"))} (вход {usage.Input}, выход {usage.Output}; {usage.Scope}{(completed ? "" : "; неполные данные")})";
-        return $"\n\n---\nВремя задачи: {elapsed.TotalSeconds.ToString("0.0", CultureInfo.GetCultureInfo("ru-RU"))} с · Токены: {tokens}";
+        string tokens = usage is null ? UiText.T("нет данных") :
+            UiText.Format($"{usage.Total.ToString("N0", CultureInfo.GetCultureInfo(CadMcp.Core.UiText.Language == "en" ? "en-US" : "ru-RU"))} (вход {usage.Input}, выход {usage.Output}; {usage.Scope}{(completed ? "" : UiText.T("; неполные данные"))})");
+        return UiText.Format($"\n\n---\nВремя задачи: {elapsed.TotalSeconds.ToString("0.0", CultureInfo.GetCultureInfo(CadMcp.Core.UiText.Language == "en" ? "en-US" : "ru-RU"))} с · Токены: {tokens}");
     }
 
     internal static long? Count(JsonElement e, string key) =>
@@ -24,7 +25,7 @@ public static class AnswerMetrics
         // Claude's cache counters are separate from input_tokens. Optional fields may be absent, never malformed.
         long? Optional(string key) => ProviderJson.Child(u, key).ValueKind == JsonValueKind.Undefined ? 0 : Count(u, key);
         if (Optional("cache_read_input_tokens") is not { } read || Optional("cache_creation_input_tokens") is not { } write) return null;
-        try { input = checked(input + read + write); return new(checked(input + output), input, output, "последний результат Claude"); }
+        try { input = checked(input + read + write); return new(checked(input + output), input, output, UiText.T("последний результат Claude")); }
         catch (OverflowException) { return null; }
     }
 }
@@ -40,7 +41,7 @@ internal sealed class CodexUsageTracker(bool resumed)
         var total = ProviderJson.Child(ProviderJson.Child(parameters, "tokenUsage"), "total");
         if (AnswerMetrics.Count(total, "totalTokens") is not { } all || AnswerMetrics.Count(total, "inputTokens") is not { } input ||
             AnswerMetrics.Count(total, "outputTokens") is not { } output) return null;
-        var value = new ProviderTokenUsage(all, input, output, "Codex, основной агент");
+        var value = new ProviderTokenUsage(all, input, output, UiText.T("Codex, основной агент"));
         if (ProviderJson.Text(parameters, "turnId") is not { } turn) return null;
         if (activeTurn is null || turn != activeTurn)
         {

@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Text;
 using System.Text.Json;
 
@@ -37,6 +38,6 @@ internal sealed class CodexAnswerBuffer
         var nonempty = order.Select(id => messages[id]).Where(m => m.Text.Length > 0).ToArray();
         // Older servers do not expose phase. Only their last message is treated as the answer.
         return (nonempty.LastOrDefault(m => m.Phase == "final_answer") ?? nonempty.LastOrDefault(m => m.Phase is null))?.Text.ToString()
-            ?? "Codex завершил задачу без итогового ответа.";
+            ?? UiText.T("Codex завершил задачу без итогового ответа.");
     }
 }

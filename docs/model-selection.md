@@ -1,29 +1,29 @@
-# Выбор модели в 0.2.2
+# Model selection in 0.2.2
 
-В панели выберите Codex, модель и глубину рассуждений. «Автоматически» использует модель по умолчанию из каталога аккаунта; «По умолчанию» — уровень выбранной модели. Кнопка обновления перечитывает каталог без запуска диалога с моделью. Скрытые модели исключаются, все страницы каталога учитываются.
+Select Codex, model, and reasoning effort in the panel. Automatic uses the account catalog's default model; Default uses the selected model's default effort. Refresh reloads the catalog without starting a model conversation. Hidden models are excluded and all catalog pages are read.
 
-Настройки хранятся вместе с историей в `%LOCALAPPDATA%/CadMcp/chat`. Старые JSON-файлы совместимы. Смена модели или уровня создаёт новый процесс адаптера, восстанавливает прежний диалог через `thread/resume` и явно передаёт выбранную модель в start/resume/turn, уровень — в turn. Доступность проверяется перед отправкой; отсутствующая модель и неподдерживаемый уровень дают понятную ошибку.
+Settings persist with history under `%LOCALAPPDATA%/CadMcp/chat`; old JSON files remain compatible. Changing model/effort creates a new adapter process, resumes the conversation with `thread/resume`, and explicitly supplies model to start/resume/turn and effort to turn. Availability is checked before sending; unavailable models and unsupported effort levels produce clear errors.
 
-Установщик содержит официальный Codex CLI 0.159.0 вместе с app-server, code-mode-host, средствами Windows и ripgrep в исходной структуре пакета. Один `codex.exe` недостаточен для запуска инструментов этой версии. Архивы и бинарные компоненты закреплены контрольными суммами в `installer/codex-assets.json`. `scripts/prepare-codex.ps1` подготавливает проверенный комплект. Стандартный путь к CLI desktop-приложения мигрирует на комплектный; явно заданный другой путь сохраняется. Учётные данные по-прежнему обслуживает официальный Codex.
+The installer bundles official Codex CLI 0.159.0, app-server, code-mode-host, Windows tools, and ripgrep in the upstream package structure. A standalone `codex.exe` is insufficient for this version's tools. Archives/binaries are checksum-pinned in `installer/codex-assets.json`; `scripts/prepare-codex.ps1` prepares the verified package. The default desktop-app CLI path migrates to the bundled CLI; explicit custom paths remain unchanged. Official Codex still manages credentials.
 
 ## Claude Code
 
-Для Claude Code список моделей берётся у установленного CLI. Панель запускает `claude -p` в режиме stream-json без MCP-серверов и сохранения сессии и отправляет управляющий запрос `initialize`. Claude Code отвечает моделями аккаунта: псевдоним (`sonnet`, `opus`, `fable`, `haiku`), текущая версия и описание, поддерживаемые уровни `--effort`. Модель при этом не вызывается.
+Claude Code supplies the installed CLI's model list. The panel runs `claude -p` in stream-json mode without MCP servers or session persistence and sends control request `initialize`. Claude returns account models, aliases (`sonnet`, `opus`, `fable`, `haiku`), current versions/descriptions, and supported `--effort` levels. No model inference is invoked.
 
-- «Автоматически» не передаёт `--model`: Claude Code берёт модель по умолчанию. Панель показывает её текущую версию.
-- Уровни глубины — те, что принимает выбранная модель. Модели без уровней получают только «По умолчанию», и `--effort` не передаётся.
-- Сохранённая модель или уровень, которых больше нет в списке, отмечаются «недоступна» и отклоняются до отправки сообщения.
-- Если список не прочитан (старая версия Claude Code или ошибка запуска), предлагаются псевдонимы Sonnet, Opus, Fable и Haiku со всеми уровнями.
-- Ответ подписывается моделью, которую Claude Code фактически выбрал (`claude-opus-5-5` для `opus`), и выбранным уровнем.
+- Automatic omits `--model`, allowing Claude's default; the panel displays its current version.
+- Effort options follow the chosen model. Models without effort support offer Default only and omit `--effort`.
+- Saved models/efforts no longer in the catalog are marked unavailable and rejected before sending.
+- If catalog loading fails (old CLI/startup failure), fallback aliases Sonnet, Opus, Fable, and Haiku offer all efforts.
+- Answers show Claude's actual model (`claude-opus-5-5` for `opus`) and selected effort.
 
-Протокол: [официальный справочник app-server](https://learn.chatgpt.com/docs/app-server). Дистрибутив: [официальный релиз 0.159.0](https://github.com/openai/codex/releases/tag/rust-v0.159.0).
+Protocol: [official app-server reference](https://learn.chatgpt.com/docs/app-server). Distribution: [official 0.159.0 release](https://github.com/openai/codex/releases/tag/rust-v0.159.0).
 
-## Проверено
+## Validation
 
-- 25 автономных тестов: каталог, страницы, скрытые модели, валидация уровня, фактические параметры start/resume/turn, совместимость старых историй и миграция только стандартного CLI.
-- Отдельный WPF-тест `tests/CadMcp.ChatPanelProbe`: отображение и сохранение выбора, фильтрация уровней, восстановление истории и отключение выбора модели Codex при работе с Claude. Панель отрисована и просмотрена.
-- Настоящий Codex 0.159.0 в авторизованном аккаунте: каталог содержит GPT-6 Sol. Astra / low выполнил запросы тестового CAD-сервера. Затем новый процесс с Sol / medium восстановил тот же диалог, вспомнил контрольную фразу и выполнил `cad_edit`, `cad_lisp`, `cad_focus`, проверку статусов без подтверждений.
+- 25 offline tests: catalog/pagination/hidden models, effort validation, actual start/resume/turn arguments, old histories, and migration of only the standard CLI path.
+- Separate WPF probe `tests/CadMcp.ChatPanelProbe`: rendering/persistence, effort filtering, history restoration, and disabling Codex model controls under Claude. The panel was rendered and visually inspected.
+- Real authenticated Codex 0.159.0: catalog included GPT-6 Sol. Astra / low called a test CAD server. A new Sol / medium process resumed the same conversation, recalled a control phrase, and called `cad_edit`, `cad_lisp`, `cad_focus`, and status tools without approval prompts.
 
-Первый общий шестиминутный лимит двух модельных ходов закончился во время Sol. Для проверки каждого хода теперь используется отдельный лимит. Повторное восстановление сохранённого диалога Sol завершилось успешно. Изолированный broker не подключался к AutoCAD; эта проверка не подтверждает геометрию настоящего DWG.
+The initial shared six-minute limit expired during Sol. Each turn now has its own limit; a subsequent resume of the saved Sol conversation succeeded. The isolated broker never connected to AutoCAD, so this does not validate real DWG geometry.
 
-Опциональная проверка использует подписку: `tests/CadMcp.Tests/bin/Release/net8.0-windows/CadMcp.Tests.exe --live-codex-model-test <codex.exe>`. После завершённого первого хода можно продолжить проверку Sol с `--resume-conversation <id>`; это сохраняет контекст Astra и не повторяет первый ход. Результаты — `.runtime/model-probe-*/result.json`. Автономный запуск тестов не обращается к модели.
+Optional subscription test: `tests/CadMcp.Tests/bin/Release/net8.0-windows/CadMcp.Tests.exe --live-codex-model-test <codex.exe>`. After the first completed turn, `--resume-conversation <id>` continues Sol with Astra context without repeating that first turn. Results: `.runtime/model-probe-*/result.json`. Offline tests never call a model.

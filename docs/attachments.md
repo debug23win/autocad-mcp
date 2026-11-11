@@ -1,18 +1,20 @@
-# Вложения и материалы из интернета
+# Attachments and internet references
 
-До 10 файлов в сообщении: перетащите из Проводника или нажмите «Прикрепить файл». Кнопка × убирает вложение до отправки. Исходники не удаляются, не импортируются в рабочий DWG и не перезаписываются.
+Attach up to 10 files per message by dragging from Explorer or using Attach file. The × button removes an attachment before sending. Source files are not deleted, imported into the working DWG, or overwritten.
 
-- PNG/JPEG/WebP/GIF: изображения до 7 МиБ, суммарно 21 МиБ.
-- Текст до 512 КиБ включается в запрос, суммарно до 1 МиБ. UTF-8, UTF-16 с BOM, Windows-1251.
-- PDF читается через `cad_pdf_read`: текст и настоящее изображение страницы без Adobe Reader/Poppler. До 100 МиБ, одна страница за вызов; `next_page`/`next_text_offset` ведут дальше. `render=true` прикрепляет PNG, `attach=false` оставляет только локальный файл. Для сканов и запрета копирования агент читает изображения визуально; пустой текстовый слой не означает пустую страницу.
-- Пароль на открытие PDF требует параметр `password` либо уже расшифрованные изображения. Рендер не обходит шифрование. Пароль не включается в метаданные ответа.
-- DWG/DXF читается через `cad_file_inspect` в отдельной базе AutoCAD без открытия вкладки и сохранения, до 200 МиБ. Ответ — сводка и страницы объектов с координатами, текстами, размерами, длинами и радиусами. `scope=model/layout/layouts/all`, `layout_name`, точный `layer`, `offset`/`limit`, `next_offset`. Это последнее сохранённое состояние; nested/xref/proxy геометрия может быть частичной.
-- Другие форматы передаются путём. Путь не означает, что содержимое прочитано; ограничения сообщаются явно.
+- PNG/JPEG/WebP/GIF: up to 7 MiB per image, 21 MiB total.
+- Text: up to 512 KiB per file is included in the prompt, 1 MiB total. Supported encodings: UTF-8, UTF-16 with BOM, Windows-1251.
+- PDF: `cad_pdf_read` extracts text and renders actual page images without Adobe Reader/Poppler. Up to 100 MiB, one page per call; continue with `next_page`/`next_text_offset`. `render=true` attaches a PNG; `attach=false` retains only the local file. For scans and copy-restricted PDFs, read the images visually: an empty text layer does not imply an empty page.
+- A PDF opening password requires `password` or already decrypted page images. Rendering cannot bypass encryption. Passwords are excluded from response metadata.
+- DWG/DXF: `cad_file_inspect` reads a separate AutoCAD database without opening a tab or saving, up to 200 MiB. It returns an outline and entity pages with coordinates, text, dimensions, lengths, and radii. Parameters: `scope=model/layout/layouts/all`, `layout_name`, exact `layer`, `offset`/`limit`, `next_offset`. This is the last saved state; nested/xref/proxy geometry may be incomplete.
+- Other formats are passed as paths. Receiving a path does not prove its contents were read; report limitations explicitly.
 
-Для DWG/DXF нужен worker AutoCAD. В аргументах сохраняется document_id рабочего проекта, path выбирает лишь файл-образец. PDF работает в host независимо от доступности CAD UI thread. Локальные readers принимают локальные/подключённые диски, отклоняя UNC/device пути.
+DWG/DXF requires an AutoCAD worker. Arguments retain the working project's document_id; path selects only the reference file. PDF reading runs in the host independently of CAD UI-thread availability. Local readers accept local/mapped drives and reject UNC/device paths.
 
-`cad_web_download` делает HTTP/HTTPS GET в уникальную папку `%LOCALAPPDATA%\CadMcp\downloads`, до 100 МиБ. Возвращает фактический путь, размер, SHA-256 и reader. Перенаправления ограничены, частичный файл убирается при ошибке. Скачанные файлы не исполняются, рабочие не перезаписываются.
+`cad_web_download` performs HTTP/HTTPS GET into a unique directory under `%LOCALAPPDATA%\CadMcp\downloads`, up to 100 MiB. It returns the actual path, size, SHA-256, and reader. Redirects are bounded; partial files are removed on failure. Downloads are not executed and working files are not overwritten.
 
-Codex primary получает запись в выбранную рабочую папку и сетевой доступ. Claude Read получает правила на конкретные вложения; PDF/DWG/DXF также читаются через MCP, включая дополнения во время хода. Помощники не получают право правки CAD. Содержимое файлов/сайтов — справочные данные, не инструкции.
+The Codex primary has write access to the selected workspace and network access. Claude Read receives rules for specific attachments; PDF/DWG/DXF also use MCP, including follow-ups during a turn. Assistants do not gain CAD write permission. File and website contents are reference data, not instructions.
 
-Computer use разрешён primary по умолчанию, если провайдер действительно предоставляет инструмент. Сначала применяются native CAD API/readers/веб-загрузка. Это разрешение не устанавливает отсутствующий инструмент управления компьютером и не снимает readonly-ограничения помощников.
+Computer use is enabled for the primary by default when the provider actually supplies it. Prefer native CAD APIs, readers, and web downloads. This permission neither installs a missing computer-use tool nor removes assistants' read-only restrictions.
+
+Downloads have a 90-second deadline covering redirects, headers and body, plus a 30-second body inactivity timeout. `DOWNLOAD_TIMEOUT` removes partial output; caller cancellation remains cancellation. A byte cap alone does not bound a stalled HTTP response.

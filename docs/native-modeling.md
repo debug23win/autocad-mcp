@@ -1,8 +1,8 @@
-# Нативное моделирование через C#
+# Native modeling through C#
 
-`cad_edit` выполняет пакет операций штатным .NET API AutoCAD в одной транзакции. Это компилированный адаптер с перечисленными командами, а не окно исполнения произвольного C# кода. Агент должен прочитать `cad_edit_help` перед правкой. AutoLISP нужен только для конкретной операции, которой нет в справке и которую нельзя собрать из доступных C# действий.
+`cad_edit` runs an operation batch through AutoCAD's standard .NET API in one transaction. It is a compiled adapter with enumerated operations, not an arbitrary C# console. Read `cad_edit_help` before editing. Use AutoLISP only for a specific operation missing from the help that cannot be composed from available C# actions.
 
-Для модели по фотографии можно сочетать `line`, `polyline3d`, `spline`, `mesh`, объёмные примитивы, `extrude`, `sweep`, `revolve` и `solid_boolean`. Сетка получает вершины `[x,y,z]` и треугольные/четырёхугольные грани с индексами от нуля. Она создаётся как обычный `SubDMesh` без сглаживания. Например:
+For photo-based models, combine `line`, `polyline3d`, `spline`, `mesh`, solid primitives, `extrude`, `sweep`, `revolve`, and `solid_boolean`. Meshes take `[x,y,z]` vertices and triangular/quadrilateral faces with zero-based indices. They become ordinary unsmoothed `SubDMesh` objects. Example:
 
 ```json
 [
@@ -11,7 +11,7 @@
 ]
 ```
 
-Объёмную деталь можно получить из замкнутого контура; исходный контур остаётся в DWG. `solid_boolean` меняет первое тело и по умолчанию удаляет второе. Поле `keep_tool:true` сохраняет второе тело. `rotate3d` принимает две точки оси и угол в градусах. Для всех координат используются WCS и реальные единицы DWG.
+A closed profile can produce a solid; the source profile remains in the DWG. `solid_boolean` modifies the first solid and erases the second by default; `keep_tool:true` retains it. `rotate3d` takes two axis points and an angle in degrees. All coordinates use WCS and actual drawing units.
 
 ```json
 [
@@ -22,8 +22,8 @@
 ]
 ```
 
-Доступны также `sphere`, `cone`, `wedge`, `torus`, пространственный сплайн, sweep по существующей кривой и revolve замкнутого профиля вокруг оси. Профиль sweep должен находиться у начала траектории и иметь подходящую ориентацию. Некорректная геометрия вызывает ошибку моделирующего ядра и откат всего пакета. Ответ содержит handles, объёмы и координаты для проверки.
+Also available: `sphere`, `cone`, `wedge`, `torus`, spatial splines, sweep along an existing curve, and revolve of a closed profile around an axis. Place/orient a sweep profile appropriately at the path start. Invalid geometry triggers a modeling-kernel error and rolls back the batch. Results contain handles, volumes, and coordinates for verification.
 
-Для работы «по референсу» готовая модель должна пройти сравнение с исходным изображением с близкого ракурса: силуэт, пропорции, основные поверхности и узнаваемые детали. Наличие в DWG сетки или похожей категории объекта этого не доказывает. Если результат выглядит схематично, агент должен назвать его черновиком и перечислить расхождения. Одна перспектива не задаёт скрытые поверхности и точный масштаб; для точного воспроизведения нужны исходная 3D-модель, ортогональные виды или хотя бы габариты и ключевые размеры.
+Reference-based modeling requires comparing the finished model against the original image from a similar viewpoint: silhouette, proportions, major surfaces, and recognizable details. A mesh or a similar object category in the DWG does not prove fidelity. Label schematic results as drafts and list differences. One perspective cannot determine hidden surfaces or precise scale; accurate reproduction needs the original 3D model, orthographic views, or at least overall/key dimensions.
 
-Пока нет автоматического восстановления сетки из фотографий, проверки герметичности/самопересечений всей модели, BREP-редактирования граней и рёбер, материалов и автоматического сопоставления модели с изображением. Эти функции следует добавлять отдельно с геометрическими тестами. Специальные объекты Civil 3D/Map 3D требуют API работающего вертикального продукта.
+Automatic photo-to-mesh reconstruction, whole-model watertightness/self-intersection checks, BREP face/edge editing, materials, and automatic model-to-image matching are not implemented. Add these separately with geometric tests. Specialized Civil 3D/Map 3D objects require APIs from the running vertical product.

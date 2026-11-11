@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Net;
 using System.Text;
 using Markdig;
@@ -12,6 +13,8 @@ public sealed record ChatLine(string Role, string Text, string? Model = null, st
 
 public static class ChatMarkup
 {
+    private static bool IsTechnicalStep(string text) => new[] { "Завершено: cad_", "Выполняю cad_", "Completed: cad_", "Running cad_" }.Any(prefix => text.StartsWith(prefix, StringComparison.Ordinal));
+
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions().DisableHtml().Build();
 
@@ -36,7 +39,7 @@ public static class ChatMarkup
             var message = messages[index];
             string role = message.Role is "user" or "assistant" or "progress" ? message.Role : "history";
             html.Append("<article class='message ").Append(role).Append("' data-index='").Append(index).Append("'>");
-            html.Append("<header>").Append(role switch { "user" => "Вы", "assistant" => "Ассистент", "progress" => "Ход работы", _ => "История" });
+            html.Append("<header>").Append(role switch { "user" => UiText.T("Вы"), "assistant" => UiText.T("Ассистент"), "progress" => UiText.T("Ход работы"), _ => UiText.T("История") });
             if (!string.IsNullOrWhiteSpace(message.Model)) html.Append(" <small>").Append(WebUtility.HtmlEncode(message.Model)).Append("</small>");
             if (!string.IsNullOrWhiteSpace(message.Effort)) html.Append(" <small>· ").Append(WebUtility.HtmlEncode(message.Effort)).Append("</small>");
             html.Append("</header><div class='content'>").Append(MarkdownHtml(message.Text)).Append("</div>");
@@ -57,22 +60,22 @@ public static class ChatMarkup
                         if (file.Width > 0 && file.Height > 0) html.Append(" width='").Append(file.Width).Append("' height='").Append(file.Height).Append("'");
                         html.Append("><figcaption>").Append(label).Append("</figcaption></figure>");
                     }
-                    else html.Append("<p class='missing-image'>Изображение недоступно: ").Append(label).Append("</p>");
+                    else html.Append(UiText.T("<p class='missing-image'>Изображение недоступно: ")).Append(label).Append("</p>");
                 }
                 html.Append("</div>");
             }
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
-                html.Append("<section class='reasoning'><strong>Краткий ход рассуждений</strong>")
+                html.Append(UiText.T("<section class='reasoning'><strong>Краткий ход рассуждений</strong>"))
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
             if (message.Steps is { Count: > 0 })
             {
-                html.Append("<details class='progress-notes' open><summary>Ход работы</summary><ol>");
-                foreach (string step in message.Steps.Where(s => !s.StartsWith("Завершено: cad_", StringComparison.Ordinal) && !s.StartsWith("Выполняю cad_", StringComparison.Ordinal))) html.Append("<li>").Append(MarkdownHtml(step)).Append("</li>");
+                html.Append(UiText.T("<details class='progress-notes' open><summary>Ход работы</summary><ol>"));
+                foreach (string step in message.Steps.Where(s => !IsTechnicalStep(s))) html.Append("<li>").Append(MarkdownHtml(step)).Append("</li>");
                 html.Append("</ol></details>");
             }
             if (message.Role == "assistant")
                 html.Append("<div class='message-actions'><button type='button' class='copy-answer' data-index='").Append(index)
-                    .Append("' title='Копировать ответ' aria-label='Копировать ответ'>Копировать</button></div>");
+                    .Append(UiText.T("' title='Копировать ответ' aria-label='Копировать ответ'>Копировать</button></div>"));
             html.Append("</article>");
         }
         return html.ToString();
@@ -83,11 +86,11 @@ public static class ChatMarkup
         var value = new StringBuilder();
         foreach (var message in messages)
         {
-            value.AppendLine(message.Role switch { "user" => "Вы:", "assistant" => "Ассистент:", _ => "Ход работы:" });
+            value.AppendLine(message.Role switch { "user" => UiText.T("Вы:"), "assistant" => UiText.T("Ассистент:"), _ => UiText.T("Ход работы:") });
             value.AppendLine(message.Text);
             if (!string.IsNullOrWhiteSpace(message.Delivery)) value.AppendLine(message.Delivery);
-            if (message.Images is { Count: > 0 }) value.AppendLine("Вложения: " + string.Join(", ", message.Images.Select(x => x.Name)));
-            if (!string.IsNullOrWhiteSpace(message.ReasoningSummary)) value.AppendLine("Краткий ход рассуждений: " + message.ReasoningSummary);
+            if (message.Images is { Count: > 0 }) value.AppendLine(UiText.T("Вложения: ") + string.Join(", ", message.Images.Select(x => x.Name)));
+            if (!string.IsNullOrWhiteSpace(message.ReasoningSummary)) value.AppendLine(UiText.T("Краткий ход рассуждений: ") + message.ReasoningSummary);
             value.AppendLine();
         }
         return value.ToString();

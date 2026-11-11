@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Windows;
@@ -55,7 +56,7 @@ internal sealed class ChatBrowser : Grid
         try
         {
             var resources = Path.Combine(Path.GetDirectoryName(typeof(ChatBrowser).Assembly.Location)!, "Resources", "Chat");
-            if (!File.Exists(Path.Combine(resources, "chat.html"))) throw new FileNotFoundException("HTML-ресурсы чата не установлены");
+            if (!File.Exists(Path.Combine(resources, "chat.html"))) throw new FileNotFoundException(UiText.T("HTML-ресурсы чата не установлены"));
             Directory.CreateDirectory(AssetRoot);
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
             await browser.EnsureCoreWebView2Async(environment);
@@ -95,7 +96,7 @@ internal sealed class ChatBrowser : Grid
         {
             browser.Visibility = Visibility.Collapsed;
             fallback.Visibility = Visibility.Visible;
-            fallback.Text = "HTML-представление недоступно: " + error.Message + Environment.NewLine + ChatMarkup.PlainTranscript(messages);
+            fallback.Text = UiText.T("HTML-представление недоступно: ") + error.Message + Environment.NewLine + ChatMarkup.PlainTranscript(messages);
         }
     }
     public ChatImage SaveImage(ChatAttachment file)
@@ -127,15 +128,15 @@ internal sealed class ChatBrowser : Grid
     }
     public ChatImage SavePreview(string base64, int width, int height)
     {
-        if (base64.Length > 6 * 1024 * 1024) throw new InvalidDataException("Предпросмотр слишком велик");
+        if (base64.Length > 6 * 1024 * 1024) throw new InvalidDataException(UiText.T("Предпросмотр слишком велик"));
         byte[] bytes = Convert.FromBase64String(base64);
         if (bytes.Length > 4 * 1024 * 1024 || bytes.Length < 8 ||
             !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
-            throw new InvalidDataException("AutoCAD вернул некорректное изображение");
+            throw new InvalidDataException(UiText.T("AutoCAD вернул некорректное изображение"));
         Directory.CreateDirectory(AssetRoot);
         string destination = Path.Combine(AssetRoot, Guid.NewGuid().ToString("N") + ".png");
         File.WriteAllBytes(destination, bytes);
-        return new ChatImage("Текущий вид чертежа после работы", destination, width, height);
+        return new ChatImage(UiText.T("Текущий вид чертежа после работы"), destination, width, height);
     }
     public void Update(IReadOnlyList<ChatLine> lines, bool isDark, int selectedIndex)
     {
@@ -154,7 +155,14 @@ internal sealed class ChatBrowser : Grid
             string html = ChatMarkup.ConversationHtml(messages, AssetRoot);
             string signature = (dark ? "dark" : "light") + selected + html;
             if (signature == lastRender) return;
-            var json = JsonSerializer.Serialize(new { html, dark, selected, sequence = ++sequence });
+            var json = JsonSerializer.Serialize(new { html, dark, selected, sequence = ++sequence,
+                language = CadMcp.Core.UiText.Language,
+                labels = new {
+                    empty = CadMcp.Core.UiText.T("Напишите запрос о чертеже или прикрепите файлы."),
+                    copied = CadMcp.Core.UiText.T("Скопировано"),
+                    copyFailed = CadMcp.Core.UiText.T("Не удалось скопировать"),
+                    copy = CadMcp.Core.UiText.T("Копировать")
+                } });
             browser.CoreWebView2.PostWebMessageAsJson(json);
             lastRender = signature;
         }

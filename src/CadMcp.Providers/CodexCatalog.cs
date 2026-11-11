@@ -27,7 +27,7 @@ public static class CodexCatalog
             if (!efforts.Contains(effort)) effort = efforts[0];
             result.Add(new(id, name, effort, efforts, Flag(entry, "isDefault")));
         }
-        if (result.Count == 0) throw new IOException("Codex не вернул доступных моделей. Проверьте вход в официальный Codex.");
+        if (result.Count == 0) throw new IOException(UiText.T("Codex не вернул доступных моделей. Проверьте вход в официальный Codex."));
         return result;
     }
     private static string? Text(JsonElement e, string key) =>
@@ -39,9 +39,9 @@ public static class CodexCatalog
         var model = string.IsNullOrEmpty(requestedModel)
             ? models.FirstOrDefault(m => m.IsDefault) ?? models.FirstOrDefault()
             : models.FirstOrDefault(m => m.Id == requestedModel);
-        if (model is null) throw new IOException("Выбранная модель «" + requestedModel + "» недоступна. Обновите список моделей и выберите другую.");
+        if (model is null) throw new IOException(UiText.T("Выбранная модель «") + requestedModel + UiText.T("» недоступна. Обновите список моделей и выберите другую."));
         string effort = string.IsNullOrEmpty(requestedEffort) ? model.DefaultEffort : requestedEffort;
-        if (!model.Efforts.Contains(effort)) throw new IOException("Модель «" + model.DisplayName + "» не поддерживает уровень «" + effort + "». Выберите другой уровень рассуждений.");
+        if (!model.Efforts.Contains(effort)) throw new IOException(UiText.T("Модель «") + model.DisplayName + UiText.T("» не поддерживает уровень «") + effort + UiText.T("». Выберите другой уровень рассуждений."));
         return new(model, effort);
     }
     public static async Task<IReadOnlyList<CodexModel>> ReadAsync(ProviderOptions options, CancellationToken ct)
@@ -49,7 +49,7 @@ public static class CodexCatalog
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         var token = timeout.Token;
-        using var process = Process.Start(ProviderProcess.StartInfo(options, new CodexProvider(options).Arguments())) ?? throw new IOException("Не удалось запустить Codex");
+        using var process = Process.Start(ProviderProcess.StartInfo(options, new CodexProvider(options).Arguments())) ?? throw new IOException(UiText.T("Не удалось запустить Codex"));
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
         var stderr = ProviderProcess.DrainErrors(process);
         var lines = new ProviderLines(process.StandardOutput.BaseStream);
@@ -79,20 +79,20 @@ public static class CodexCatalog
                     else if (replyId == 4)
                     {
                         if (!reply.TryGetProperty("result", out var page) || !page.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-                            throw new IOException("Codex вернул каталог моделей в неизвестном формате");
+                            throw new IOException(UiText.T("Codex вернул каталог моделей в неизвестном формате"));
                         entries.AddRange(data.EnumerateArray().Select(e => e.Clone()));
-                        if (entries.Count > 1000) throw new IOException("Каталог моделей Codex слишком велик");
+                        if (entries.Count > 1000) throw new IOException(UiText.T("Каталог моделей Codex слишком велик"));
                         if (page.TryGetProperty("nextCursor", out var next) && next.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(next.GetString()))
                         {
                             string cursor = next.GetString()!;
-                            if (!cursors.Add(cursor)) throw new IOException("Codex повторил страницу каталога моделей");
+                            if (!cursors.Add(cursor)) throw new IOException(UiText.T("Codex повторил страницу каталога моделей"));
                             await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false, cursor } });
                         }
                         else return Parse(entries);
                     }
                 }
             }
-            throw new IOException("Codex завершился до получения моделей. " + await stderr + lines.Skipped);
+            throw new IOException(UiText.T("Codex завершился до получения моделей. ") + await stderr + lines.Skipped);
         }
         finally { await ProviderProcess.FinishAsync(process, stderr); }
     }

@@ -19,6 +19,25 @@ public sealed record VerificationReport(string State, int EntityCount, int Erase
 /// <summary>Acceptance checks on actual database readback, never on the requested operations.</summary>
 public static class DrawingVerification
 {
+    public static void RequireSupported(IEnumerable<JsonElement> operations, JsonElement expectations)
+    {
+        if (operations.Any(o => o.Text("op")?.StartsWith("map_", StringComparison.Ordinal) == true) &&
+            expectations.ValueKind == JsonValueKind.Object && expectations.EnumerateObject().Any(p => p.Name != "enforce"))
+            throw new CadFault("UNSUPPORTED_MAP_EXPECTATIONS", "Map actions cannot enforce geometry acceptance. No Map write was started; use an explicit independent Map readback instead.");
+    }
+
+    public static string[] OperationHandles(JsonElement result, int maximum = 500)
+    {
+        if (result.TryGetProperty("changed_handles_omitted", out var omitted) && omitted.ValueKind == JsonValueKind.True)
+            throw new CadFault("VERIFY_TOO_LARGE", "Operation handles are incomplete; a prefix cannot verify the whole operation. Read cad_changes and verify explicit bounded groups.");
+        var handles = result.TryGetProperty("changed_handles", out var changed) && changed.ValueKind == JsonValueKind.Array
+            ? changed.EnumerateArray().Select(h => h.GetString()).OfType<string>()
+            : result.TryGetProperty("entities", out var entities) && entities.ValueKind == JsonValueKind.Array
+                ? entities.EnumerateArray().Select(e => e.Text("handle")).OfType<string>() : [];
+        var distinct = handles.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (distinct.Length > maximum) throw new CadFault("VERIFY_TOO_LARGE", "The operation changed " + distinct.Length + " entities; verify explicit groups of up to " + maximum);
+        return distinct;
+    }
     private static readonly HashSet<string> Properties = new(StringComparer.Ordinal)
     { "type", "layer", "length", "radius", "area", "volume", "measurement", "closed", "vertex_count", "face_count",
       "position", "center", "start", "end", "bounds.min", "bounds.max", "bounds.size", "distance",

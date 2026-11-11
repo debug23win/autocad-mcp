@@ -13,7 +13,8 @@ public sealed record ProviderOptions(string Executable, string McpExecutable, st
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
-public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null, CodexRateLimits? RateLimits = null);
+public sealed record ChatEvent(string Kind, string Text, ProviderTokenUsage? Usage = null, CodexRateLimits? RateLimits = null,
+    string? Tool = null, string? Phase = null);
 public interface IChatProvider
 {
     string? SessionId { get; set; }
@@ -84,6 +85,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     private readonly LiveInput live = new();
     /// <summary>Quiet period after a result that did not list its messages, before merged messages are assumed answered.</summary>
     internal TimeSpan QuietAfterResult { get; set; } = TimeSpan.FromSeconds(30);
+    internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(90);
+    internal TimeSpan EventSilenceTimeout { get; set; } = TimeSpan.FromMinutes(5);
     internal TimeSpan AcknowledgementTimeout { get => live.AcknowledgementTimeout; set => live.AcknowledgementTimeout = value; }
     public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
     // Read-only built-in tools: the working folder and the files the user attached, never anything else.
@@ -121,7 +124,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 ["cad_researcher"] = new
                 {
                     description = "Read-only CAD researcher for independent drawing inspection, calculations and quality checks. Use for parallel subtasks; report evidence to the primary assistant.",
-                    prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant.",
+                    prompt = "Analyze the assigned CAD question independently. Use CAD tools only to read the drawing. Do not edit, run AutoLISP, export or publish. Return concise findings, measurements, assumptions and uncertainty to the primary assistant. " + CadAgent.LanguagePolicy(UiText.Language),
                     mcpServers=new object[]{new Dictionary<string,object>{["cad"] = new {command=options.McpExecutable,args=options.McpArguments??Array.Empty<string>(),env=readOnlyEnvironment}}},
                     tools = CadOperations.HelperAllowed.Concat(CadOperations.HostTools).Order(StringComparer.Ordinal).Select(tool => "mcp__cad__" + tool).Append("WebSearch").Concat(ReadTools).ToArray()
                 }
@@ -166,7 +169,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         // Claude Code keeps conversations per working folder and deletes old ones; the saved id then no longer
         // resumes and every message of the chat would fail. Start over and say so: the earlier context is gone.
         SessionId = null;
-        yield return new("status", "Прежний диалог Claude Code не найден (его удалил Claude Code или изменилась рабочая папка); начат новый диалог");
+        yield return new("status", UiText.T("Прежний диалог Claude Code не найден (его удалил Claude Code или изменилась рабочая папка); начат новый диалог"));
         await foreach (var item in RunAsync(prompt, attachments, new Attempt(), ct)) yield return item;
     }
 
@@ -182,10 +185,30 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         var stderr = ProviderProcess.DrainErrors(p);
         var lines = new ProviderLines(p.StandardOutput.BaseStream);
         Task<JsonDocument?>? reading = null;
-        bool completed = false, streamed = false, initialized = false, thinking = false;
+        bool completed = false, streamed = false, initialized = false, thinking = false, started = false;
         string? limitWarning = null;
         var pendingTools = new Dictionary<string, string>(StringComparer.Ordinal);
         var pendingArguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var startupClock = Stopwatch.StartNew();
+        var lastHeartbeat = TimeSpan.FromSeconds(-1);
+        async Task<JsonDocument?> ReadNext()
+        {
+            TimeSpan budget = started ? EventSilenceTimeout : StartupTimeout - startupClock.Elapsed;
+            string message = UiText.T(started
+                ? "Claude Code не передавал события слишком долго. Проверьте квитанции CAD; автоматического повтора нет."
+                : "Claude Code не начал задачу за отведённое время. Автоматического повтора правок нет.");
+            if (budget <= TimeSpan.Zero) throw new IOException(message);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(budget);
+            using var stopSilentProcess = deadline.Token.Register(() => ProviderProcess.Stop(p));
+            try
+            {
+                var document = await lines.ReadAsync(deadline.Token);
+                if (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { document?.Dispose(); throw new IOException(message); }
+                return document;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new IOException(message); }
+            catch (IOException error) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested) { throw new IOException(message, error); }
+        }
         try
         {
             var turns = new ClaudeTurns(Guid.NewGuid().ToString());
@@ -205,14 +228,14 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 try { await WriteInput(input,uuid,token); }
                 catch { acknowledgements.TryRemove(uuid,out _);throw; }
             });
-            yield return new("input_ready","Claude принимает дополнения");
+            yield return new("input_ready",UiText.T("Claude принимает дополнения"));
             // After a result, Claude may still owe answers to acknowledged follow-ups, or follow-ups may still
             // await acknowledgement. Then the output is polled so the turn can finish without another line.
             bool turnActive = true;
             DateTimeOffset lastResult = DateTimeOffset.MinValue;
             while (true)
             {
-                reading ??= lines.ReadAsync(ct);
+                reading ??= ReadNext();
                 if (!turnActive && !reading.IsCompleted)
                 {
                     await Task.WhenAny(reading, Task.Delay(250, ct));
@@ -227,9 +250,12 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 if (json is null) break;
                 using (json)
                 {
+                    if (startupClock.Elapsed - lastHeartbeat >= TimeSpan.FromSeconds(1))
+                    { lastHeartbeat = startupClock.Elapsed; yield return new("heartbeat", ""); }
                     var e = json.RootElement;
                     string? type = ProviderJson.Text(e, "type");
                     string? subtype = ProviderJson.Text(e, "subtype");
+                    started |= type is "stream_event" or "assistant" or "user" or "result" || type == "system" && subtype == "init";
                     // Lines of a helper carry the tool call that started it; only the main agent speaks to the user.
                     bool main = ProviderJson.Child(e, "parent_tool_use_id").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null;
                     // session_id repeats on nearly every streamed line; report it only when it changes.
@@ -243,14 +269,14 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                         if (!string.IsNullOrWhiteSpace(options.ReasoningEffort)) yield return new("effort", options.ReasoningEffort);
                     }
                     if (type == "system" && subtype == "thinking_tokens" && ProviderJson.Child(e, "estimated_tokens") is { ValueKind: JsonValueKind.Number } estimate && estimate.TryGetInt32(out int tokens))
-                        yield return new("status", "Claude рассуждает: около " + tokens + " токенов");
+                        yield return new("status", UiText.T("Claude рассуждает: около ") + tokens + UiText.T(" токенов"));
                     if (type == "rate_limit_event" && ProviderJson.Child(e, "rate_limit_info") is { ValueKind: JsonValueKind.Object } limit
                         && ProviderJson.Text(limit, "status") == "allowed_warning" && LimitWarning(limit) is { } warning && warning != limitWarning)
                     { limitWarning = warning; yield return new("status", warning); }
                     if (type == "user" && ProviderJson.Text(e, "uuid") is {} uuid && acknowledgements.TryRemove(uuid,out int receiptId))
                     {
                         turns.Acknowledge(uuid);
-                        live.Resolve(receiptId,new("accepted","Claude принял дополнение; оно включено в очередь этой сессии"));
+                        live.Resolve(receiptId,new("accepted",UiText.T("Claude принял дополнение; оно включено в очередь этой сессии")));
                     }
                     if (type == "stream_event" && main)
                     {
@@ -259,7 +285,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                         if (ProviderJson.Text(streamEvent, "type") == "content_block_start")
                         {
                             bool startsThinking = ProviderJson.Text(ProviderJson.Child(streamEvent, "content_block"), "type") == "thinking";
-                            if (startsThinking && !thinking) yield return new("status", "Claude рассуждает");
+                            if (startsThinking && !thinking) yield return new("status", UiText.T("Claude рассуждает"));
                             thinking = startsThinking;
                         }
                         // Claude Code shows a summary of the reasoning when it has one, never the reasoning itself.
@@ -272,7 +298,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             {
                                 if (ProviderJson.Text(block, "id") is { } id) { pendingTools[id] = toolName; var input = ProviderJson.Child(block, "input"); pendingArguments[id] = input.ValueKind == JsonValueKind.Undefined ? default : input.Clone(); }
                                 yield return toolName is "Agent" or "Task"
-                                    ? new("status", "Помощники анализируют задачу") : new("step", "Выполняю " + toolName);
+                                    ? new("status", UiText.T("Помощники анализируют задачу")) : new("step", UiText.T("Выполняю ") + toolName, Tool: toolName, Phase: "running");
                             }
                     if (type == "user" && ProviderJson.Child(ProviderJson.Child(e, "message"), "content") is { ValueKind: JsonValueKind.Array } results)
                         foreach (var resultBlock in results.EnumerateArray())
@@ -286,8 +312,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                                 failed |= problem is not null;
                                 if (problem is not null) yield return new("problem", problem);
                                 yield return toolName is "Agent" or "Task"
-                                    ? new("status", "Объединяю результаты помощников")
-                                    : new("step", (failed ? "Ошибка: " : "Завершено: ") + toolName);
+                                    ? new("status", UiText.T("Объединяю результаты помощников"))
+                                    : new("step", (failed ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + toolName, Tool: toolName, Phase: failed ? "failed" : "completed");
                             }
                     if (type == "result")
                     {
@@ -306,7 +332,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                         turnActive = false; lastResult = DateTimeOffset.UtcNow; streamed = false;
                         if (turns.Settled(false) && live.TryClose())
                         { completed=true;yield return new("completed","completed");yield break; }
-                        yield return new("response_completed","Продолжаю с учётом дополнения");
+                        yield return new("response_completed",UiText.T("Продолжаю с учётом дополнения"));
                     }
                 }
             }
@@ -325,15 +351,15 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
             var listed = errors.EnumerateArray().Select(error => error.ValueKind == JsonValueKind.String ? error.GetString() : ProviderJson.Text(error, "message")).OfType<string>().Where(s => s.Length > 0).ToArray();
             if (listed.Length > 0) return string.Join("; ", listed);
         }
-        return "ход завершился ошибкой (" + (ProviderJson.Text(result, "subtype") ?? "без описания") + ")";
+        return UiText.T("ход завершился ошибкой (") + (ProviderJson.Text(result, "subtype") ?? UiText.T("без описания")) + ")";
     }
 
     public static string FriendlyError(string message)
     {
         if (message.Contains("issue with the selected model", StringComparison.OrdinalIgnoreCase))
-            return "Выбранная модель недоступна для этого аккаунта или версии Claude Code. Обновите список моделей и выберите другую. (" + message + ")";
+            return UiText.T("Выбранная модель недоступна для этого аккаунта или версии Claude Code. Обновите список моделей и выберите другую. (") + message + ")";
         if (message.Contains("/login", StringComparison.OrdinalIgnoreCase) || message.Contains("Invalid API key", StringComparison.OrdinalIgnoreCase) || message.Contains("OAuth token", StringComparison.OrdinalIgnoreCase))
-            return "Нужно войти в Claude Code: нажмите «Войти» в панели. (" + message + ")";
+            return UiText.T("Нужно войти в Claude Code: нажмите «Войти» в панели. (") + message + ")";
         return message;
     }
 
@@ -342,10 +368,10 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         if (ProviderJson.Child(limit, "utilization") is not { ValueKind: JsonValueKind.Number } used) return null;
         string window = ProviderJson.Text(limit, "rateLimitType") switch
         {
-            "five_hour" => "пятичасового", "seven_day" => "недельного", "seven_day_opus" => "недельного для Opus", "seven_day_sonnet" => "недельного для Sonnet",
+            "five_hour" => UiText.T("пятичасового"), "seven_day" => UiText.T("недельного"), "seven_day_opus" => UiText.T("недельного для Opus"), "seven_day_sonnet" => UiText.T("недельного для Sonnet"),
             var other => other is null ? "" : "«" + other + "»"
         };
-        return "Claude: израсходовано " + Math.Round(used.GetDouble() * 100) + "% " + window + " лимита подписки";
+        return UiText.T("Claude: израсходовано ") + Math.Round(used.GetDouble() * 100) + "% " + window + UiText.T(" лимита подписки");
     }
 }
 
@@ -413,7 +439,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         {
             bool starting = activeTurnId is null;
             TimeSpan budget = starting ? StartupTimeout - startupClock.Elapsed : EventSilenceTimeout;
-            string message = starting ? "Codex не начал задачу за отведённое время. Сессия остановлена; автоматического повтора правок нет." : "Codex не передавал события слишком долго. Сессия остановлена; принятые AutoCAD операции нужно проверить, автоматического повтора нет.";
+            string message = starting ? UiText.T("Codex не начал задачу за отведённое время. Сессия остановлена; автоматического повтора правок нет.") : UiText.T("Codex не передавал события слишком долго. Сессия остановлена; принятые AutoCAD операции нужно проверить, автоматического повтора нет.");
             if (budget <= TimeSpan.Zero) throw new IOException(message);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(budget);
             using var stopSilentProcess = deadline.Token.Register(() => ProviderProcess.Stop(p));
@@ -444,12 +470,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (replyId is >= 100 && !isRequestOrEvent)
                     {
                         if (e.TryGetProperty("error",out var inputError)) live.Resolve(replyId.Value,new("rejected",ErrorMessage(inputError)));
-                        else live.Resolve(replyId.Value,new("accepted","Дополнение принято в текущую задачу"));
+                        else live.Resolve(replyId.Value,new("accepted",UiText.T("Дополнение принято в текущую задачу")));
                         continue;
                     }
                     if (!isRequestOrEvent && e.TryGetProperty("error", out var error))
                     {
-                        if (replyId == 5) { yield return new("rate_limits", "нет данных"); continue; }
+                        if (replyId == 5) { yield return new("rate_limits", UiText.T("нет данных")); continue; }
                         string message = ErrorMessage(error);
                         if (replyId == 2 && SessionId is not null && message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase) && resumeRetries < 3)
                         {
@@ -473,7 +499,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         else if (id == 4)
                         {
                             if (ProviderJson.Child(result, "data") is not { ValueKind: JsonValueKind.Array } data)
-                                throw new IOException("Codex вернул каталог моделей в неизвестном формате");
+                                throw new IOException(UiText.T("Codex вернул каталог моделей в неизвестном формате"));
                             models.AddRange(data.EnumerateArray().Select(m => m.Clone()));
                             if (ProviderJson.Text(result, "nextCursor") is { Length: > 0 } cursor)
                             {
@@ -499,7 +525,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                             await Send(new { id = 3, method = "turn/start", @params = new { threadId = SessionId, model, effort, input } });
                         }
                         else if (id == 3 && ProviderJson.Text(ProviderJson.Child(result, "turn"), "id") is { } startedTurn)
-                        { Activate(startedTurn);yield return new("input_ready","Дополнения доступны"); }
+                        { Activate(startedTurn);yield return new("input_ready",UiText.T("Дополнения доступны")); }
                         continue;
                     }
                     if (!isRequestOrEvent) continue;
@@ -515,11 +541,11 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         // Approvals are disabled and the panel has no UI for interactive requests. Decline the
                         // request and let Codex continue: the model sees the refusal instead of losing the turn.
                         await Send(new { id = serverRequest.Clone(), error = new { code = -32000, message = "CAD MCP declined " + name + ": interactive requests are disabled in this chat" } });
-                        yield return new("problem", "Этап: интерактивное действие Codex\nКод: INTERACTIVE_REQUEST_DISABLED\nЗапрос: " + name + "\nВ этом чате интерактивные запросы отключены; Codex получил отказ. Результат CAD-операций требует отдельной проверки.");
+                        yield return new("problem", UiText.T("Этап: интерактивное действие Codex\nКод: INTERACTIVE_REQUEST_DISABLED\nЗапрос: ") + name + UiText.T("\nВ этом чате интерактивные запросы отключены; Codex получил отказ. Результат CAD-операций требует отдельной проверки."));
                         continue;
                     }
                     if (name == "turn/started" && rootEvent && ProviderJson.Text(ProviderJson.Child(parameters, "turn"), "id") is { } activeTurn)
-                    { Activate(activeTurn);yield return new("input_ready","Дополнения доступны"); }
+                    { Activate(activeTurn);yield return new("input_ready",UiText.T("Дополнения доступны")); }
                     if (name == "item/agentMessage/delta" && rootEvent) answer.Delta(parameters);
                     // Codex exposes a summary of reasoning, never the private reasoning text.
                     if (name == "item/reasoning/summaryTextDelta" && rootEvent)
@@ -531,23 +557,23 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         yield return new("progress", commentary.Length > 1200 ? commentary[..1200] + "…" : commentary);
                     if (name == "item/started" && rootEvent)
                     {
-                        string? activity = itemType switch { "commandExecution" => "Выполняю команду в рабочей папке", "fileChange" => "Обновляю файлы в рабочей папке", "webSearch" => "Ищу материалы в интернете", "imageView" => "Изучаю приложенное изображение", _ => null };
+                        string? activity = itemType switch { "commandExecution" => UiText.T("Выполняю команду в рабочей папке"), "fileChange" => UiText.T("Обновляю файлы в рабочей папке"), "webSearch" => UiText.T("Ищу материалы в интернете"), "imageView" => UiText.T("Изучаю приложенное изображение"), _ => null };
                         if (activity is not null) yield return new("progress", activity);
-                        if (itemType == "mcpToolCall") yield return new("step", "Выполняю " + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
-                        if (itemType == "collabAgentToolCall") yield return new("progress", "Помощники проверяют выбранные данные");
+                        if (itemType == "mcpToolCall") yield return new("step", UiText.T("Выполняю ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"), Tool: ProviderJson.Text(item, "tool"), Phase: "running");
+                        if (itemType == "collabAgentToolCall") yield return new("progress", UiText.T("Помощники проверяют выбранные данные"));
                     }
                     if (name == "item/completed" && itemType == "mcpToolCall")
                     {
                         var problem = ToolDiagnostics.Describe(ProviderJson.Text(item, "tool") ?? "MCP", ProviderJson.Child(item, "result"),
                             ProviderJson.Text(item, "status") == "failed", ProviderJson.Child(item, "arguments"), ProviderJson.Child(item, "error"));
-                        if (rootEvent) yield return new("step", (problem is not null ? "Ошибка: " : "Завершено: ") + (ProviderJson.Text(item, "tool") ?? "CAD tool"));
-                        if (problem is not null) yield return new("problem", (rootEvent ? "" : "Проблема у помощника\n") + problem);
+                        if (rootEvent) yield return new("step", (problem is not null ? UiText.T("Ошибка: ") : UiText.T("Завершено: ")) + (ProviderJson.Text(item, "tool") ?? "CAD tool"), Tool: ProviderJson.Text(item, "tool"), Phase: problem is not null ? "failed" : "completed");
+                        if (problem is not null) yield return new("problem", (rootEvent ? "" : UiText.T("Проблема у помощника\n")) + problem);
                     }
                     if (name == "item/completed" && rootEvent && itemType == "collabAgentToolCall")
-                        yield return new("progress", "Проверяю результаты помощников");
+                        yield return new("progress", UiText.T("Проверяю результаты помощников"));
                     if (name == "error")
                     {
-                        if (ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True) yield return new("status", "Codex восстанавливает соединение");
+                        if (ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True) yield return new("status", UiText.T("Codex восстанавливает соединение"));
                         else throw new IOException("Codex: " + FriendlyError(ErrorMessage(parameters)));
                     }
                     if (name == "turn/completed" && rootEvent)
@@ -567,9 +593,9 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
     public static string FriendlyError(string message)
     {
         if (message.Contains("Selected model is at capacity", StringComparison.OrdinalIgnoreCase))
-            return "Выбранная модель сейчас перегружена. Выберите другую модель в панели или повторите позже.";
+            return UiText.T("Выбранная модель сейчас перегружена. Выберите другую модель в панели или повторите позже.");
         if (message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase))
-            return "Этот диалог Codex занят другим процессом. Закройте второе окно этого диалога или начните новый диалог.";
+            return UiText.T("Этот диалог Codex занят другим процессом. Закройте второе окно этого диалога или начните новый диалог.");
         return message;
     }
     public static string ErrorMessage(JsonElement value)

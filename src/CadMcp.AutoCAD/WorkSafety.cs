@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Security.Cryptography;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using CadMcp.Core;
@@ -27,11 +28,13 @@ internal static class WorkSafety
             copy.SaveAs(path, DwgVersion.Current);
             var info = new FileInfo(path);
             if (info.Length == 0) throw new IOException("Empty checkpoint");
-            var record = new { path, sha256 = Portable.Hash(File.ReadAllBytes(path)), bytes = info.Length, operation_id = operation,
-                original = doc.Name, created_at = DateTimeOffset.UtcNow, restore = "Open this copy separately; do not overwrite the working drawing" };
+            using var checkpointFile = File.OpenRead(path);
+            using var hash = SHA256.Create();
+            var record = new { path, sha256 = Convert.ToHexString(hash.ComputeHash(checkpointFile)), bytes = info.Length, operation_id = operation,
+                original = doc.Name, created_at = DateTimeOffset.UtcNow, retention = "retained_until_user_cleanup", restore = "Open this copy separately; do not overwrite the working drawing" };
             File.WriteAllText(path + ".json", JsonSerializer.Serialize(record, Wire.Json));
-            foreach (var old in Directory.EnumerateFiles(directory, "*.dwg").Select(p => new FileInfo(p)).OrderByDescending(p => p.CreationTimeUtc).Skip(10))
-            { try { old.Delete(); File.Delete(old.FullName + ".json"); } catch (IOException) { } }
+            // Receipts may still refer to a failed/unknown operation. Never delete its recovery copy
+            // merely because newer operations arrived; cleanup is an explicit user action.
             return record;
         }
         catch (System.Exception e) { throw new CadFault("CHECKPOINT_FAILED", "Required DWG checkpoint failed; drawing was not changed: " + e.Message); }
@@ -77,11 +80,24 @@ internal static class WorkSafety
         Portable.ReplaceFile(path + ".tmp", path);
         last = value; lastSession = session;
     }
-    internal static object Diagnostics(string session,string? document=null)
+    internal static object Diagnostics(string session, string? document = null, bool verifyCheckpoints = false, CancellationToken ct = default)
     {
+        JsonElement[] records;
         lock (Sync)
-            return new { session_id = session, directory = Root, last_operations = Directory.Exists(Root) ? Directory.EnumerateFiles(Root, "last-operation.json", SearchOption.AllDirectories)
-                .OrderByDescending(File.GetLastWriteTimeUtc).Select(p => { try { return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(p), Wire.Json); } catch { return Wire.Element(new { unreadable = p }); } }).Where(p=>document is null || p.Text("session_id")==session && p.Text("document_id")==document).Take(10).ToArray() : [],
-                interpretation = "Non-terminal phase from a previous session means interrupted/unknown, never proof of rollback. Check checkpoint and receipt before retrying." };
+            records = Directory.Exists(Root) ? Directory.EnumerateFiles(Root, "last-operation.json", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc).Select(p => { try { return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(p), Wire.Json); } catch { return Wire.Element(new { unreadable = p }); } })
+                .Where(p => document is null || p.Text("session_id") == session && p.Text("document_id") == document).Take(10).ToArray() : [];
+        // Hashing can be slow. It must never hold the lock used by the CAD thread's progress writer.
+        var evidence = records.Select(record =>
+        {
+            ct.ThrowIfCancellationRequested();
+            var fields = record.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
+            if (record.TryGetProperty("checkpoint", out var checkpoint) && checkpoint.ValueKind == JsonValueKind.Object)
+                fields["checkpoint_evidence"] = CheckpointEvidence.Inspect(checkpoint, verifyCheckpoints, ct);
+            return fields;
+        }).ToArray();
+        return new { session_id = session, directory = Root, last_operations = evidence,
+            retention = "Recovery DWGs remain until explicit user cleanup; receipts do not guarantee a manually removed file still exists.",
+            interpretation = "Non-terminal phase from a previous session means interrupted/unknown, never proof of rollback. Check checkpoint and receipt before retrying." };
     }
 }

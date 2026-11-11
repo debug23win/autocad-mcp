@@ -282,7 +282,7 @@ internal static class ModifyOperations
     {
         bool keep = Bool(op, "keep_original"), attributesAsText = Bool(op, "attributes_as_text", true);
         var source = Edits.Editable(db, tr, Edits.Resolve(db, tr, op, aliases), !keep);
-        var parts = new DBObjectCollection();
+        using var parts = new DBObjectCollection();
         source.Explode(parts);
         var items = parts.Cast<DBObject>().ToList();
         var space = (BlockTableRecord)tr.GetObject(source.OwnerId, OpenMode.ForRead);
@@ -628,7 +628,7 @@ internal static class ModifyOperations
         if (Edits.Editable(db, tr, Edits.Resolve(db, tr, op, aliases), true) is not Curve curve) throw new CadFault("INVALID_TRIM", "trim needs a curve");
         var boundaries = op.GetProperty("boundaries").EnumerateArray().Select(v => Edits.Editable(db, tr, Reference(db, v.GetString()!, aliases), false)).ToArray();
         if (boundaries.Any(b => b.ObjectId == curve.ObjectId)) throw new CadFault("INVALID_TRIM", "A curve cannot trim itself");
-        var points = new Point3dCollection();
+        using var points = new Point3dCollection();
         foreach (var boundary in boundaries) curve.IntersectWith(boundary, Intersect.OnBothOperands, points, IntPtr.Zero, IntPtr.Zero);
         double start = curve.StartParam, end = curve.EndParam, tolerance = Math.Max(Epsilon, (end - start) * 1e-9);
         var parameters = new List<double>();
@@ -654,7 +654,7 @@ internal static class ModifyOperations
         if (parameters.Any(p => Math.Abs(p - picked) <= tolerance)) throw new CadFault("TRIM_FAILED", "The pick point lies on a crossing; pick a point inside the part to remove");
         var cuts = new[] { below, above }.OfType<double>().Distinct().Order().ToArray();
         if (cuts.Length == 0 || curve.Closed && cuts.Length < 2) throw new CadFault("TRIM_FAILED", "No crossing bounds the part at the pick point");
-        var pieces = curve.GetSplitCurves(new DoubleCollection(cuts));
+        using var pieces = curve.GetSplitCurves(new DoubleCollection(cuts));
         var list = pieces.Cast<DBObject>().OfType<Curve>().ToList();
         int removed = -1; double best = double.MaxValue;
         for (int i = 0; i < list.Count; i++)
@@ -695,7 +695,7 @@ internal static class ModifyOperations
         bool atStart = op.Text("end") == "start";
         var boundaries = op.GetProperty("boundaries").EnumerateArray().Select(v => Edits.Editable(db, tr, Reference(db, v.GetString()!, aliases), false)).ToArray();
         if (boundaries.Any(b => b.ObjectId == curve.ObjectId)) throw new CadFault("INVALID_EXTEND", "A curve cannot be its own boundary");
-        var candidates = new Point3dCollection();
+        using var candidates = new Point3dCollection();
         foreach (var boundary in boundaries) curve.IntersectWith(boundary, Intersect.ExtendThis, candidates, IntPtr.Zero, IntPtr.Zero);
         var endPoint = atStart ? curve.StartPoint : curve.EndPoint;
         // Distance travelled beyond the end along the curve's own extension, or null for points not on it.
@@ -992,7 +992,7 @@ internal static class ModifyOperations
         var purged = new List<string>();
         if (purge)
         {
-            var candidates = new ObjectIdCollection(map.Keys.Where(id => id != zero && id != db.Clayer && !string.Equals(names[id], "Defpoints", StringComparison.OrdinalIgnoreCase)).ToArray());
+            using var candidates = new ObjectIdCollection(map.Keys.Where(id => id != zero && id != db.Clayer && !string.Equals(names[id], "Defpoints", StringComparison.OrdinalIgnoreCase)).ToArray());
             if (candidates.Count > 0) db.Purge(candidates);
             foreach (ObjectId id in candidates) { var layer = (LayerTableRecord)tr.GetObject(id, OpenMode.ForWrite); purged.Add(layer.Name); layer.Erase(); }
         }

@@ -112,9 +112,22 @@ internal static class TableLinks
         }
         Save(db,tr,graph);
     }
-    internal static object Recalculate(Database db, Transaction tr)
+    internal static object Recalculate(Database db, Transaction tr, IReadOnlySet<long>? changedTables = null)
     {
-        var graph=Load(db,tr); Rebind(graph,db,tr); var cells=graph.Cells.ToDictionary(c=>c.Id); var updated=new HashSet<ObjectId>();
+        if (changedTables is { Count: 0 }) return new { formulas = 0, updated_tables = Array.Empty<string>(), cycle_check = "not_requested", scope = "no_table_changes" };
+        var original = Load(db, tr);
+        var originalCells = original.Cells.ToDictionary(c => c.Id);
+        var links = original.Formulas.SelectMany(f => f.References.Select(r => (originalCells[f.Cell].Table, originalCells[r.Cell].Table))
+            .Append((originalCells[f.Cell].Table, originalCells[f.Cell].Table)));
+        var selected = changedTables is null ? original.Cells.Select(c => c.Table).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : TableDependencyScope.Connected(links, changedTables.Select(h => h.ToString("X")));
+        var graph = new Graph(original.Cells.Where(c => selected.Contains(c.Table)).ToList(),
+            original.Formulas.Where(f => selected.Contains(originalCells[f.Cell].Table)).ToList());
+        var warnings = new List<string>();
+        foreach (string handle in original.Cells.Select(c => c.Table).Distinct().Where(h => !selected.Contains(h)))
+            try { _ = NativeTables.Resolve(db, handle); }
+            catch (CadFault error) { warnings.Add("Unrelated table component was not changed: " + error.Code + " " + handle); }
+        Rebind(graph,db,tr); var cells=graph.Cells.ToDictionary(c=>c.Id); var updated=new HashSet<ObjectId>();
         foreach(var formula in Order(graph))
         {
             var identity=cells[formula.Cell]; var table=Table(identity,db,tr); table.UpgradeOpen(); var target=table.Cells[identity.Row,identity.Column];
@@ -142,8 +155,15 @@ internal static class TableLinks
             }
             updated.Add(table.ObjectId);
         }
-        if(graph.Formulas.Count>0)Save(db,tr,graph);
-        return new {formulas=graph.Formulas.Count,updated_tables=updated.Select(id=>id.Handle.ToString()).ToArray(),cycle_check="passed",references="stable_cell_identity"};
+        if (graph.Formulas.Count > 0)
+        {
+            var rebound = graph.Cells.ToDictionary(c => c.Id);
+            var reboundFormulas = graph.Formulas.ToDictionary(f => f.Cell);
+            Save(db, tr, new Graph(original.Cells.Select(c => rebound.GetValueOrDefault(c.Id, c)).ToList(),
+                original.Formulas.Select(f => reboundFormulas.GetValueOrDefault(f.Cell, f)).ToList()));
+        }
+        return new { formulas=graph.Formulas.Count, updated_tables=updated.Select(id=>id.Handle.ToString()).ToArray(),
+            cycle_check="passed", scope="affected_components", warnings, references="stable_cell_identity" };
     }
     private static void Rebind(Graph graph,Database db,Transaction tr)
     {

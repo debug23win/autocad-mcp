@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Windows;
 using System.Windows.Controls;
 using Binding = System.Windows.Data.Binding;
@@ -21,7 +22,7 @@ internal sealed class ChatWindow : Window
 """;
     internal ChatWindow(UIElement content)
     {
-        Title = "CAD MCP — ассистент чертежей";
+        Title = UiText.T("CAD MCP — ассистент чертежей");
         WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 32, ResizeBorderThickness = new Thickness(6), GlassFrameThickness = new Thickness(0), CornerRadius = new CornerRadius(0), UseAeroCaptionButtons = false });
         ChatTheme.Apply(this, true);
@@ -38,13 +39,13 @@ internal sealed class ChatWindow : Window
             WindowChrome.SetIsHitTestVisibleInChrome(button, true);
             button.Click += (_, _) => clicked(); buttons.Children.Add(button); return button;
         }
-        Action("—", "Свернуть", () => SystemCommands.MinimizeWindow(this));
-        maximize = Action("□", "Развернуть", () => { if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this); else SystemCommands.MaximizeWindow(this); });
-        Action("×", "Закрыть", Close);
+        Action("—", UiText.T("Свернуть"), () => SystemCommands.MinimizeWindow(this));
+        maximize = Action("□", UiText.T("Развернуть"), () => { if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this); else SystemCommands.MaximizeWindow(this); });
+        Action("×", UiText.T("Закрыть"), Close);
         var title = new TextBlock { Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         title.SetBinding(TextBlock.TextProperty, new Binding(nameof(Title)) { Source = this });
         title.SetResourceReference(TextBlock.ForegroundProperty, "Cad.Foreground"); bar.Children.Add(title);
-        StateChanged += (_, _) => { maximize.Content = WindowState == WindowState.Maximized ? "❐" : "□"; maximize.ToolTip = WindowState == WindowState.Maximized ? "Восстановить" : "Развернуть"; };
+        StateChanged += (_, _) => { maximize.Content = WindowState == WindowState.Maximized ? "❐" : "□"; maximize.ToolTip = WindowState == WindowState.Maximized ? UiText.T("Восстановить") : UiText.T("Развернуть"); };
         caption.MouseRightButtonUp += (_, e) => SystemCommands.ShowSystemMenu(this, PointToScreen(e.GetPosition(this)));
     }
     internal void ApplyHeaderTheme(bool dark) => ChatTheme.Apply(this, dark);

@@ -1,30 +1,30 @@
-# Civil 3D и Map 3D
+# Civil 3D and Map 3D
 
-`cad_vertical_catalog` обращается к API запущенного вертикального продукта и сообщает, доступен ли он. Для Civil 3D каталог читает поверхности, трассы, профили, трубопроводные сети и площадки, а также стили (трасс, профилей, поверхностей, труб, колодцев и других), все наборы меток и списки деталей с семействами и размерами. `cad_vertical_get` читает свойства объекта по handle, вложенные профили/части сети и статистику поверхности (число точек и треугольников, диапазон отметок), а для поверхности может получить отметки в 1–100 точках WCS. Чтение вертикальных объектов не переключает вкладку чертежа.
+`cad_vertical_catalog` calls the running vertical product's API and reports availability. Civil catalogs surfaces, alignments, profiles, pipe networks, sites, styles (alignment/profile/surface/pipe/structure/etc.), label sets, and parts lists with families/sizes. `cad_vertical_get` reads handle-based object properties, child profiles/network parts, and surface statistics (point/triangle counts, elevation range); surfaces can sample 1–100 WCS points. Vertical reads do not activate drawing tabs.
 
-## Правка Civil 3D
+## Civil 3D editing
 
-| Операция | Что делает |
+| Operation | Behavior |
 |---|---|
-| `civil_tin_create`, `civil_tin_add_points` | Создание TIN-поверхности и добавление вершин |
-| `civil_alignment_create` | Трасса по 2–500 точкам PI. С `radii` (по одному на внутреннюю PI, 0 — без кривой) добавляются круговые кривые между тангенсами. Радиус, который не помещается на тангенсах, отклоняется до вызова Civil 3D; построенная трасса сверяется с расчётом (число тангенсов и кривых, радиусы, длина) до commit. Без `site` (или с пустым) трасса создаётся без площадки |
-| `civil_alignment_add_line`, `civil_profile_add_tangent` | Добавление тангенса к трассе (Point3d) или к профилю (станция/отметка) |
-| `civil_profile_create`, `civil_profile_from_surface` | Профиль по точкам или с поверхности |
-| `civil_network_create`, `civil_network_add_pipe`, `civil_network_add_structure` | Сеть, трубы по осевой линии и колодцы |
-| `civil_set` | Ограниченный список свойств |
+| `civil_tin_create`, `civil_tin_add_points` | Creates TIN surfaces and adds vertices. |
+| `civil_alignment_create` | Alignment through 2–500 PI points. `radii` (one per internal PI, 0 means no curve) adds circular tangent curves. Radii that cannot fit are rejected before Civil calls; tangent/curve counts, radii, and length are checked before commit. Omit/empty `site` for a siteless alignment. |
+| `civil_alignment_add_line`, `civil_profile_add_tangent` | Adds an alignment tangent using Point3d, or a profile tangent using station/elevation. |
+| `civil_profile_create`, `civil_profile_from_surface` | Profile from points or a surface. |
+| `civil_network_create`, `civil_network_add_pipe`, `civil_network_add_structure` | Network, centerline pipes, and structures. |
+| `civil_set` | Restricted property allowlist. |
 
-Правка объектов по ссылке данных (data shortcut) отклоняется; если признак ссылки нельзя прочитать, правка тоже отклоняется.
+Data-shortcut objects cannot be edited; unreadable reference status also rejects the edit.
 
-Стиль, набор меток и слой профиля, список деталей сети, семейство и размер трубы или колодца можно указать по имени вместо handle (`style`, `label_set`, `layer`, `parts_list`, `family`, `size`). Размер называется так, как его показывает Civil (имя размера из каталога деталей); подходит и другое текстовое значение записи размера.
+Specify style, label set, profile layer, network parts list, family, and pipe/structure size by name instead of handle (`style`, `label_set`, `layer`, `parts_list`, `family`, `size`). Size names follow the Civil parts catalog; other textual values in a size record also match.
 
-Каждый член API Civil 3D, который плагин вызывает через отражение, перечислен в `CivilApiContract` и проверяется модульным тестом по дампам сигнатур Civil 3D 2024, 2025, 2026 и 2027 (`tests/CadMcp.Tests/Fixtures/civil-api-signatures.txt`). Дампы снимаются с метаданных официальных пакетов Autodesk Civil3D.NET (SDK .NET API) скриптом `scripts/civil-signatures.ps1`; сами сборки Autodesk в репозиторий не попадают. Так неверная перегрузка — например, Point2d там, где API принимает Point3d, — обнаруживается без запуска Civil 3D. Второй тест сверяет с контрактом имена членов, которые встречаются в коде Civil, поэтому опечатка в имени тоже не пройдёт незамеченной. Признак ссылки данных, записи размеров деталей, свойства труб и колодцев и статистика поверхностей тоже сверяются с дампами. Отдельно с причиной перечислены только имена, которые читаются у любого объекта Civil (стиль и отображаемые свойства): их отсутствие не роняет операцию.
+Every reflected Civil member is listed in `CivilApiContract` and unit-tested against Civil 3D 2024–2027 signature dumps (`tests/CadMcp.Tests/Fixtures/civil-api-signatures.txt`). `scripts/civil-signatures.ps1` extracts metadata from official Autodesk Civil3D.NET SDK packages; Autodesk binaries are not committed. Invalid overloads, such as Point2d instead of Point3d, are caught without running Civil. A second test checks member names used in Civil code against the contract. Data-reference status, part-size records, pipe/structure properties, and surface statistics also match dumps. Only generic optional Civil properties (styles/display properties) have reasoned exceptions; their absence does not fail an operation.
 
 ## Map 3D
 
-Каталог читает код горизонтальной/вертикальной системы координат и таблицы объектных данных; `cad_vertical_get` читает записи объектных данных объекта (до 100 записей и 100 полей). `map_coordinate_system` принимает код каталога CS-MAP (например `LL84`) или номер EPSG (`2154`, `EPSG:2154`), проверяет его по каталогу и сверяет границы чертежа с областью применения системы (в том числе через 180-й меридиан); несовпадение отклоняется, если не указано `force:true`. Для систем без географии (`XY-M` и подобных) и когда каталог не может перевести координаты в долготу и широту, совместимость сообщается как непроверенная, а не как несовпадение. Если каталог CS-MAP недоступен, код записывается без проверки с предупреждением, а номер EPSG отклоняется: без каталога его нельзя перевести в код. Назначение системы координат никогда не перемещает геометрию. Объектные данные: `map_od_table`, `map_od_add`, `map_od_update`.
+Catalogs read horizontal/vertical CRS codes and object-data tables; `cad_vertical_get` reads up to 100 OD records/100 fields. `map_coordinate_system` takes a CS-MAP code (such as `LL84`) or EPSG number (`2154`, `EPSG:2154`), validates it against the catalog, and compares drawing bounds with the CRS area of use, including antimeridian crossings. Mismatches require `force:true`. Non-geographic systems (`XY-M`, etc.) and unavailable longitude/latitude conversion report unverified compatibility, not mismatch. If CS-MAP is unavailable, code assignment proceeds with a warning; EPSG input is rejected because it cannot be translated without the catalog. Assigning a CRS never moves geometry. OD operations: `map_od_table`, `map_od_add`, `map_od_update`.
 
-DLL Autodesk не поставляются вместе с плагином; API загружается из установленного продукта.
+Autodesk DLLs are not bundled; APIs load from the installed product.
 
-## Что проверено
+## Validation limits
 
-На компьютере разработки нет работающего Civil 3D. Операции Civil и объектные данные Map **собраны и проверены по дампам сигнатур и модульными тестами, но не на реальных объектах этих продуктов**. Агент должен сообщать об этом ограничении и не выдавать обычную геометрию DWG за объекты Civil/Map.
+No working Civil 3D was available on the development machine. Civil and Map OD operations are **built, signature-checked, and unit-tested, but not validated on real vertical objects**. Agents must disclose this and never present ordinary DWG geometry as Civil/Map objects.

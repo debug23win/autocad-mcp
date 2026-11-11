@@ -7,6 +7,25 @@ public sealed class ReferenceDownloadTests
 {
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(response(request)); }
+    private sealed class StalledBody : MemoryStream
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        { await Task.Delay(Timeout.Infinite, ct); return 0; }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Headers_do_not_remove_the_total_or_body_inactivity_deadline(bool totalDeadline)
+    {
+        using var folder = new TempFolder();
+        using var client = new HttpClient(new Handler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(new StalledBody()) }));
+        var error = await Assert.ThrowsAsync<CadMcp.Core.CadFault>(() => ReferenceDownloads.Download("https://example.org/stalled.pdf", default, client, folder.Path,
+            maximumDuration: totalDeadline ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(5),
+            bodySilence: totalDeadline ? TimeSpan.FromSeconds(5) : TimeSpan.FromMilliseconds(100)));
+        Assert.Equal("DOWNLOAD_TIMEOUT", error.Code);
+        Assert.Empty(Directory.EnumerateFiles(folder.Path, "*", SearchOption.AllDirectories));
+    }
     [Fact]
     public async Task Download_follows_redirects_and_returns_exact_file_hash_in_a_unique_cache()
     {

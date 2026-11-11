@@ -18,7 +18,7 @@ internal static class StructuralSolids
         if(r>0){V(-s-r,height-flange,-arc);V(-s,height-flange-r);V(-s,flange+r,-arc);V(-s-r,flange);}else{V(-s,height-flange);V(-s,flange);}
         V(-b,flange);
         for(int n=0;n<points.Count;n++)section.AddVertexAt(n,new(points[n].X,points[n].Y),points[n].Bulge,0,0);
-        section.Closed=true;var regions=Region.CreateFromCurves(new DBObjectCollection{section});
+        section.Closed=true;using var curves=new DBObjectCollection{section};using var regions=Region.CreateFromCurves(curves);
         try
         {
             var solid=new Solid3d();try{using(var options=new SweepOptions())solid.CreateExtrudedSolid((Region)regions[0],new Vector3d(0,0,length),options);
@@ -41,9 +41,10 @@ internal static class StructuralSolids
             for(int n=0;n<=steps;n++)
             {
                 double angle=2*Math.PI*n/steps,z=pitch*n/steps,c=Math.Cos(angle),s=Math.Sin(angle);
-                var profile=new Polyline3d(Poly3dType.SimplePoly,new Point3dCollection(new[]{
+                using var profilePoints=new Point3dCollection(new[]{
                     new Point3d(shaft/2*c,shaft/2*s,z),new Point3d(diameter/2*c,diameter/2*s,z),
-                    new Point3d(diameter/2*c,diameter/2*s,z+thickness),new Point3d(shaft/2*c,shaft/2*s,z+thickness)}),true);sections.Add(profile);
+                    new Point3d(diameter/2*c,diameter/2*s,z+thickness),new Point3d(shaft/2*c,shaft/2*s,z+thickness)});
+                var profile=new Polyline3d(Poly3dType.SimplePoly,profilePoints,true);sections.Add(profile);
             }
             using var options=new LoftOptionsBuilder{Ruled=true}.ToLoftOptions();
             solid.CreateLoftedSolid(sections.ToArray(),[],null,options);

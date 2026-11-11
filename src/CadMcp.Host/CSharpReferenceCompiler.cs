@@ -32,10 +32,10 @@ internal static class CSharpReferenceCompiler
             catch (Exception error) when (error is BadImageFormatException or IOException or UnauthorizedAccessException) { }
         }
         if (metadata.Count == 0) throw new CadFault("CSHARP_REFERENCES_UNAVAILABLE", "AutoCAD did not provide readable managed compilation references");
-        var compilation = CSharpCompilation.Create("CadMcpUser_" + Guid.NewGuid().ToString("N"),
+        var compilation = CSharpCompilation.Create("CadMcpUser_" + Portable.Hash(System.Text.Encoding.UTF8.GetBytes(source)),
             [CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp12))],
-            metadata,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release, allowUnsafe: true));
+            metadata.OrderBy(m => m.Display, StringComparer.OrdinalIgnoreCase),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release, allowUnsafe: true, deterministic: true));
         using var output = new MemoryStream(); var result = compilation.Emit(output);
         if (!result.Success) throw new CadFault("CSHARP_COMPILE_FAILED", string.Join("\n", result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Take(20)));
         if (output.Length > 4 * 1024 * 1024) throw new CadFault("CSHARP_TOO_LARGE", "Compiled assembly exceeds 4 MiB");

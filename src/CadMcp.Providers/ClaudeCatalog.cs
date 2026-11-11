@@ -1,3 +1,4 @@
+using CadMcp.Core;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -62,11 +63,11 @@ public static class ClaudeCatalog
         if (models.Count == 0) return new(model, effort);
         var selected = model is null ? models.FirstOrDefault(m => m.IsDefault) : models.FirstOrDefault(m => m.Id == model);
         if (selected is null && model is not null)
-            throw new IOException("Модель «" + model + "» недоступна в этой версии Claude Code или для этого аккаунта. Обновите список моделей и выберите другую.");
+            throw new IOException(UiText.T("Модель «") + model + UiText.T("» недоступна в этой версии Claude Code или для этого аккаунта. Обновите список моделей и выберите другую."));
         if (effort is not null && selected is not null && !selected.Efforts.Contains(effort))
             throw new IOException(selected.Efforts.Count == 0
-                ? "Модель «" + selected.DisplayName + "» не принимает глубину рассуждений. Выберите «По умолчанию»."
-                : "Модель «" + selected.DisplayName + "» не поддерживает уровень «" + effort + "». Выберите другой уровень рассуждений.");
+                ? UiText.T("Модель «") + selected.DisplayName + UiText.T("» не принимает глубину рассуждений. Выберите «По умолчанию».")
+                : UiText.T("Модель «") + selected.DisplayName + UiText.T("» не поддерживает уровень «") + effort + UiText.T("». Выберите другой уровень рассуждений."));
         return new(model, effort);
     }
 
@@ -77,7 +78,7 @@ public static class ClaudeCatalog
         var token = timeout.Token;
         // No MCP server and no saved conversation: only the account and its models are needed.
         string[] arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--no-session-persistence"];
-        using var process = Process.Start(ProviderProcess.StartInfo(options, arguments)) ?? throw new IOException("Не удалось запустить Claude Code");
+        using var process = Process.Start(ProviderProcess.StartInfo(options, arguments)) ?? throw new IOException(UiText.T("Не удалось запустить Claude Code"));
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
         var stderr = ProviderProcess.DrainErrors(process);
         var lines = new ProviderLines(process.StandardOutput.BaseStream);
@@ -94,11 +95,11 @@ public static class ClaudeCatalog
                     var response = ProviderJson.Child(line, "response");
                     if (ProviderJson.Text(line, "type") != "control_response" || ProviderJson.Text(response, "request_id") != requestId) continue;
                     if (ProviderJson.Text(response, "subtype") != "success")
-                        throw new IOException("Claude Code не выдал список моделей: " + (ProviderJson.Text(response, "error") ?? response.ToString()));
+                        throw new IOException(UiText.T("Claude Code не выдал список моделей: ") + (ProviderJson.Text(response, "error") ?? response.ToString()));
                     return Parse(ProviderJson.Child(ProviderJson.Child(response, "response"), "models"));
                 }
             }
-            throw new IOException("Claude Code завершился до выдачи списка моделей. " + await stderr + lines.Skipped);
+            throw new IOException(UiText.T("Claude Code завершился до выдачи списка моделей. ") + await stderr + lines.Skipped);
         }
         finally { await ProviderProcess.FinishAsync(process, stderr); }
     }

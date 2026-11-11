@@ -40,8 +40,8 @@ public sealed class Plugin : IExtensionApplication
         {
             dynamic Make(string name) => Activator.CreateInstance(Type.GetType("Autodesk.Windows." + name + ", AdWindows", true)!)!;
             dynamic tab = Make("RibbonTab"); tab.Id = "CADMCP_ASSISTANT"; tab.Title = "CAD MCP";
-            dynamic source = Make("RibbonPanelSource"); source.Title = "Ассистент";
-            dynamic button = Make("RibbonButton"); button.Text = "Открыть чат"; button.ShowText = true; button.CommandHandler = new OpenChat(); source.Items.Add(button);
+            dynamic source = Make("RibbonPanelSource"); source.Title = UiText.T("Ассистент");
+            dynamic button = Make("RibbonButton"); button.Text = UiText.T("Открыть чат"); button.ShowText = true; button.CommandHandler = new OpenChat(); source.Items.Add(button);
             dynamic panel = Make("RibbonPanel"); panel.Source = source; tab.Panels.Add(panel); control.Tabs.Add(tab); ribbon = tab;
         }
         catch (System.Exception error) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP ribbon: " + error.Message + "; use CADMCPCHAT"); }

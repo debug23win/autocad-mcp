@@ -172,8 +172,8 @@ public static class LispPolicy
     /// <summary>Russian label shown to the user in AutoCAD and in the chat panel.</summary>
     public static string Label(LispPolicyMode mode) => mode switch
     {
-        LispPolicyMode.AutoSafe => "без вопросов, если в коде нет опасных функций", LispPolicyMode.Allow => "разрешён без вопросов",
-        LispPolicyMode.Deny => "запрещён", _ => "спрашивать перед каждым запуском"
+        LispPolicyMode.AutoSafe => UiText.T("без вопросов, если в коде нет опасных функций"), LispPolicyMode.Allow => UiText.T("разрешён без вопросов"),
+        LispPolicyMode.Deny => UiText.T("запрещён"), _ => UiText.T("спрашивать перед каждым запуском")
     };
     public static string Name(LispPolicyMode mode) => mode switch
     { LispPolicyMode.AutoSafe => "auto_safe", LispPolicyMode.Allow => "allow", LispPolicyMode.Deny => "deny", _ => "ask" };

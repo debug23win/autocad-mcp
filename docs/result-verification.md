@@ -1,12 +1,12 @@
-# Контроль результата, восстановление операций и работа по фото
+# Result verification, operation recovery, and photo references
 
-Версия 0.7.0-preview. Контракты и инструкции общие для Codex и Claude Code.
+Introduced in 0.7.0-preview. Codex and Claude Code share contracts/instructions.
 
-## Размерные критерии
+## Dimensional acceptance
 
-`cad_edit` принимает необязательный `expectations_json`. Проверка выполняется по фактическому чтению базы внутри транзакции перед commit, а не по запрошенным координатам. По умолчанию нарушенный или недоступный критерий вызывает `ACCEPTANCE_FAILED` и откат пакета. `enforce:false` оставляет диагностический отчёт без отката.
+`cad_edit` accepts optional `expectations_json`. Checks use actual database readback inside the transaction before commit, not requested coordinates. By default, failed or unavailable criteria cause `ACCEPTANCE_FAILED` and batch rollback. `enforce:false` retains the diagnostic report without enforcing rollback.
 
-Пример для операции `line` с `id:"beam"`:
+Example for `line` with `id:"beam"`:
 
 ```json
 {
@@ -19,61 +19,75 @@
 }
 ```
 
-`entity_count` считает живые объекты, затронутые этим пакетом, а не весь DWG. Имена единиц соответствуют AutoCAD `Insunits` (`Millimeters`, `Meters` и др.). Допуск абсолютный, в единицах свойства. Координаты задаются полными XYZ. Поддержаны длина, радиус, площадь, объём, измерение размера, слой, тип, замкнутость, число вершин/граней, точки и границы. Доступность измерения зависит от типа объекта; неподдерживаемое свойство получает `unverified`.
+`entity_count` counts live entities affected by this batch, not the whole DWG. Units match AutoCAD `Insunits` names (`Millimeters`, `Meters`, etc.). Tolerance is absolute in the property's units. Coordinates require full XYZ. Supported properties include length, radius, area, volume, dimension measurement, layer, type, closed state, vertex/face counts, points, and bounds. Availability depends on entity type; unsupported measurements are `unverified`.
 
-Расстояние между доступными точками:
+Distance between accessible points:
 
 ```json
 {"checks":[{"property":"distance","first":{"handle":"A1","point":"start"},"second":{"handle":"A2","point":"center"},"expected":3050,"tolerance":0.1}]}
 ```
 
-`cad_verify` принимает завершённый `operation_id` либо `handles_json` (1–500 объектов) и перечитывает текущую базу. Для операции сохраняются aliases и исходные критерии; можно передать новые критерии. Ответ содержит `passed/failed/unverified`, реальные свойства, общие границы и состояние сохранения. Старый результат операции не заменяет эту проверку.
+`cad_verify` takes a completed `operation_id` or `handles_json` (1–500 entities) and rereads the current database. Operation aliases/original criteria are retained; callers may supply new criteria. Results include `passed/failed/unverified`, actual properties, overall bounds, and save state. An old operation result cannot replace fresh verification.
 
-В конце ответа панель отдельно выводит число завершённых/ошибочных/ожидающих операций, перечитанные объекты, заданные критерии последнего завершённого нативного изменения и сохранение. Она не объявляет весь проект проверенным только по последнему пакету. Итоговые критерии задачи задаёт и проверяет основной агент. Результат сложной задачи также требует визуальной проверки. Если критерии не заданы или свежая проверка недоступна, панель сообщает об этом.
+The panel's footer separately reports completed/failed/pending operations, reread entities, criteria for the latest completed native edit, and persistence. It never declares an entire project verified from its last batch. The primary agent defines/checks task-wide final criteria. Complex results also require visual review. Missing criteria or unavailable fresh verification are disclosed.
 
-Сохранение определяется текущими `DBMOD`, именем и метаданными файла. Изменённый DWG отмечается как несохранённый. Автоматического сохранения эта проверка не выполняет.
+Save state uses current `DBMOD`, filename, and file metadata. Dirty DWGs are marked unsaved; verification does not save automatically.
 
-## Проверки качества и выпуска
+## Quality and release checks
 
-Отчёт качества каждой правки и `cad_review` дополнительно проверяют:
+Per-edit quality review and `cad_review` also check:
 
-- размеры, чей текст скрывает измерение или противоречит ему (с учётом DIMLFAC, DIMRND и точности), и двойной знак диаметра;
-- символы, которых нет в шрифте текстового стиля: обычный SHX без кириллицы выводит их как «?» (проверяются обычные и Unicode SHX, TrueType — как замечание; big fonts и смена шрифта внутри MTEXT не проверяются);
-- дубликаты, кривые нулевой длины, перекрывающиеся сегменты и самопересечения — для кривых, лежащих в плоскости, параллельной XY, отдельно на каждой отметке (вертикальные отрезки и каркасы 3D не считаются ошибками).
+- dimension text hiding/contradicting measurement, accounting for DIMLFAC/DIMRND/precision, and duplicate diameter symbols;
+- missing font glyphs: ordinary SHX without Cyrillic displays "?"; regular/Unicode SHX are checked, TrueType is advisory, big fonts and inline MTEXT font switches are not checked;
+- duplicates, zero-length curves, overlapping segments, and self-intersections on XY-parallel planes, separately per elevation. Vertical lines/3D wireframes are not errors.
 
-Отчёт качества правки только описывает результат: если проверка не смогла выполниться, она помечается непроверенной (`REVIEW_FAILED`, `*_UNVERIFIED`), а правка остаётся в силе. Нечитаемые кривые и слишком плотная геометрия дают `unverified`, а не «замечаний нет».
+Review is descriptive: failed checks are marked unverified (`REVIEW_FAILED`, `*_UNVERIFIED`) and do not undo the edit. Unreadable curves or excessively dense geometry yield `unverified`, not a clean bill.
 
-Замечания с уровнем `info` не меняют итоговое состояние. `cad_review` с `options_json` проверяет топологию всей области (текущее пространство, модель или лист, фильтр слоёв по шаблонам `` * ? # , ~ `` — остальные символы, включая `.`, `@` и `[ ]`, означают сами себя, а `` ` `` экранирует следующий символ): висячие концы, почти-стыки до `gap_tolerance`, Т-примыкания, пересечения без узла. Дуги и сплайны аппроксимируются с известным отклонением хорды, поэтому конец на дуге между точками аппроксимации считается касанием; прямые участки полилинии с дугами остаются точными. Сетка проверки многоуровневая: короткие и длинные отрезки сравниваются без перебора всех пар, так что план с десятками тысяч мелких штрихов и тысячами стен проверяется за секунды. Объём работы ограничен несколькими секундами: на чрезмерно плотной геометрии (тысячи длинных линий через одну точку) и на координатах порядка 10²⁹ проверка сообщает `TOPOLOGY_LIMIT`, а не останавливает AutoCAD.
+`info` findings do not change overall state. `cad_review` with `options_json` checks topology over current space/model/layout, with layer wildcards `` * ? # , ~ ``. Other characters, including `.`, `@`, `[ ]`, are literal; `` ` `` escapes the next character. Checks include dangling endpoints, near-gaps up to `gap_tolerance`, T-junctions, and unconnected crossings. Arc/spline approximation has known chord deviation, so endpoints near an approximated arc count as touches; straight segments in arc-containing polylines remain exact. A multilevel grid avoids all-pairs comparison of short/long segments, allowing large plans to run in seconds. Work is bounded to several seconds: extremely dense crossings or coordinates around 10²⁹ yield `TOPOLOGY_LIMIT` rather than hanging AutoCAD.
 
-`cad_release_check` дополнительно сообщает о неразрешённых полях («####»), несогласованном и слишком малом числе листов в штампах, пропусках в нумерации (как замечание), печати «вписать» и области печати «Экран»; масштаб не 1:1 и печать не листа — замечания (`notes`).
+`cad_release_check` adds unresolved fields ("####"), inconsistent/insufficient title-block sheet totals, numbering gaps (advisory), Fit plotting, and Display plot area. Non-1:1 scaling and non-layout plot areas are `notes`.
 
-`cad_export` в PDF проверяет размер страницы против формата печати листа и пустые страницы (если PDF не удаётся разобрать, файл остаётся, а проверка помечается непроверенной; неверное число страниц — проверка не пройдена, `failed`); DXF перечитывается в отдельную базу и сравнивается с исходной по количеству объектов на лист, тип и слой. `cad_publish` проверяет так же каждый PDF комплекта (`pdf_review`: `passed`, `review_required` или `failed`).
+PDF `cad_export` compares page size with layout media and detects blank pages. Parser failure leaves the file and marks checks unverified; wrong page count is `failed`. DXF is reopened in a separate database and compared by entity count per layout/type/layer. `cad_publish` applies the PDF checks to every output (`pdf_review`: `passed`, `review_required`, `failed`).
 
-Проверки разбора текста, шрифтов SHX, топологии и PDF покрыты модульными тестами; в работающем AutoCAD новые проверки ещё не прогонялись.
+Text parsing, SHX, topology, and PDF checks have unit tests; initial additions still required live AutoCAD runs.
 
-## Потерянный ответ
+## Lost responses
 
-Перед постановкой изменения в очередь журнал сохраняет `operation_id`, полный исходный запрос и время принятия. Повтор точно того же запроса возвращает квитанцию или статус; другая нагрузка с тем же id отклоняется. После принятия транспортный timeout/Stop не уничтожает операцию. Просроченный до запуска запрос завершается с `DEADLINE_EXPIRED` без начала правок.
+Before queuing a mutation, the journal persists `operation_id`, full original request, and acceptance time. Exact replay returns its receipt/status; different payloads sharing an ID conflict. Transport timeout/Stop after acceptance does not delete the operation. Requests expiring before execution finish with `DEADLINE_EXPIRED` without starting edits.
 
-После потери ответа сервер один раз читает `cad_operation_status`, не отправляя правку повторно. Завершённая квитанция возвращается клиенту; `queued/running` требует ожидания; `unknown/not_found` требует сверки чертежа, а не нового построения. Статус и `cad_operation_list` читают только журнал вне главного потока AutoCAD, поэтому доступны во время длительной геометрической операции. Журнал защищён от конкурентной записи.
+After a lost response, the server reads `cad_operation_status` once without resubmitting. Completed receipts return to the client; `queued/running` requires waiting, while `unknown/not_found` requires drawing inspection rather than reconstruction. Status and `cad_operation_list` read only the journal outside AutoCAD's main thread, remaining available during long geometry work. Journal writes are concurrency-safe.
 
-При исчезновении старой CAD-сессии broker может прочитать её дисковую квитанцию. Она помечена `historical:true`: завершённый ответ подтверждает прошлое выполнение, но не текущее состояние объектов и не сохранение. Незавершённая запись после перезапуска становится `unknown`. Между изменением DWG и записью завершённой квитанции остаётся окно сбоя процесса; оно не разрешает безопасный автоматический повтор.
+If the old CAD session disappears, the broker can read disk receipts marked `historical:true`. Completed historical receipts prove prior execution, not current geometry or persistence. Unfinished entries become `unknown` after restart. A crash window remains between DWG modification and completed receipt persistence; it does not permit safe automatic replay.
 
-## Изображение и геометрия
+## Images and geometry
 
-Вложения передаются обоим провайдерам вместе с фактическими размерами пикселей, ориентацией EXIF и SHA-256. `cad_reference_calibrate` читает реальный локальный PNG/JPEG/GIF/WebP до 7 МиБ и связывает его с плоскостью WCS XY:
+Both providers receive attachments with actual pixel size, EXIF orientation, and SHA-256. `cad_reference_calibrate` reads a real local PNG/JPEG/GIF/WebP up to 7 MiB and registers it to WCS XY:
 
-- `similarity`: 2–20 известных пар пиксель/XYZ для масштаба, поворота и переноса ортографического вида; Y пикселей по умолчанию направлен вниз, WCS Y — вверх.
-- `projective`: 4–20 известных копланарных пар для перспективного снимка плоского объекта. Вырожденные точки и горизонт, пересекающий изображение, отклоняются.
+- `similarity`: 2–20 known pixel/XYZ pairs for scale/rotation/translation of an orthographic view. Pixel Y defaults downward, WCS Y upward.
+- `projective`: 4–20 known coplanar pairs for a perspective image of a plane. Degenerate anchors and a horizon crossing the image are rejected.
 
-Возвращаются матрица, RMS/max ошибки на опорных точках и идентификатор калибровки. `cad_reference_point` преобразует точки в обе стороны и проверяет, что исходный файл не изменился. Ошибка на опорных точках не доказывает точность неизвестных размеров. Одна известная длина на произвольной перспективной фотографии не определяет всю 3D-модель.
+Results include matrix, RMS/max anchor error, and calibration ID. `cad_reference_point` converts both directions and checks source-file immutability. Anchor residuals do not prove unknown-dimension accuracy. One known length in an arbitrary perspective photo does not determine a complete 3D model.
 
-`cad_render` умеет временно кадрировать указанные объекты и выбирать `front/back/left/right/top/isometric` или направление взгляда; исходный вид восстанавливается. Ответ включает локальный путь снимка. При смене вида без списка объектов кадр остаётся текущего масштаба. Для координат именно снимка DWG остаются `cad_image_register/cad_image_point`.
+`cad_render` can temporarily frame handles and select `front/back/left/right/top/isometric` or a viewing direction; the original view is restored. Results include the local image path. Changing direction without handles retains the current framing scale. Use `cad_image_register/cad_image_point` for DWG-capture coordinates.
 
-`cad_reference_compare` принимает два реальных файла и два контура, снятых агентом в сопоставимых видах. Координаты контура нормированы в [0,1]. Вычисляются приблизительный IoU на сетке 256×256 и двустороннее отклонение границ с выборкой точек сегментов. Порог по умолчанию задаёт инструмент; он не подменяет требования пользователя. Отчёт явно указывает источник `agent_supplied_contours_in_comparable_views`: это проверка предоставленных контуров, а не автоматическое распознавание снимка. Она не проверяет детали поверхности или скрытую геометрию. Агент должен сверить контуры с изображениями и характерными деталями.
+`cad_reference_compare` takes two real files and agent-traced contours from comparable views, normalized to [0,1]. It estimates IoU on a 256×256 grid and bidirectional boundary deviation using segment samples. Tool defaults do not override user requirements. Evidence explicitly states `agent_supplied_contours_in_comparable_views`: supplied-contour checking, not automatic image recognition. It does not verify surface detail or hidden geometry. The agent must compare traced contours with images and distinctive details.
 
-Рекомендуемый цикл по фото: выделить опорные размеры и допущения → откалибровать подходящие виды → построить силуэт и основные объёмы C# → проверить размеры → снять сопоставимые виды → сравнить силуэт и характерные детали → уточнить → показать итоговый снимок и состояние DWG.
+Recommended photo workflow: identify known dimensions/assumptions → calibrate suitable views → construct silhouette/main volumes with C# → verify dimensions → capture comparable views → compare silhouette/details → refine → show final image and DWG state.
 
-## Текст и прокрутка
+## Text and scrolling
 
-HTML-чат обновляет только изменившиеся сообщения; готовые сообщения, изображения и формулы сохраняют DOM. Последовательные номера отсеивают устаревшие обновления. При чтении истории сохраняется первое видимое сообщение и его положение; у конца диалога включено следование за ответом. Изменение высоты изображения или формулы обрабатывается тем же якорем. Изображения резервируют место по известным размерам. Цвет текста задан для содержимого, таблиц, кода и формул в обеих темах. Поток сгруппирован в обновления каждые 120 мс, чтобы снизить перерисовку.
+HTML updates only changed messages; completed text/images/formulas retain their DOM. Sequence numbers discard stale updates. While reading history, the first visible message and its position anchor scrolling; near the end, the chat follows new output. Image/formula height changes use the same anchor. Images reserve space using known dimensions. Content, tables, code, and math have explicit text colors in both themes. Streaming updates batch every 120 ms to reduce redraws.
+
+## Recovery provenance and unsupported acceptance
+
+Worker transport loss is `WORKER_TRANSPORT_LOST`. Mutation recovery also reconciles ambiguous legacy `INTERNAL_ERROR`, timeout and oversized-response failures by reading the original receipt once, never by resending the write. Status requests preserve document/session/owner scope. A foreign receipt is not accepted.
+
+Recovered historical results keep `historical:true`, `worker_reachable:false`, `current_state_verified:false` and `requires_reconciliation:true`. Previous save evidence is moved to `historical_document_state`; current `document_state.disk_save` is `unknown` and no current revision is asserted.
+
+Map actions with nonempty geometry acceptance criteria fail `UNSUPPORTED_MAP_EXPECTATIONS` before Map execution, including diagnostic criteria with `enforce:false`. Map API changes have no native geometry acceptance implementation; independent product-specific readback is required. An empty criteria object or `enforce` alone does not assert geometry acceptance.
+
+Implicitly changed linked/schedule tables participate in the batch's returned entities and live `entity_count`. Counts must include these actual dependency updates. Verification refuses incomplete C# target lists before reading any prefix.
+
+`cad_operation_status.original_request` preserves public C# replay inputs (source, source hash, document/session, expected revision and operation ID) but omits generated `assembly_base64`. The complete compiled artifact remains in the durable journal. Replay through `cad_csharp` still checks the original public request and returns its receipt before compilation. Other operation requests are unchanged.
+
+Expected Host failures such as drawing-pin mismatch, helper write denial and missing photo calibration return structured `code`/`message` with MCP `isError:true`; SDK generic text no longer hides these codes. This does not weaken the underlying denial or imply that earlier CAD calls were rolled back.

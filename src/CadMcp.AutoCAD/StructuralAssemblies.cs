@@ -130,7 +130,7 @@ internal static class StructuralAssemblies
     /// It is still an error when <paramref name="strictFor"/> (the handles an edit touched) includes the
     /// schedule or one of its sources: that edit would otherwise leave its own schedule stale.
     /// </summary>
-    internal static List<string> RefreshSchedules(Database db,Transaction tr,IReadOnlySet<long>? strictFor=null)
+    internal static List<string> RefreshSchedules(Database db,Transaction tr,IReadOnlySet<long>? strictFor=null, ISet<long>? updatedTables=null)
     {
         var warnings=new List<string>();
         var blocks=(BlockTable)tr.GetObject(db.BlockTableId,OpenMode.ForRead);
@@ -153,6 +153,7 @@ internal static class StructuralAssemblies
                     if(strict)throw new CadFault(p.Code,p.Message);
                     warnings.Add(p.Message);continue;
                 }
+                if (strictFor is not null && !strict) continue;
                 for(int n=0;n<handles.Length;n++)
                 {
                     long.TryParse(handles[n],System.Globalization.NumberStyles.HexNumber,null,out var h);db.TryGetObjectId(new Handle(h),out var sourceId);
@@ -161,7 +162,7 @@ internal static class StructuralAssemblies
                     for(int c=0;c<values.Length;c++)
                     {var cell=table.Cells[n+2,c];bool equal=Equals(cell.Value,values[c]) || values[c] is int or double && double.TryParse(Convert.ToString(cell.Value,System.Globalization.CultureInfo.InvariantCulture),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var oldValue) && oldValue==Convert.ToDouble(values[c]);if(!equal){if(!table.IsWriteEnabled)table.UpgradeOpen();cell.Value=values[c];}}
                 }
-                if(table.IsWriteEnabled){table.GenerateLayout();table.RecomputeTableBlock(true);}
+                if(table.IsWriteEnabled){table.GenerateLayout();table.RecomputeTableBlock(true);updatedTables?.Add(table.Handle.Value);}
             }
         }
         return warnings;

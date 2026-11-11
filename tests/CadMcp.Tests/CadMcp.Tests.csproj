@@ -11,6 +11,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Pure PDF normalization is tested without loading the native AutoCAD adapter. -->
+    <Compile Include="../../src/CadMcp.AutoCAD/PdfRepair.cs" Link="PdfRepair.cs" />
     <ProjectReference Include="../../src/CadMcp.Core/CadMcp.Core.csproj" />
     <ProjectReference Include="../../src/CadMcp.Providers/CadMcp.Providers.csproj" />
     <ProjectReference Include="../../src/CadMcp.Host/CadMcp.Host.csproj" />

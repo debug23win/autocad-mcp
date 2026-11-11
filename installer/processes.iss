@@ -1,3 +1,9 @@
+// Shared with the installer process probe; no external message catalog is required.
+function InstallerText(const Russian, English: String): String;
+begin
+  if ActiveLanguage = 'russian' then Result := Russian else Result := English;
+end;
+
 // Only processes whose executables belong to this installation may be stopped.
 function InstalledMcpProcesses(const Services: Variant): Variant;
 begin
@@ -74,7 +80,7 @@ begin
     Processes := Services.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE Name="acad.exe" OR Name="accoreconsole.exe"');
     if Processes.Count > 0 then
     begin
-      Result := 'Закройте AutoCAD, Map 3D, Civil 3D и AutoCAD Core Console перед установкой. CAD MCP будет остановлен установщиком. Чертежи автоматически не закрываются.';
+      Result := InstallerText('Закройте AutoCAD, Map 3D, Civil 3D и AutoCAD Core Console перед установкой. CAD MCP будет остановлен установщиком. Чертежи автоматически не закрываются.', 'Close AutoCAD, Map 3D, Civil 3D and AutoCAD Core Console before installation. The installer stops CAD MCP. Drawings are not closed automatically.');
       Exit;
     end;
     Remaining := RunningInstalledMcp(Services);
@@ -114,8 +120,8 @@ begin
       if Remaining = '' then Exit;
       Sleep(250);
     end;
-    Result := 'Не удалось остановить CAD MCP: ' + Remaining + '. Закройте эти процессы и повторите установку.';
+    Result := InstallerText('Не удалось остановить CAD MCP: ', 'Could not stop CAD MCP: ') + Remaining + InstallerText('. Закройте эти процессы и повторите установку.', '. Close these processes and retry installation.');
   except
-    Result := 'Не удалось проверить или остановить процессы CAD MCP. Закройте AutoCAD и CAD MCP и повторите установку. Подробности: ' + GetExceptionMessage;
+    Result := InstallerText('Не удалось проверить или остановить процессы CAD MCP. Закройте AutoCAD и CAD MCP и повторите установку. Подробности: ', 'Could not inspect or stop CAD MCP processes. Close AutoCAD and CAD MCP and retry installation. Details: ') + GetExceptionMessage;
   end;
 end;

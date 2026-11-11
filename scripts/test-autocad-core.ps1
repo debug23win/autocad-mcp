@@ -1,6 +1,7 @@
 param([string]$AutoCADDir = 'C:\Program Files\Autodesk\AutoCAD 2025', [string]$OutputDirectory,
-    [switch]$TextRegressionOnly, [string]$DynamicTextFixture)
+    [switch]$TextRegressionOnly, [string]$DynamicTextFixture, [switch]$ReviewSafetyOnly)
 $ErrorActionPreference = 'Stop'
+if ($TextRegressionOnly -and $ReviewSafetyOnly) { throw 'Choose only one dedicated probe mode' }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (!$OutputDirectory) { $OutputDirectory = Join-Path ([IO.Path]::GetTempPath()) ('cmc-' + [guid]::NewGuid().ToString('N').Substring(0,8)) }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
@@ -16,6 +17,9 @@ $wrapper = $core.GetType('CadMcp.Core.LispScript').GetMethod('Wrap').Invoke($nul
 if ($TextRegressionOnly) {
     @(('(setvar "TRUSTEDPATHS" "' + $trusted + '")'),'_NETLOAD',$probe,'CADMCPTEXTREGRESSION','_.QUIT','_Yes') | Set-Content -LiteralPath $script -Encoding ascii
 }
+if ($ReviewSafetyOnly) {
+    @(('(setvar "TRUSTEDPATHS" "' + $trusted + '")'),'_NETLOAD',$probe,'CADMCPREVIEWSAFETY','_.QUIT','_Yes') | Set-Content -LiteralPath $script -Encoding ascii
+}
 $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $AutoCADDir 'accoreconsole.exe'))
 $start.UseShellExecute = $false; $start.CreateNoWindow = $true
 $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -29,7 +33,7 @@ if ($DynamicTextFixture) { $start.Environment['CADMCP_DYNAMIC_TEXT_FIXTURE'] = (
 $start.Environment['CAD_MCP_LISP_POLICY'] = 'allow'
 $process = [Diagnostics.Process]::Start($start)
 $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
-try { if (!$process.WaitForExit(55000)) { $process.Kill(); $process.WaitForExit() } }
+try { if (!$process.WaitForExit($(if ($ReviewSafetyOnly) { 180000 } else { 55000 }))) { $process.Kill(); $process.WaitForExit() } }
 finally { $stdout.Result | Set-Content -LiteralPath (Join-Path $OutputDirectory 'stdout.log'); $stderr.Result | Set-Content -LiteralPath (Join-Path $OutputDirectory 'stderr.log') }
 if (!(Test-Path -LiteralPath $result)) { throw "AutoCAD did not return a probe result: $OutputDirectory" }
 $report = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
@@ -37,7 +41,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'artifacts') | Ou
 Copy-Item -LiteralPath $result -Destination (Join-Path $repoRoot 'artifacts/core-probe-latest.json')
 $report
 if ($report.failure) { throw $report.failure }
-if ($TextRegressionOnly) { return }
+if ($TextRegressionOnly -or $ReviewSafetyOnly) { return }
 if (!(Test-Path -LiteralPath ($result + '.lisp'))) { throw 'Core Console did not return the LISP result' }
 $lisp = Get-Content -LiteralPath ($result + '.lisp') -Raw | ConvertFrom-Json
 Copy-Item -LiteralPath ($result + '.lisp') -Destination (Join-Path $repoRoot 'artifacts/core-lisp-latest.json')

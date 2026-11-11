@@ -26,8 +26,8 @@ public sealed class ChatWorkspace : UserControl
     private readonly List<Entry> retiring = [];
     private readonly string host, brokerPipe;
     private readonly string? projectStoreRoot;
-    private readonly Button benchmark = new() { Content = "Бенчмарк", Margin = new Thickness(4), ToolTip = "Полный нативный прогон в отдельном AutoCAD без открытых DWG; при первой неожиданной ошибке останавливается" };
-    private readonly Button stopBenchmark = new() { Content = "Остановить бенчмарк", Margin = new Thickness(4), IsEnabled = false };
+    private readonly Button benchmark = new() { Content = UiText.T("Бенчмарк"), Margin = new Thickness(4), ToolTip = UiText.T("Полный нативный прогон в отдельном AutoCAD без открытых DWG; при первой неожиданной ошибке останавливается") };
+    private readonly Button stopBenchmark = new() { Content = UiText.T("Остановить бенчмарк"), Margin = new Thickness(4), IsEnabled = false };
     private CancellationTokenSource? benchmarkCancellation;
     private string? benchmarkDocument;
     private bool refreshing, darkTheme = true;
@@ -40,7 +40,7 @@ public sealed class ChatWorkspace : UserControl
         host = hostExecutable ?? Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(ChatWorkspace).Assembly.Location)!, "..", "Host", "CadMcp.Host.exe"));
         brokerPipe = pipeName ?? Wire.BrokerPipe; projectStoreRoot = historyRoot;
         var root = new DockPanel(); var header = new WrapPanel();
-        var refresh = new Button { Content = "Открытые DWG", Margin = new Thickness(4), ToolTip = "Обновить список и вернуть закрытые вкладки чатов" };
+        var refresh = new Button { Content = UiText.T("Открытые DWG"), Margin = new Thickness(4), ToolTip = UiText.T("Обновить список и вернуть закрытые вкладки чатов") };
         refresh.Click += async (_, _) => await Refresh(revealHidden: true);
         benchmark.Click += async (_, _) => await RunBenchmark();
         stopBenchmark.Click += (_, _) => benchmarkCancellation?.Cancel();
@@ -69,7 +69,7 @@ public sealed class ChatWorkspace : UserControl
             if (CadSessionId is null)
             {
                 var workers = new Broker(Wire.WorkerRoot).Discover();
-                if (workers.Count != 1) throw new IOException("Откройте чат из нужного AutoCAD"); CadSessionId = workers[0].SessionId;
+                if (workers.Count != 1) throw new IOException(UiText.T("Откройте чат из нужного AutoCAD")); CadSessionId = workers[0].SessionId;
             }
             var reply = await PipeClient.CallAsync(brokerPipe, new(Guid.NewGuid().ToString("N"), "cad_documents", CadSessionId), timeout.Token);
             if (reply.Error is { } error) throw new IOException(error.Message);
@@ -83,22 +83,22 @@ public sealed class ChatWorkspace : UserControl
                 if (!projects.TryGetValue(slot.Key, out var entry))
                 {
                     if (retiring.Any(p => p.Slot.Document.ProjectKey == slot.Document.ProjectKey && p.Panel.IsWorking))
-                    { status.Text = "Дожидаюсь остановки прежнего чата"; continue; }
+                    { status.Text = UiText.T("Дожидаюсь остановки прежнего чата"); continue; }
                     var panel = Panel(slot); entry = new(new TabItem { Content = panel }, panel, slot);
                     var tabHeader = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal }; tabHeader.Children.Add(entry.Label);
-                    var close = new Button { Content = "×", Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(7, 0, 0, 0), ToolTip = "Закрыть вкладку чата; DWG останется открыт в AutoCAD" };
+                    var close = new Button { Content = "×", Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(7, 0, 0, 0), ToolTip = UiText.T("Закрыть вкладку чата; DWG останется открыт в AutoCAD") };
                     string key = slot.Key; close.Click += (_, e) => { e.Handled = true; CloseTab(key); };
                     tabHeader.Children.Add(close); entry.Tab.Header = tabHeader; projects.Add(slot.Key, entry); tabs.Items.Add(entry.Tab);
                 }
                 else if (entry.Slot.Document.DocumentId != slot.Document.DocumentId)
                 {
-                    if (entry.Panel.IsWorking) { entry.Panel.Stop(); status.Text = "Завершаю прежний чат перед перепривязкой DWG"; continue; }
+                    if (entry.Panel.IsWorking) { entry.Panel.Stop(); status.Text = UiText.T("Завершаю прежний чат перед перепривязкой DWG"); continue; }
                     entry.Panel.Stop(); entry.Panel.CloseView(); entry.Panel = Panel(slot); entry.Tab.Content = entry.Panel;
                 }
                 if (entry.Slot.Open && !slot.Open) entry.Panel.Stop();
                 entry.Slot = slot; entry.Panel.SetDocumentAvailable(slot.Open);
                 entry.Panel.SetBenchmarkBusy(benchmarkCancellation is not null && slot.Document.DocumentId == benchmarkDocument);
-                entry.Label.Text = Path.GetFileName(slot.Document.Name) + (!slot.Open ? " (закрыт)" : entry.Panel.IsWorking ? " · выполняется" : "");
+                entry.Label.Text = Path.GetFileName(slot.Document.Name) + (!slot.Open ? UiText.T(" (закрыт)") : entry.Panel.IsWorking ? UiText.T(" · выполняется") : "");
                 entry.Tab.ToolTip = slot.Document.Name;
                 bool dark = DarkThemeProvider?.Invoke() ?? darkTheme;
                 ChatTheme.Apply(this, dark);
@@ -109,7 +109,7 @@ public sealed class ChatWorkspace : UserControl
             }
             if (tabs.SelectedItem is null || projects.Values.Any(p => ReferenceEquals(p.Tab, tabs.SelectedItem) && !p.Slot.Open))
                 if (active is not null) tabs.SelectedItem = active;
-            if (benchmarkCancellation is null) status.Text = "Каждая вкладка работает со своим DWG";
+            if (benchmarkCancellation is null) status.Text = UiText.T("Каждая вкладка работает со своим DWG");
         }
         catch (System.Exception e) { status.Text = e.Message; }
         finally { refreshing = false; }
@@ -127,13 +127,13 @@ public sealed class ChatWorkspace : UserControl
     private async Task RunBenchmark()
     {
         if (benchmarkCancellation is not null) return;
-        if (projects.Values.Any(p => p.Panel.IsWorking)) { status.Text = "Сначала дождитесь завершения задач в чатах"; return; }
+        if (projects.Values.Any(p => p.Panel.IsWorking)) { status.Text = UiText.T("Сначала дождитесь завершения задач в чатах"); return; }
         using var cancellation = new CancellationTokenSource(); benchmarkCancellation = cancellation;
         benchmark.IsEnabled = false; stopBenchmark.IsEnabled = true;
         try
         {
-            await Refresh(); if (CadSessionId is null) throw new IOException("AutoCAD не подключён");
-            status.Text = "Нативный бенчмарк: только отдельный AutoCAD без открытых DWG. Не открывайте файлы во время прогона.";
+            await Refresh(); if (CadSessionId is null) throw new IOException(UiText.T("AutoCAD не подключён"));
+            status.Text = UiText.T("Нативный бенчмарк: только отдельный AutoCAD без открытых DWG. Не открывайте файлы во время прогона.");
             string runId = Guid.NewGuid().ToString("N");
             var benchmarkClock = System.Diagnostics.Stopwatch.StartNew();
             await using var mcp = await BenchmarkMcpSession.StartAsync(host, brokerPipe, runId, cancellation.Token);
@@ -147,17 +147,17 @@ public sealed class ChatWorkspace : UserControl
             {
                 Directory.CreateDirectory(folder);
                 File.WriteAllText(path, JsonSerializer.Serialize(new { result, mcp_inventory = mcp.Tools, mcp_calls = mcp.Evidence }, new JsonSerializerOptions(Wire.Json) { WriteIndented = true }));
-                summary += "\n\nJSON-отчёт: `" + path + "`\nНативная трассировка: `" + Path.Combine(folder, "native-trace.jsonl") + "` (если worker начал выполнение).";
+                summary += UiText.T("\n\nJSON-отчёт: `") + path + UiText.T("`\nНативная трассировка: `") + Path.Combine(folder, "native-trace.jsonl") + UiText.T("` (если worker начал выполнение).");
             }
             catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)
-            { summary += "\n\nJSON-отчёт не сохранён: " + error.Message; }
-            summary += AnswerMetrics.Footer(TimeSpan.FromMilliseconds(result.ElapsedMs), new ProviderTokenUsage(0, 0, 0, "модели не вызывались"));
+            { summary += UiText.T("\n\nJSON-отчёт не сохранён: ") + error.Message; }
+            summary += AnswerMetrics.Footer(TimeSpan.FromMilliseconds(result.ElapsedMs), new ProviderTokenUsage(0, 0, 0, UiText.T("модели не вызывались")));
             await Refresh(); var target = projects.Values.FirstOrDefault(p => p.Slot.Document.DocumentId == result.DocumentId);
             if (target is not null) { target.Panel.AddBenchmarkReport(summary); tabs.SelectedItem = target.Tab; }
-            else System.Windows.MessageBox.Show(summary, "Результат бенчмарка");
-            status.Text = $"Бенчмарк: {result.Passed}/{result.Total}, {result.ElapsedMs / 1000.0:0.0} с";
+            else System.Windows.MessageBox.Show(summary, UiText.T("Результат бенчмарка"));
+            status.Text = UiText.Format($"Бенчмарк: {result.Passed}/{result.Total}, {result.ElapsedMs / 1000.0:0.0} с");
         }
-        catch (System.Exception error) { status.Text = "Бенчмарк не завершён: " + error.Message; }
+        catch (System.Exception error) { status.Text = UiText.T("Бенчмарк не завершён: ") + error.Message; }
         finally
         {
             benchmarkCancellation = null; benchmarkDocument = null; benchmark.IsEnabled = true; stopBenchmark.IsEnabled = false;

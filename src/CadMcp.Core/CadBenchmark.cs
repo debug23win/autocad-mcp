@@ -24,17 +24,17 @@ public sealed record CadBenchmarkResult(string RunId, string SessionId, string? 
     public int CadCalls => (SetupCalls?.Count ?? 0) + Cases.Sum(c => c.Calls.Count);
     public string Markdown()
     {
-        var text = new StringBuilder($"**Бенчмарк CAD MCP: {Passed}/{Total} тестов пройдено**\n\n");
-        text.AppendLine($"Общее время: {ElapsedMs / 1000:0.000} с. Запросов runner: {CadCalls}. Ошибок: {Failed}; пропущено: {Skipped}; неизвестный исход: {Unknown}.");
-        if (ToolInventory is not null) text.AppendLine($"\nMCP-инструменты с пройденными проверками: {ToolsPassed}/{ToolInventory.Count}; пропущено по условиям: {ToolsSkipped}. Inventory получен через tools/list настоящего MCP host. Пропуски не являются подтверждённым покрытием.");
-        if (SetupError is not null) text.AppendLine("\nПодготовка не выполнена: " + SetupError);
-        text.AppendLine("\n| Тест | Результат | Время, с | Ожидание подтверждения, с |\n|---|---|---:|---:|");
+        var text = new StringBuilder(UiText.Format($"**Бенчмарк CAD MCP: {Passed}/{Total} тестов пройдено**\n\n"));
+        text.AppendLine(UiText.Format($"Общее время: {ElapsedMs / 1000:0.000} с. Запросов runner: {CadCalls}. Ошибок: {Failed}; пропущено: {Skipped}; неизвестный исход: {Unknown}."));
+        if (ToolInventory is not null) text.AppendLine(UiText.Format($"\nMCP-инструменты с пройденными проверками: {ToolsPassed}/{ToolInventory.Count}; пропущено по условиям: {ToolsSkipped}. Inventory получен через tools/list настоящего MCP host. Пропуски не являются подтверждённым покрытием."));
+        if (SetupError is not null) text.AppendLine(UiText.T("\nПодготовка не выполнена: ") + SetupError);
+        text.AppendLine(UiText.T("\n| Тест | Результат | Время, с | Ожидание подтверждения, с |\n|---|---|---:|---:|"));
         foreach (var item in Cases)
         {
             text.AppendLine($"| {item.Name} | {item.Status.ToUpperInvariant()} | {item.ElapsedMs / 1000:0.000} | {item.ApprovalWaitMs / 1000:0.000} |");
             if (item.ErrorCode is not null) text.AppendLine($"\n`{item.Id}`: `{item.ErrorCode}` — {item.Message?.Replace('\n', ' ')}\n");
         }
-        text.AppendLine("\nВремя включает обращения к AutoCAD и ожидание AutoLISP; это фиксированная функциональная проверка, без вызовов моделей. Пропуски и неизвестные исходы не считаются успехом. Создание отдельного тестового DWG отражено в разделе подготовки; его текущее наличие, геометрия и сохранение после сбоя не подтверждены. Другие DWG в этой сессии не допускаются. Остановка ожидания не отменяет уже принятые CAD-операции.");
+        text.AppendLine(UiText.T("\nВремя включает обращения к AutoCAD и ожидание AutoLISP; это фиксированная функциональная проверка, без вызовов моделей. Пропуски и неизвестные исходы не считаются успехом. Создание отдельного тестового DWG отражено в разделе подготовки; его текущее наличие, геометрия и сохранение после сбоя не подтверждены. Другие DWG в этой сессии не допускаются. Остановка ожидания не отменяет уже принятые CAD-операции."));
         return text.ToString();
     }
 }
@@ -46,10 +46,10 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
     private sealed class Fault(string code, string message, bool unknown = false, bool skipped = false) : Exception(message)
     { public string Code = code; public bool Unknown = unknown; public bool Skipped = skipped; }
     private static readonly (string Id, string Name, string Language)[] Definitions =
-    [ ("polyline", "C#: контур и ведомость", "C#"), ("text", "C#: Unicode-тексты", "C#"),
-      ("blocks", "C#: блоки и преобразования WCS", "C#"), ("transform", "C#: копирование и изменение", "C#"),
-      ("tables", "C#: связанные таблицы", "C#"), ("paging", "C#: пагинация поиска", "C#"),
-      ("csharp", "C#: генерация отрезка и окружности", "C#"), ("lisp", "AutoLISP: генерация отрезка и окружности", "AutoLISP") ];
+    [ ("polyline", UiText.T("C#: контур и ведомость"), "C#"), ("text", UiText.T("C#: Unicode-тексты"), "C#"),
+      ("blocks", UiText.T("C#: блоки и преобразования WCS"), "C#"), ("transform", UiText.T("C#: копирование и изменение"), "C#"),
+      ("tables", UiText.T("C#: связанные таблицы"), "C#"), ("paging", UiText.T("C#: пагинация поиска"), "C#"),
+      ("csharp", UiText.T("C#: генерация отрезка и окружности"), "C#"), ("lisp", UiText.T("AutoLISP: генерация отрезка и окружности"), "AutoLISP") ];
     private int running;
 
     public async Task<CadBenchmarkResult> RunAsync(string sessionId, Action<CadBenchmarkProgress>? progress = null, CancellationToken ct = default)
@@ -93,7 +93,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
         private static void Success(Response response)
         {
             if (response.Error is { } error)
-                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN" or "BENCHMARK_SESSION_CHANGED" or "INTERNAL_ERROR" or "WORKER_UNAVAILABLE" or "TIMEOUT" or "TRANSPORT_ERROR",
+                throw new Fault(error.Code, error.Message, error.Code is "SESSION_MISMATCH" or "SESSION_NOT_FOUND" or "DOCUMENT_CLOSED" or "DOCUMENT_MISMATCH" or "BENCHMARK_SCOPE_MISMATCH" or "OPERATION_UNCERTAIN" or "BENCHMARK_SESSION_CHANGED" or "INTERNAL_ERROR" or "WORKER_UNAVAILABLE" or "WORKER_TRANSPORT_LOST" or "TIMEOUT" or "TRANSPORT_ERROR",
                     error.Code is "LISP_DISABLED" or "LISP_DENIED" or "LISP_APPROVAL_UNAVAILABLE");
             if (response.Status != "completed") throw new Fault("INCOMPLETE_RESPONSE", "Expected completed response, got " + response.Status);
         }
@@ -143,7 +143,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                     if (data.Text("operation_id") != operationId) throw new Fault("OPERATION_UNCERTAIN", "Receipt operation id changed", true);
                     if (awaitingApproval) approvalMs += now - last;
                     last = now; awaitingApproval = data.Text("phase") == "awaiting_user_approval";
-                    if (awaitingApproval) progress?.Invoke(new("AutoLISP ожидает подтверждения в AutoCAD", document));
+                    if (awaitingApproval) progress?.Invoke(new(UiText.T("AutoLISP ожидает подтверждения в AutoCAD"), document));
                     string state = data.Text("state") ?? "unknown";
                     if (state is "completed" or "failed" or "cancelled")
                     {
@@ -206,7 +206,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             {
                 if (toolInventory is not null && (toolInventory.Count == 0 || toolInventory.Distinct(StringComparer.Ordinal).Count() != toolInventory.Count))
                     throw new Fault("INVALID_TOOL_INVENTORY", "tools/list must contain nonempty unique tool names");
-                progress?.Invoke(new("Создаю отдельный тестовый DWG"));
+                progress?.Invoke(new(UiText.T("Создаю отдельный тестовый DWG")));
                 var before = await Call("cad_documents", new { }, ct); Success(before);
                 var oldIds = Data(before).EnumerateArray().Select(d => d.Text("document_id")).ToHashSet();
                 BenchmarkIsolation.RequireEmpty(oldIds.Count);
@@ -216,7 +216,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                     data.Text("run_id") != id || !data.TryGetProperty("benchmark_fixture", out var flag) || flag.ValueKind != JsonValueKind.True)
                     throw new Fault("INVALID_FIXTURE", "The worker did not create a new isolated benchmark drawing", true);
                 document = fixture.DocumentId; fixturePath = data.Text("path");
-                progress?.Invoke(new("Тестовый DWG создан", document));
+                progress?.Invoke(new(UiText.T("Тестовый DWG создан"), document));
             }
             catch (Exception e) { setupError = e.Message; stopped = true; }
             var setupCalls = calls.ToArray(); calls.Clear();
@@ -224,7 +224,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             {
                 if (stopped || ct.IsCancellationRequested)
                 { results.Add(new(definition.Id, definition.Name, definition.Language, "skipped", 0, 0, "NOT_RUN", setupError ?? "Stopped after a preceding failure, cancellation or unknown operation outcome", [], [])); continue; }
-                progress?.Invoke(new("Бенчмарк: " + definition.Name, document));
+                progress?.Invoke(new(UiText.T("Бенчмарк: ") + definition.Name, document));
                 var caseWatch = Stopwatch.StartNew(); checks.Clear(); calls.Clear(); approvalMs = 0;
                 string status = "passed"; string? errorCode = null, message = null;
                 try
@@ -251,7 +251,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                 try { await Extended(results, stopped, ct); }
                 catch (Exception error)
                 {
-                    results.Add(new("full_setup", "Подготовка полного набора", "MCP", "failed", 0, 0, "FULL_SETUP_FAILED", error.Message, [], []));
+                    results.Add(new("full_setup", UiText.T("Подготовка полного набора"), "MCP", "failed", 0, 0, "FULL_SETUP_FAILED", error.Message, [], []));
                     foreach (string tool in toolInventory.Where(t => results.All(c => c.Id != "tool_" + t)))
                         results.Add(new("tool_" + tool, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Full suite setup did not complete", [], []));
                 }

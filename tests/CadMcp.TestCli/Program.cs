@@ -208,6 +208,19 @@ internal static class FakeClaude
         }
         var blocks = input.GetProperty("message").GetProperty("content");
         string prompt = blocks[0].GetProperty("text").GetString()!;
+        if (prompt is "SILENT" or "SILENT_ACTIVE" or "SILENT_ACTIVE_NO_INIT")
+        {
+            if (prompt == "SILENT_ACTIVE") Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-claude\",\"model\":\"claude-opus-5-5\"}");
+            if (prompt == "SILENT_ACTIVE_NO_INIT") Console.WriteLine("{\"type\":\"assistant\",\"message\":{\"content\":[]}}");
+            await Task.Delay(Timeout.Infinite); return 0;
+        }
+        if (prompt == "HEARTBEAT")
+        {
+            Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-claude\"}");
+            for (int i = 0; i < 5; i++) { await Task.Delay(400); Console.WriteLine("{\"type\":\"system\",\"subtype\":\"task_progress\",\"message\":\"hidden service output\"}"); }
+            Console.WriteLine("{\"type\":\"result\",\"is_error\":false,\"result\":\"Готово\"}"); return 0;
+        }
+
         if (prompt.StartsWith("ATTACHMENT") && !blocks.EnumerateArray().Any(x => x.GetProperty("type").GetString() == "image" && Convert.FromBase64String(x.GetProperty("source").GetProperty("data").GetString()!).Length > 8))
             throw new Exception("Claude image input missing");
         // Real CLIs can print warnings that are not JSON; the client must skip them.

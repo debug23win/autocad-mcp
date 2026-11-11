@@ -43,8 +43,8 @@ public sealed class Plugin : IExtensionApplication
         try
         {
             ribbon = new RibbonTab { Id = "CADMCP_READ_PROTOTYPE", Title = "CAD MCP" };
-            var source = new RibbonPanelSource { Title = "Ассистент" };
-            source.Items.Add(new RibbonButton { Text = "Открыть чат", ShowText = true, CommandHandler = new OpenChat() });
+            var source = new RibbonPanelSource { Title = UiText.T("Ассистент") };
+            source.Items.Add(new RibbonButton { Text = UiText.T("Открыть чат"), ShowText = true, CommandHandler = new OpenChat() });
             ribbon.Panels.Add(new RibbonPanel { Source = source }); control.Tabs.Add(ribbon);
         }
         catch (System.Exception error) { ribbon = null; App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP ribbon: " + error.Message + "; use CADMCPCHAT"); }
@@ -57,13 +57,13 @@ public sealed class Plugin : IExtensionApplication
         {
             if (palette is null)
             {
-                palette = new PaletteSet("CAD MCP — ассистент чертежей");
+                palette = new PaletteSet(UiText.T("CAD MCP — ассистент чертежей"));
                 panel = new ChatWorkspace
                 {
                     CadSessionId = documents?.SessionId,
                     DarkThemeProvider = () => Convert.ToInt32(App.GetSystemVariable("COLORTHEME")) == 0
                 };
-                palette.AddVisual("Чат", panel);
+                palette.AddVisual(UiText.T("Чат"), panel);
                 palette.MinimumSize = new System.Drawing.Size(360, 480);
             }
             palette.Visible = true;
