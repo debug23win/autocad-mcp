@@ -3,18 +3,18 @@
 Новые версии сверху. Для каждой версии — что изменилось и как это проверено. Порядок проверки
 текущей версии описан в [docs/validation.md](docs/validation.md).
 
-## Не выпущено
+## 0.11.8-preview
 
-- Инструкции в `docs` переведены на английский; добавлена карта исходников. Команды, примеры кода и ограничения сохранности DWG сохранены.
-- Выбор русского или английского в установщике сохраняется отдельно от настроек провайдера. Панель, подписи чата, статусы, метрики, отчёты бенчмарка и окна подтверждения AutoLISP используют язык установки; основной агент и помощники получают тот же язык ответа по умолчанию. Для прежних установок без настройки остаётся русский.
-- Английская документация не меняет язык интерфейса. Тексты пользователя, история ответов и данные DWG автоматически не переводятся; язык AutoCAD и культура его потоков не меняются.
-- Проверено: 633/633 managed/MCP-тестов, сборка 15 проектов без предупреждений, RU/EN HTML-чат в Chromium. Установка и полный интерфейс на Windows требуют отдельной проверки.
+Дата: 11 ноября 2026.
 
-- Review fixes R1–R9: reconcile worker transport loss without resending mutations; preserve historical receipt provenance and unknown current save state; bound mesh vertex reads and stream snapshot accumulation; isolate table dependency components; make C# compilation/replay deterministic and return prior receipts before compilation; reject incomplete verification targets and unsupported Map acceptance; bound Claude startup/event silence; localize .NET 10 ribbon entry points.
-- Recovery copies remain until explicit user cleanup, with optional existence/hash diagnostics. HTTP downloads have total/body-inactivity deadlines. Native Point3dCollection ownership is explicit; tool phases use structured events instead of translated strings.
-- Added managed/MCP regression coverage and an isolated `-ReviewSafetyOnly` native probe. Native AutoCAD/product validation is pending; these changes do not establish the cause or resolution of the reported AutoCAD 2027 fatal crash.
-
-- Conservative follow-up fixes: expected Host errors retain structured codes; C# operation status omits generated DLL bytes while keeping durable replay evidence; reads share the queue admission gate with writes; valid xref-stream PDFs pass strict verification without classic repair; temporary native collections are disposed explicitly. C#/network permissions, native transaction boundaries and recovery retention policy are unchanged.
+- Исправлено восстановление после обрыва worker, неоднозначного `INTERNAL_ERROR` и слишком большого ответа: исходная квитанция проверяется без повторной записи. Архивный результат сохраняет `historical`; текущее сохранение DWG после потери worker остаётся неизвестным.
+- C# компилируется детерминированно; точный повтор сначала получает прежнюю квитанцию. Статус операции больше не передаёт DLL в контекст модели, сохраняя публичные данные повтора и полный артефакт в журнале. Неполные списки объектов и операции более чем с 500 целями не выдаются за полную проверку.
+- Вершины больших сеток читаются порциями, snapshot ограничивается при обходе. Недоступные грани явно помечаются как неполные. Связанные таблицы пересчитываются по затронутым компонентам; обновлённые зависимые таблицы входят в readback и приёмку. Неподдерживаемые критерии Map отклоняются до записи.
+- Ожидаемые ошибки Host сохраняют диагностические коды. Чтение и запись используют общий замок при проверке лимита очереди. Для Claude добавлены сроки ожидания запуска/событий, для загрузок — общий deadline и timeout отсутствия данных. Фазы инструментов передаются структурированно.
+- Корректные PDF с xref stream проходят строгую проверку без изменения файла; ремонт классического PDF сохранён. Добавлено явное освобождение временных native-коллекций. Recovery-копии хранятся до ручной очистки, диагностика может проверить наличие/размер/SHA-256. Checkpoint хешируется потоком.
+- Документация `docs` переведена на английский, добавлена карта исходников. Язык установки задаёт интерфейс, ленту .NET 10, статусы и ответы/комментарии основного агента и помощников. Для прежних установок без настройки остаётся русский; данные DWG и сообщения пользователя автоматически не переводятся.
+- Проверено: 633/633 managed/MCP-теста, сборка 15 проектов с warnings-as-errors, реальные WPF-проверки темы и сохранённых настроек на Windows. Дополнительно проверены RU/EN HTML-чат, восстановление после разрыва named pipe, компактный C# replay и регрессии PDF. Сборка установщика проверяет состав поставки и хеши; результат выпуска записывается в `validation.json`.
+- Добавлен изолированный нативный probe `-ReviewSafetyOnly`. Проверки внутри установленного AutoCAD, включая Undo/Redo и поддерживаемые продукты/обновления, ещё необходимы. Причина прежнего fatal crash AutoCAD 2027 не установлена; выпуск не заявляет о доказанном устранении этой аварии. Изменения AutoSafe, общих pipe-бюджетов и native-кеширования в этот выпуск не включены. Полномочия C# и сети сохранены.
 
 ## 0.11.7-preview
 
