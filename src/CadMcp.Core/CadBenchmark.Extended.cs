@@ -11,9 +11,12 @@ namespace CadMcp.Core;
 
 public sealed partial class CadBenchmark
 {
-    // The 200 large archive MTexts lie below every other fixture text: cad_outline samples texts from the top of the
+    // The archive table lies below every other fixture text: cad_outline samples texts from the top of the
     // model down, and texts above would push the Unicode "Ø114" texts out of its sample.
-    internal const string CSharpFixture = """
+    internal const int ArchivePayloadLength = 6_000;
+    internal const int ArchiveRows = 100;
+    internal const string ArchiveMarker = "ARCHIVE_PAYLOAD_";
+    internal static readonly string CSharpFixture = $$$"""
 using System;
 using System.Threading;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -30,8 +33,14 @@ public static class CadMcpScript {
   var box=new Solid3d();box.CreateBox(10,20,30);box.TransformBy(Matrix3d.Displacement(new Vector3d(9200,0,0)));var solid=Add(box,"B_SOLID");
   var duplicateA=Add(new Line(new Point3d(9500,0,0),new Point3d(9600,0,0)),"B_REVIEW");
   var duplicateB=Add(new Line(new Point3d(9500,0,0),new Point3d(9600,0,0)),"B_REVIEW");
-  for(int i=0;i<200;i++){cancellationToken.ThrowIfCancellationRequested();Add(new MText{Location=new Point3d(12000+i*3,-3000,0),TextHeight=2,Width=200,Contents="ARCHIVE_"+i.ToString("D3")+"_"+new string('X',4000)},"B_ARCHIVE");}
-  return new{line,circle,solid,duplicateA,duplicateB};
+  cancellationToken.ThrowIfCancellationRequested();
+  var archiveTable=new Table();archiveTable.SetDatabaseDefaults(database);archiveTable.TableStyle=database.Tablestyle;
+  archiveTable.SetSize({{{ArchiveRows}}},1);archiveTable.Position=new Point3d(12000,-3000,0);
+  archiveTable.Columns[0].Width=200;archiveTable.Cells.TextHeight=2;
+  for(int i=0;i<{{{ArchiveRows}}};i++){cancellationToken.ThrowIfCancellationRequested();archiveTable.Rows[i].Height=8;archiveTable.Cells[i,0].Value="{{{ArchiveMarker}}}"+i.ToString("D3")+"_"+new string('X',{{{ArchivePayloadLength}}});}
+  archiveTable.GenerateLayout();
+  var archive=Add(archiveTable,"B_ARCHIVE");
+  return new{line,circle,solid,duplicateA,duplicateB,archive};
  }
 }
 """;
@@ -113,7 +122,7 @@ public static class CadMcpScript {
             {
                 string caseId = "tool_" + tool;
                 if (stopped || ct.IsCancellationRequested) { results.Add(new(caseId, tool, "MCP", "skipped", 0, 0, "NOT_RUN", "Stopped after a preceding failure, unknown outcome or cancellation", [], [])); continue; }
-                progress?.Invoke(new(UiText.T("Полный бенчмарк: ") + tool, document));
+                progress?.Invoke(new($"[{results.Count + 1}/{Definitions.Length + toolInventory!.Count}] {tool}", document, "case_started"));
                 checks.Clear(); calls.Clear(); approvalMs = 0; var watch = Stopwatch.StartNew();
                 string status = "passed"; string? errorCode = null, message = null;
                 try
@@ -132,6 +141,7 @@ public static class CadMcpScript {
                 catch (OperationCanceledException error) { status = "unknown"; errorCode = "CANCELLED_WAIT"; message = error.Message; stopped = true; }
                 catch (Exception error) { bool uncertain = Wire.IsTransportFailure(error); status = uncertain ? "unknown" : "failed"; errorCode = uncertain ? "BENCHMARK_TRANSPORT_UNCERTAIN" : error is CadFault fault ? fault.Code : "BENCHMARK_ERROR"; message = error.Message; stopped = true; }
                 results.Add(new(caseId, tool, "MCP", status, watch.Elapsed.TotalMilliseconds, approvalMs, errorCode, message, checks.ToArray(), calls.ToArray()));
+                progress?.Invoke(new($"{tool}: {status}" + (errorCode is null ? "" : " · " + errorCode), document, "case_finished"));
             }
         }
 

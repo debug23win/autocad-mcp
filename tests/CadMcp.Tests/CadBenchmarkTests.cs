@@ -14,6 +14,54 @@ public sealed partial class CadBenchmarkTests
         new CadBenchmark(cad.Send, TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(80)).RunAsync("session", ct: ct);
 
     [Fact]
+    public async Task Progress_reports_operation_before_transport_completes_and_preserves_request_identity()
+    {
+        var cad = new FakeCad();
+        var events = new List<CadBenchmarkProgress>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<Response> Send(Request request, CancellationToken ct)
+        {
+            if (request.Operation == "cad_documents")
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(ct);
+            }
+            return await cad.Send(request, ct);
+        }
+        var run = new CadBenchmark(Send, TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(10)).RunAsync("session", events.Add);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var started = Assert.Single(events, e => e.Phase == "operation_started");
+        Assert.Equal("cad_documents", started.Operation);
+        Assert.False(run.IsCompleted);
+        Assert.DoesNotContain(events, e => e.Phase == "operation_finished");
+        release.SetResult();
+        Assert.True((await run).Complete);
+        var operations = events.Where(e => e.Phase == "operation_started").ToArray();
+        foreach (var operation in operations)
+        {
+            var finished = Assert.Single(events, e => e.Phase == "operation_finished" && e.RequestId == operation.RequestId);
+            Assert.Equal(operation.Operation, finished.Operation);
+            Assert.True(events.IndexOf(operation) < events.IndexOf(finished));
+        }
+        Assert.Equal(8, events.Count(e => e.Phase == "case_started"));
+        Assert.Equal(8, events.Count(e => e.Phase == "case_finished"));
+    }
+
+    [Fact]
+    public async Task Progress_reports_transport_failure_for_the_last_started_operation()
+    {
+        var events = new List<CadBenchmarkProgress>();
+        var result = await new CadBenchmark((_, _) => throw new IOException("broken pipe"))
+            .RunAsync("session", events.Add);
+        Assert.NotNull(result.SetupError);
+        var started = Assert.Single(events, e => e.Phase == "operation_started");
+        var finished = Assert.Single(events, e => e.Phase == "operation_finished");
+        Assert.Equal(started.RequestId, finished.RequestId);
+        Assert.Contains("IOException", finished.Message);
+    }
+
+    [Fact]
     public async Task Positive_control_reads_actual_evidence_and_reports_consistent_totals_and_timing()
     {
         var cad = new FakeCad();

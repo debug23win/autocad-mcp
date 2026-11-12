@@ -50,7 +50,9 @@ internal static class ObjectInspection
 
     private static object Palette(ObjectId id, int limit)
     {
-#if CORE_CONSOLE
+#if DIAGNOSTIC_SKIP_OPM
+        return new { error = "DIAGNOSTIC_SKIP_OPM: COM Properties palette disabled for crash isolation; Undo remains enabled" };
+#elif CORE_CONSOLE
         return new { error = "The Properties palette is not available in the AutoCAD core console" };
 #else
         var categories = new List<object>();

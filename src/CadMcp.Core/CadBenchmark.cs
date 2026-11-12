@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace CadMcp.Core;
 
-public sealed record CadBenchmarkProgress(string Message, string? DocumentId = null);
+public sealed record CadBenchmarkProgress(string Message, string? DocumentId = null, string? Phase = null, string? Operation = null, string? RequestId = null);
 public sealed record CadBenchmarkCall(Request Request, Response? Response, double ElapsedMs, string? TransportError = null);
 public sealed record CadBenchmarkCheck(string Name, bool Passed, object? Expected, object? Actual);
 public sealed record CadBenchmarkCase(string Id, string Name, string Language, string Status, double ElapsedMs,
@@ -75,19 +75,27 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             var request = new Request(Guid.NewGuid().ToString("N"), operation, session, target ?? document, revision,
                 Wire.Element(data), DateTimeOffset.UtcNow.AddSeconds(25), Owner);
             var watch = Stopwatch.StartNew();
+            string outcome = "interrupted";
+            progress?.Invoke(new("→ " + operation, document, "operation_started", operation, request.RequestId));
             using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct); callTimeout.CancelAfter(timeout);
             try
             {
                 var response = await transport(request, callTimeout.Token).WaitAsync(callTimeout.Token);
                 calls.Add(new(request, response, watch.Elapsed.TotalMilliseconds));
+                outcome = response.Error?.Code ?? response.Status;
                 if (response.RequestId != request.RequestId) throw new Fault("RESPONSE_MISMATCH", "Response request id changed", true);
                 if (response.SessionId is { } s && s != session || document is not null && response.DocumentId is { } d && d != document ||
                     document is not null && response.Error is null && (response.SessionId != session || response.DocumentId != document))
                     throw new Fault("SCOPE_MISMATCH", "Response belongs to another session/drawing", true);
                 return response;
             }
-            catch (Exception e) when (e is not Fault)
-            { calls.Add(new(request, null, watch.Elapsed.TotalMilliseconds, e.Message)); throw; }
+            catch (Exception e)
+            {
+                if (e is not Fault) calls.Add(new(request, null, watch.Elapsed.TotalMilliseconds, e.Message));
+                outcome = e is OperationCanceledException ? "cancelled_wait" : e is Fault fault ? fault.Code : e.GetType().Name;
+                throw;
+            }
+            finally { progress?.Invoke(new(UiText.Format($"← {operation}: {outcome} ({watch.Elapsed.TotalSeconds:0.0} с)"), document, "operation_finished", operation, request.RequestId)); }
         }
         private static JsonElement Data(Response response) => Wire.Element(response.Data ?? new { });
         private static void Success(Response response)
@@ -224,7 +232,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             {
                 if (stopped || ct.IsCancellationRequested)
                 { results.Add(new(definition.Id, definition.Name, definition.Language, "skipped", 0, 0, "NOT_RUN", setupError ?? "Stopped after a preceding failure, cancellation or unknown operation outcome", [], [])); continue; }
-                progress?.Invoke(new(UiText.T("Бенчмарк: ") + definition.Name, document));
+                progress?.Invoke(new($"[{results.Count + 1}/{Definitions.Length + (toolInventory?.Count ?? 0)}] {definition.Name}", document, "case_started"));
                 var caseWatch = Stopwatch.StartNew(); checks.Clear(); calls.Clear(); approvalMs = 0;
                 string status = "passed"; string? errorCode = null, message = null;
                 try
@@ -245,6 +253,7 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
                 catch (OperationCanceledException error) { status = "unknown"; errorCode = "CANCELLED_WAIT"; message = error.Message; stopped = true; }
                 catch (Exception error) { bool uncertain = Wire.IsTransportFailure(error); status = uncertain ? "unknown" : "failed"; errorCode = uncertain ? "BENCHMARK_TRANSPORT_UNCERTAIN" : error is CadFault fault ? fault.Code : "BENCHMARK_ERROR"; message = error.Message; stopped = true; }
                 results.Add(new(definition.Id, definition.Name, definition.Language, status, caseWatch.Elapsed.TotalMilliseconds, approvalMs, errorCode, message, checks.ToArray(), calls.ToArray()));
+                progress?.Invoke(new($"{definition.Name}: {status}" + (errorCode is null ? "" : " · " + errorCode), document, "case_finished"));
             }
             if (toolInventory is not null)
             {

@@ -184,8 +184,10 @@ public sealed partial class CadBenchmark
         }
         private async Task ArchiveCase(CancellationToken ct)
         {
-            Extra("line"); // require the large MText fixture created by real C#
-            var response = await ReadCall("cad_search", new { options_json = "{\"scope\":\"model\",\"layer\":\"B_ARCHIVE\",\"details\":true,\"limit\":500}" }, ct);
+            // Entity reads clip at 256 KiB and search pages at 512 KiB. A bounded
+            // table range can exceed the archive threshold without bypassing either budget.
+            string handle = Extra("archive");
+            var response = await ReadCall("cad_table_get", new { handle, first_row = 0, first_column = 0, row_count = ArchiveRows, column_count = 1 }, ct);
             if (response.Error is not null || response.Status is not ("completed" or "partial")) Success(response);
             var envelope = Data(response);
             string archive = envelope.Text("archive_id") ?? throw new Fault("ARCHIVE_NOT_CREATED", "Large response did not create a real archive");
@@ -199,10 +201,21 @@ public sealed partial class CadBenchmark
                 int position = next.GetInt32(); if (position <= offset) throw new Fault("ARCHIVE_PAGING", "Archive cursor did not advance"); offset = position;
             }
             if (!eof) throw new Fault("INCOMPLETE_EVIDENCE", "Archive did not reach terminal EOF within the bounded page count");
-            using var parsed = JsonDocument.Parse(text.ToString()); var entities = Body(parsed.RootElement).GetProperty("entities").EnumerateArray().ToArray();
-            Number("all archived MText reconstructed", 200, entities.Length);
-            Is("unique archive handles", entities.Select(e => e.Text("handle")).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 200, entities.Length);
-            foreach (int index in Enumerable.Range(0, 200)) Is("archive marker " + index, entities.Count(e => e.GetRawText().Contains("ARCHIVE_" + index.ToString("D3") + "_", StringComparison.Ordinal)) == 1, index);
+            using var parsed = JsonDocument.Parse(text.ToString());
+            var table = Body(parsed.RootElement);
+            Is("archived table identity", string.Equals(table.Text("handle"), handle, StringComparison.OrdinalIgnoreCase), table.Text("handle") ?? "missing");
+            Number("archived table rows", ArchiveRows, table.GetProperty("rows").GetDouble());
+            Number("archived table columns", 1, table.GetProperty("columns").GetDouble());
+            Is("complete table range", !table.TryGetProperty("next_row", out var nextRow) || nextRow.ValueKind == JsonValueKind.Null, table);
+            var cells = table.GetProperty("cells").EnumerateArray().ToArray();
+            Number("all archive cells reconstructed", ArchiveRows, cells.Length);
+            for (int i = 0; i < ArchiveRows; i++)
+            {
+                var matches = cells.Where(cell => cell.GetProperty("row").GetInt32() == i && cell.GetProperty("column").GetInt32() == 0).ToArray();
+                Number("unique archive cell " + i, 1, matches.Length);
+                string expected = ArchiveMarker + i.ToString("D3") + "_" + new string('X', ArchivePayloadLength);
+                Is("complete archive cell " + i, matches.Length == 1 && matches[0].Text("text") == expected, matches.Length == 1 ? matches[0].Text("text")?.Length ?? 0 : 0);
+            }
         }
         private async Task ExportCase(CancellationToken ct)
         {
