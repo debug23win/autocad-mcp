@@ -312,6 +312,27 @@ public sealed class ProviderTests
     }
 
     [Fact]
+    public void Claude_model_labels_name_the_version_in_both_CLI_formats()
+    {
+        // Claude Code 2.1.322: the version moved from the description into the display name.
+        var models = ClaudeCatalog.Parse(JsonDocument.Parse("""
+            [{"value":"default","displayName":"Default (recommended)","description":"Opus 5.5 · Best for everyday, complex tasks"},
+             {"value":"opus","displayName":"Opus 5.5","description":"Best for everyday, complex tasks"},
+             {"value":"fable","displayName":"Fable 5.2","description":"Most capable for your hardest and longest-running tasks"},
+             {"value":"sonnet","displayName":"Sonnet","description":"Sonnet 5.5 · Efficient for routine tasks"},
+             {"value":"haiku","displayName":"Haiku 5.5"}]
+            """).RootElement);
+        Assert.Equal(new[]
+        {
+            "Opus 5.5 · Best for everyday, complex tasks",
+            "Opus 5.5 · Best for everyday, complex tasks",
+            "Fable 5.2 · Most capable for your hardest and longest-running tasks",
+            "Sonnet 5.5 · Efficient for routine tasks",
+            "Haiku 5.5"
+        }, models.Select(m => m.Label));
+    }
+
+    [Fact]
     public void Claude_model_entries_with_missing_fields_do_not_break_the_list()
     {
         var models = ClaudeCatalog.Parse(JsonDocument.Parse("""

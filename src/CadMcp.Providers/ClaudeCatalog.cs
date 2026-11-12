@@ -10,8 +10,21 @@ namespace CadMcp.Providers;
 /// </summary>
 public sealed record ClaudeModel(string Id, string DisplayName, string? Description, string? ResolvedModel, IReadOnlyList<string> Efforts, bool IsDefault)
 {
-    /// <summary>"Opus 5.5 · Best for everyday, complex tasks": the description names the current version.</summary>
-    public string Label => string.IsNullOrWhiteSpace(Description) ? DisplayName : Description!;
+    /// <summary>
+    /// "Opus 5.5 · Best for everyday, complex tasks". Older Claude Code put the version in the description
+    /// (display name "Opus"); newer ones put it in the display name and leave only the purpose in the description.
+    /// </summary>
+    public string Label
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Description)) return DisplayName;
+            var description = Description!.Trim();
+            // The description already names the model ("Opus 5.5 · …", or the default entry's current model).
+            if (IsDefault || description.Contains('·') || description.StartsWith(DisplayName, StringComparison.OrdinalIgnoreCase)) return description;
+            return DisplayName + " · " + description;
+        }
+    }
 }
 
 public sealed record ClaudeSelection(string? Model, string? Effort);

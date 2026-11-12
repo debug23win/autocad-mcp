@@ -319,7 +319,8 @@ public sealed partial class CadBenchmark(Func<Request, CancellationToken, Task<R
             async Task Value(string handle, string cell, double expected)
             { var table = await Read("cad_table_get", new { handle }, ct); Number(handle + "." + cell, expected, table.GetProperty("cells").EnumerateArray().Single(c => c.Text("cell") == cell).GetProperty("value").GetDouble()); }
             await Value(source, "C1", 10); await Value(dependent, "A1", 20);
-            await Edit([new { op = "table_cells", handle = source, cells = new[] { new { cell = "A1", value = 6 } } }], ct, 1);
+            // The dependent table is recalculated in the same transaction and counted with the source (docs/editing.md).
+            await Edit([new { op = "table_cells", handle = source, cells = new[] { new { cell = "A1", value = 6 } } }], ct, 2);
             await Value(source, "C1", 15); await Value(dependent, "A1", 30);
         }
         private async Task Paging(CancellationToken ct)
