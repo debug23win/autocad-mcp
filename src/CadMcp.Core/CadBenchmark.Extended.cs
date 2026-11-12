@@ -11,6 +11,8 @@ namespace CadMcp.Core;
 
 public sealed partial class CadBenchmark
 {
+    // The 200 large archive MTexts lie below every other fixture text: cad_outline samples texts from the top of the
+    // model down, and texts above would push the Unicode "Ø114" texts out of its sample.
     internal const string CSharpFixture = """
 using System;
 using System.Threading;
@@ -28,7 +30,7 @@ public static class CadMcpScript {
   var box=new Solid3d();box.CreateBox(10,20,30);box.TransformBy(Matrix3d.Displacement(new Vector3d(9200,0,0)));var solid=Add(box,"B_SOLID");
   var duplicateA=Add(new Line(new Point3d(9500,0,0),new Point3d(9600,0,0)),"B_REVIEW");
   var duplicateB=Add(new Line(new Point3d(9500,0,0),new Point3d(9600,0,0)),"B_REVIEW");
-  for(int i=0;i<200;i++){cancellationToken.ThrowIfCancellationRequested();Add(new MText{Location=new Point3d(12000+i*3,3000,0),TextHeight=2,Width=200,Contents="ARCHIVE_"+i.ToString("D3")+"_"+new string('X',4000)},"B_ARCHIVE");}
+  for(int i=0;i<200;i++){cancellationToken.ThrowIfCancellationRequested();Add(new MText{Location=new Point3d(12000+i*3,-3000,0),TextHeight=2,Width=200,Contents="ARCHIVE_"+i.ToString("D3")+"_"+new string('X',4000)},"B_ARCHIVE");}
   return new{line,circle,solid,duplicateA,duplicateB};
  }
 }
