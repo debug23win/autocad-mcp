@@ -1,6 +1,6 @@
-CAD MCP — Preview 0.11.9, Windows x64
+CAD MCP — Preview 0.11.10, Windows x64
 
-Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.9 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
+Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.10 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
 
 Official Codex CLI is included. Sign in with your account; subscriptions are separate. Install Claude Code separately. MCP permits edits you request and records operation receipts. AutoLISP may leave partial changes; inspect the result.
 
