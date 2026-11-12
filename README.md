@@ -6,7 +6,7 @@ Version 0.11.8-preview. An open-source MCP server and chat interface for a runni
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is in English.
 
-Version 0.11.8 hardens operation recovery, C# replay and verification, mesh/snapshot budgets, queue admission and PDF handling. The interface and default assistant replies follow the installation language; repository documentation is English. [Changes and validation](CHANGELOG.md#0118-preview).
+Version 0.11.9 shows Claude model versions with the current Claude Code and fixes the linked-table benchmark check. Version 0.11.8 hardened operation recovery, C# replay and verification, mesh/snapshot budgets, queue admission and PDF handling. [Changes and validation](CHANGELOG.md#0119-preview).
 
 Version 0.11.7 restricts the native benchmark to an AutoCAD process with no open DWGs, stops after the first unexpected failure and records durable native-call traces. The reported native crash is not yet proven resolved. [Safety and limits](docs/in-app-benchmark.md).
 
