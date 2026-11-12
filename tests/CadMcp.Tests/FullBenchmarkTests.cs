@@ -37,7 +37,7 @@ public sealed partial class CadBenchmarkTests
                 {
                     checkpoint = new { path = Path.Combine(Root, "checkpoint.dwg") },
                     source_sha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(r.Data.Text("code")!))),
-                    result = new { value = new { line = "E01", circle = "E02", solid = "E03", duplicateA = "E04", duplicateB = "E05" } }
+                    result = new { value = new { line = "E01", circle = "E02", solid = "E03", duplicateA = "E04", duplicateB = "E05", archive = "E06" } }
                 });
             if (r.Operation == "cad_entity_get" && r.Data.Text("handle") == "E01")
                 return Scoped(r, new { handle = "E01", type = "Line", layer = "B_REALCS", length = 100, start = new[] { 9000, 0, 0 }, end = new[] { 9100, 0, 0 } });
@@ -362,31 +362,87 @@ public sealed partial class CadBenchmarkTests
     }
 
     [Fact]
-    public async Task Actual_search_archive_envelope_is_reconstructed_before_entity_assertions()
+    public async Task Large_table_range_is_archived_and_reconstructed_without_entity_or_search_clipping()
     {
         using var fixture = new FullFixture();
-        string raw = JsonSerializer.Serialize(new { result = new { entities = ArchiveEntities(), pagination = new { } }, cached = false });
-        fixture.Observation = r => ArchiveResponse(r, raw, endless: false);
+        var table = Wire.Element(ArchiveEntity());
+        Assert.True(table.GetRawText().Length > 512 * 1024);
+        Assert.All(table.GetProperty("cells").EnumerateArray(), cell => Assert.True(ReadPayloadBudget.Bytes(cell) < ReadPayloadBudget.EntityBytes));
+        var archive = new ResultArchive(Path.Combine(fixture.Root, "actual-archive"));
+        fixture.Observation = r =>
+        {
+            if (r.Operation == "cad_table_get" && r.Data.Text("handle") == "E06")
+            {
+                Assert.Equal(CadBenchmark.ArchiveRows, r.Data.Number("row_count", 0));
+                Assert.Equal(1, r.Data.Number("column_count", 0));
+                string id = archive.Put(r.SessionId!, r.DocumentId!, 1, table);
+                return Scoped(r, new { archive_id = id, captured_revision = 1 }, "partial");
+            }
+            return r.Operation == "cad_result_get"
+                ? Scoped(r, archive.Read(r.Data.Text("archive_id")!, r.SessionId!, r.DocumentId!, r.Data.Number("offset", 0), r.Data.Number("limit", 32000))) : null;
+        };
         var result = await fixture.Run("cad_csharp", "cad_result_get");
         Assert.Equal("passed", ToolCase(result, "cad_result_get").Status);
         Assert.True(fixture.Cad.Requests.Count(r => r.Operation == "cad_result_get") > 1);
+        Assert.DoesNotContain(fixture.Cad.Requests, r => r.Operation == "cad_search" && (r.Data.Text("options_json")?.Contains("B_ARCHIVE", StringComparison.Ordinal) ?? false));
+        Assert.Contains(fixture.Cad.Requests, r => r.Operation == "cad_table_get" && r.Data.Text("handle") == "E06");
     }
 
     [Fact]
     public async Task Archive_page_limit_exhaustion_is_not_complete_reconstruction_even_if_prefix_is_valid_json()
     {
         using var fixture = new FullFixture();
-        string raw = JsonSerializer.Serialize(new { entities = ArchiveEntities(shortText: true) });
+        string raw = JsonSerializer.Serialize(ArchiveEntity(shortText: true));
         fixture.Observation = r => ArchiveResponse(r, raw, endless: true);
         var result = await fixture.Run("cad_csharp", "cad_result_get");
         Assert.Equal("failed", ToolCase(result, "cad_result_get").Status);
     }
-    private static IEnumerable<object> ArchiveEntities(bool shortText = false) => Enumerable.Range(0, 200)
-        .Select(i => (object)new { handle = (0xF00 + i).ToString("X"), type = "MText", layer = "B_ARCHIVE", text = "ARCHIVE_" + i.ToString("D3") + "_" + (shortText ? "" : new string('X', 4000)) });
+    [Fact]
+    public async Task Small_inline_table_does_not_claim_archive_coverage()
+    {
+        using var fixture = new FullFixture();
+        string raw = JsonSerializer.Serialize(ArchiveEntity(shortText: true));
+        fixture.Observation = r => ArchiveResponse(r, raw, endless: false);
+        var result = await fixture.Run("cad_csharp", "cad_result_get");
+        Assert.Equal("ARCHIVE_NOT_CREATED", ToolCase(result, "cad_result_get").ErrorCode);
+        Assert.DoesNotContain(fixture.Cad.Requests, r => r.Operation == "cad_result_get");
+    }
+
+    [Theory]
+    [InlineData("handle")]
+    [InlineData("text")]
+    [InlineData("duplicate_cell")]
+    public async Task Archive_reconstruction_rejects_wrong_identity_or_incomplete_content(string field)
+    {
+        using var fixture = new FullFixture();
+        var entity = JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(ArchiveEntity()))!;
+        if (field == "handle") entity[field] = "incorrect";
+        else
+        {
+            var cells = JsonSerializer.Deserialize<Dictionary<string, object>[]>(JsonSerializer.Serialize(entity["cells"]))!;
+            if (field == "text") cells[0]["text"] = "incorrect";
+            else cells[1] = cells[0];
+            entity["cells"] = cells;
+        }
+        string raw = JsonSerializer.Serialize(entity);
+        fixture.Observation = r => ArchiveResponse(r, raw, endless: false);
+        var result = await fixture.Run("cad_csharp", "cad_result_get");
+        Assert.Equal("failed", ToolCase(result, "cad_result_get").Status);
+        Assert.Contains(fixture.Cad.Requests, r => r.Operation == "cad_result_get");
+    }
+
+    private static object ArchiveEntity(bool shortText = false)
+    {
+        return new { handle = "E06", rows = CadBenchmark.ArchiveRows, columns = 1, next_row = (int?)null,
+            cells = Enumerable.Range(0, CadBenchmark.ArchiveRows).Select(i => new { row = i, column = 0,
+                text = CadBenchmark.ArchiveMarker + i.ToString("D3") + "_" + (shortText ? "" : new string('X', CadBenchmark.ArchivePayloadLength)) }).ToArray() };
+    }
     private static Response? ArchiveResponse(Request r, string raw, bool endless)
     {
-        if (r.Operation == "cad_search" && r.Data.Text("options_json")!.Contains("B_ARCHIVE", StringComparison.Ordinal))
-            return Scoped(r, new { archive_id = "fixture-archive", captured_revision = 1 }, "partial");
+        if (r.Operation == "cad_table_get" && r.Data.Text("handle") == "E06")
+            return endless || raw.Length > 512 * 1024
+                ? Scoped(r, new { archive_id = "fixture-archive", captured_revision = 1 }, "partial")
+                : Scoped(r, JsonSerializer.Deserialize<JsonElement>(raw));
         if (r.Operation != "cad_result_get") return null;
         int offset = r.Data.Number("offset", 0), limit = r.Data.Number("limit", 32000);
         string text = offset >= raw.Length ? "" : raw.Substring(offset, Math.Min(limit, raw.Length - offset));

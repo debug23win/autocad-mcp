@@ -419,5 +419,15 @@
   "Копировать": "Copy",
   "Claude Code не передавал события слишком долго. Проверьте квитанции CAD; автоматического повтора нет.": "Claude Code sent no events for too long. Check CAD receipts; no automatic replay.",
   "Claude Code не начал задачу за отведённое время. Автоматического повтора правок нет.": "Claude Code did not start within the time limit. Edits are not automatically replayed.",
-  "Перечень изменённых объектов неполон; полная проверка операции не подтверждена.\n": "The changed-entity list is incomplete; full operation verification is unconfirmed.\n"
+  "Перечень изменённых объектов неполон; полная проверка операции не подтверждена.\n": "The changed-entity list is incomplete; full operation verification is unconfirmed.\n",
+  "← {0}: {1} ({2:0.0} с)": "← {0}: {1} ({2:0.0} s)",
+  "Журнал не сохранён: ": "Log was not saved: ",
+  " · ожидаю {0}: {1:0} с": " · waiting for {0}: {1:0} s",
+  "{0} · {1}{2} · всего {3:0} с": "{0} · {1}{2} · total {3:0} s",
+  "Бенчмарк запущен. Ход выполнения сохраняется: ": "Benchmark started. Progress log: ",
+  "Запускаю MCP host и получаю список инструментов": "Starting MCP host and obtaining the tool inventory",
+  "Проверки завершены. Сохраняю итоговый отчёт": "Checks completed. Saving the final report",
+  "Бенчмарк завершён: {0}/{1}": "Benchmark finished: {0}/{1}",
+  "Подготовка": "Preparation",
+  "Запуск": "Starting"
 }

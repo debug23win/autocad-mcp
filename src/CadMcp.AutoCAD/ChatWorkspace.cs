@@ -130,17 +130,58 @@ public sealed class ChatWorkspace : UserControl
         if (projects.Values.Any(p => p.Panel.IsWorking)) { status.Text = UiText.T("Сначала дождитесь завершения задач в чатах"); return; }
         using var cancellation = new CancellationTokenSource(); benchmarkCancellation = cancellation;
         benchmark.IsEnabled = false; stopBenchmark.IsEnabled = true;
+        string runId = Guid.NewGuid().ToString("N");
+        string folder = Wire.DataDirectory("benchmarks", runId);
+        string progressPath = Path.Combine(folder, "progress.log");
+        var liveStatus = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6) };
+        var liveLog = new System.Windows.Controls.TextBox { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(6) };
+        var liveRoot = new DockPanel(); DockPanel.SetDock(liveStatus, Dock.Top);
+        liveRoot.Children.Add(liveStatus); liveRoot.Children.Add(liveLog);
+        var liveTab = new TabItem { Header = UiText.T("Бенчмарк"), Content = liveRoot };
+        tabs.Items.Add(liveTab); tabs.SelectedItem = liveTab;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var lastEvent = System.Diagnostics.Stopwatch.StartNew();
+        string currentCase = UiText.T("Подготовка"), currentStep = UiText.T("Запуск");
+        string? waitingOperation = null;
+        bool logFailed = false;
+        void Report(CadBenchmarkProgress progress)
+        {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => Report(progress)); return; }
+            benchmarkDocument = progress.DocumentId ?? benchmarkDocument;
+            if (progress.Phase == "case_started") currentCase = progress.Message;
+            if (progress.Phase == "operation_started") waitingOperation = progress.Operation;
+            else if (progress.Phase == "operation_finished") waitingOperation = null;
+            currentStep = progress.Message; lastEvent.Restart();
+            string line = $"[{DateTimeOffset.Now:HH:mm:ss}] {progress.Message}" + (progress.RequestId is null ? "" : " · " + progress.RequestId) + Environment.NewLine;
+            liveLog.AppendText(line);
+            if (liveLog.Text.Length > 200_000) liveLog.Text = liveLog.Text.Substring(liveLog.Text.Length - 150_000);
+            liveLog.ScrollToEnd();
+            status.Text = liveStatus.Text = currentCase + " · " + currentStep;
+            if (!logFailed)
+                try { Directory.CreateDirectory(folder); File.AppendAllText(progressPath, line); }
+                catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)
+                { logFailed = true; liveLog.AppendText(UiText.T("Журнал не сохранён: ") + error.Message + Environment.NewLine); }
+        }
+        var heartbeat = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        heartbeat.Tick += (_, _) =>
+        {
+            string waiting = waitingOperation is null ? "" : UiText.Format($" · ожидаю {waitingOperation}: {lastEvent.Elapsed.TotalSeconds:0} с");
+            status.Text = liveStatus.Text = UiText.Format($"{currentCase} · {currentStep}{waiting} · всего {elapsed.Elapsed.TotalSeconds:0} с");
+        };
+        heartbeat.Start();
+        Report(new(UiText.T("Бенчмарк запущен. Ход выполнения сохраняется: ") + progressPath));
         try
         {
             await Refresh(); if (CadSessionId is null) throw new IOException(UiText.T("AutoCAD не подключён"));
             status.Text = UiText.T("Нативный бенчмарк: только отдельный AutoCAD без открытых DWG. Не открывайте файлы во время прогона.");
-            string runId = Guid.NewGuid().ToString("N");
+            Report(new(UiText.T("Запускаю MCP host и получаю список инструментов")));
             var benchmarkClock = System.Diagnostics.Stopwatch.StartNew();
             await using var mcp = await BenchmarkMcpSession.StartAsync(host, brokerPipe, runId, cancellation.Token);
             var runner = new CadBenchmark((r, ct) => r.Operation.StartsWith("benchmark_", StringComparison.Ordinal) ? PipeClient.CallAsync(brokerPipe, r, ct) : mcp.CallAsync(r, ct), toolInventory: mcp.Tools, runId: runId);
-            var result = await runner.RunAsync(CadSessionId, progress => { benchmarkDocument = progress.DocumentId ?? benchmarkDocument; status.Text = progress.Message; }, cancellation.Token);
+            var result = await runner.RunAsync(CadSessionId, Report, cancellation.Token);
             result = result with { ElapsedMs = benchmarkClock.Elapsed.TotalMilliseconds };
-            string folder = Wire.DataDirectory("benchmarks", result.RunId);
+            Report(new(UiText.T("Проверки завершены. Сохраняю итоговый отчёт")));
             string path = Path.Combine(folder, "report.json");
             string summary = result.Markdown();
             try
@@ -152,14 +193,18 @@ public sealed class ChatWorkspace : UserControl
             catch (System.Exception error) when (error is IOException or UnauthorizedAccessException)
             { summary += UiText.T("\n\nJSON-отчёт не сохранён: ") + error.Message; }
             summary += AnswerMetrics.Footer(TimeSpan.FromMilliseconds(result.ElapsedMs), new ProviderTokenUsage(0, 0, 0, UiText.T("модели не вызывались")));
+            Report(new(UiText.Format($"Бенчмарк завершён: {result.Passed}/{result.Total}")));
+            liveLog.AppendText(Environment.NewLine + summary + Environment.NewLine); liveLog.ScrollToEnd();
+            // Keep the report visible even when refreshing CAD documents fails or waits.
+            tabs.SelectedItem = liveTab;
             await Refresh(); var target = projects.Values.FirstOrDefault(p => p.Slot.Document.DocumentId == result.DocumentId);
-            if (target is not null) { target.Panel.AddBenchmarkReport(summary); tabs.SelectedItem = target.Tab; }
-            else System.Windows.MessageBox.Show(summary, UiText.T("Результат бенчмарка"));
+            if (target is not null) target.Panel.AddBenchmarkReport(summary);
             status.Text = UiText.Format($"Бенчмарк: {result.Passed}/{result.Total}, {result.ElapsedMs / 1000.0:0.0} с");
         }
-        catch (System.Exception error) { status.Text = UiText.T("Бенчмарк не завершён: ") + error.Message; }
+        catch (System.Exception error) { Report(new(UiText.T("Бенчмарк не завершён: ") + error.Message)); }
         finally
         {
+            heartbeat.Stop();
             benchmarkCancellation = null; benchmarkDocument = null; benchmark.IsEnabled = true; stopBenchmark.IsEnabled = false;
             foreach (var entry in projects.Values) entry.Panel.SetBenchmarkBusy(false);
         }
