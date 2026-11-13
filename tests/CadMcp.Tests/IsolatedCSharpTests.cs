@@ -92,11 +92,14 @@ public sealed class IsolatedCSharpTests
         Assert.False((await job.RunAsync(Start("success"), default)).Success);
     }
     [Fact]
-    public void Lisp_tampering_is_rejected_before_execution()
+    public async Task Lisp_tampering_is_rejected_in_the_child_before_execution()
     {
         using var folder = new TempFolder(); string input = folder.File("before.dwg"); File.WriteAllText(input, "original");
         var job = IsolatedCSharpJob.Create(folder.Path, input, IsolatedCSharpJob.HashFile(input), [1], "s", "lisp-test", TimeSpan.FromSeconds(20), "lisp");
         File.WriteAllText(job.FilePath("script.lsp"), "changed");
-        Assert.Throws<InvalidDataException>(() => IsolatedCSharpJob.Load(job.FilePath("request.json")));
+        var outcome = await job.RunAsync(Start("success"), default);
+        Assert.False(outcome.Success); Assert.Null(outcome.Receipt);
+        Assert.False(File.Exists(job.FilePath("result.dwg")));
+        Assert.Equal("prepared", outcome.LastPhase);
     }
 }

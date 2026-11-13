@@ -129,6 +129,7 @@ internal static class IsolatedLispWorker
     private static bool began, finished, success, evaluationEnded;
     private static int evaluationDepth;
     private static string text = "";
+    private static System.Exception? failure;
     internal static bool Active => job is not null;
     internal static void Start(IsolatedCSharpJob request)
     {
@@ -187,7 +188,7 @@ internal static class IsolatedLispWorker
         App.Idle -= Save;
         try
         {
-            if (!success) throw new CadFault("LISP_EXECUTION_FAILED", text);
+            if (!success) throw failure ?? new CadFault("LISP_EXECUTION_FAILED", text);
             if (job is null || document is null || tracking is null || !ReferenceEquals(document, App.DocumentManager.MdiActiveDocument))
                 throw new InvalidOperationException("Child drawing changed");
             if (DateTimeOffset.UtcNow >= job.Request.Deadline) throw new TimeoutException("Child deadline expired");
@@ -216,7 +217,7 @@ internal static class IsolatedLispWorker
     }
     private static void Fail(System.Exception error)
     {
-        success = false;
+        success = false; failure = error;
         try
         {
             job?.Phase("failed");
