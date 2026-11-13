@@ -32,6 +32,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private sealed record LispJob(string Id, Request Request, Document Document, string Code, IReadOnlyList<LispFinding> Findings)
     {
         /// <summary>Set when AutoCAD began evaluating the script; from then on only its own result ends the job.</summary>
+        public CancellationToken Cancellation;
         public volatile bool Started;
         /// <summary>The script waits for the user's confirmation; nothing has been sent to AutoCAD yet.</summary>
         public volatile bool AwaitingApproval;
@@ -138,7 +139,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (r.SessionId != documents.SessionId || r.DocumentId is null || !availability.ContainsKey(r.DocumentId)) throw new CadFault("DOCUMENT_CLOSED", "Pinned drawing is unavailable");
             var loaded = AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).Select(a => a.Location).Where(File.Exists);
             var references = csharpReferences.Concat(loaded).Concat(new[] { Path.Combine(Path.GetDirectoryName(typeof(Database).Assembly.Location)!, "AcDbMgdBrep.dll") }).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            return new(r.RequestId, "completed", new { references, csharp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, documents.SessionId, r.DocumentId);
+            return new(r.RequestId, "completed", new { references, csharp_execution_mode = "isolated_acad", lisp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, documents.SessionId, r.DocumentId);
         }
         if (r.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true && r.Operation is not ("benchmark_create" or "cad_documents"))
         {
@@ -731,7 +732,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             WorkSafety.Start(documents.SessionId, r, checkpoint);
             if (code is not null)
             {
-                var job = new LispJob(id, r, doc, code, lispFindings);
+                var job = new LispJob(id, r, doc, code, lispFindings) { Cancellation = ct };
                 lisp = job;
                 var findings = lispFindings.Count == 0 ? null : lispFindings;
                 if (lispDecision == "ask")
@@ -745,7 +746,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                         cancellation = "The user can decline; cad_cancel withdraws the request before it runs" }, documents.SessionId, state.Id, state.Revision);
                 }
                 StartLisp(job);
-                return new(r.RequestId, "queued", new { operation_id = id, state = "queued", findings, requires_poll = "cad_operation_status", rollback = "not_atomic", cancellation = "Esc in AutoCAD; queued scripts are not cancelled by stopping the model" }, documents.SessionId, state.Id, state.Revision);
+                return new(r.RequestId, "queued", new { operation_id = id, state = "queued", findings, requires_poll = "cad_operation_status", execution_mode = "isolated_acad", rollback = "child_copy_only", cancellation = "Cancellation stops only the owned child; inspect its receipt" }, documents.SessionId, state.Id, state.Revision);
             }
             journal.Running(id); control.Phase(id, "running");
             state.Author = id;
@@ -779,7 +780,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private int isolatedCSharpRunning;
     private Response RunCSharp(Request request, CancellationToken ct)
     {
-        var permission = CSharpExecutionPolicy.Read(); permission.RequireAllowed();
+        bool isLisp = request.Operation == "cad_lisp";
+        var permission = CSharpExecutionPolicy.Read(); if (!isLisp) permission.RequireAllowed();
         var doc = documents.Active(request); var state = documents.Register(doc);
         string id = EditPlan.RequiredText(request.Data, "operation_id");
         if (Interlocked.CompareExchange(ref isolatedCSharpRunning, 1, 0) != 0)
@@ -790,8 +792,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             string code = EditPlan.RequiredText(request.Data, "code");
             if (code.Length > 262144) throw new CadFault("INVALID_CSHARP", "Source exceeds 262144 characters");
             string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)));
-            if (request.Data.Text("source_sha256") != hash) throw new CadFault("CSHARP_SOURCE_MISMATCH", "Source hash changed");
-            byte[] bytes = Convert.FromBase64String(EditPlan.RequiredText(request.Data, "assembly_base64"));
+            if (!isLisp && request.Data.Text("source_sha256") != hash) throw new CadFault("CSHARP_SOURCE_MISMATCH", "Source hash changed");
+            byte[] bytes = isLisp ? System.Text.Encoding.UTF8.GetBytes(code) : Convert.FromBase64String(EditPlan.RequiredText(request.Data, "assembly_base64"));
             if (bytes.Length > 4 * 1024 * 1024) throw new CadFault("CSHARP_TOO_LARGE", "Assembly exceeds 4 MiB");
             ct.ThrowIfCancellationRequested();
             // No script assembly is loaded or invoked in this process. Only the native snapshot runs here.
@@ -806,7 +808,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             string originalName = doc.Name, projectKey = documents.ProjectKey(doc);
             string? originalPath = Path.IsPathFullyQualified(originalName) ? Path.GetFullPath(originalName) : null;
             string? originalDiskHash = originalPath is not null && File.Exists(originalPath) ? IsolatedCSharpJob.HashFile(originalPath) : null;
-            var job = IsolatedCSharpJob.Create(Wire.DataDirectory("isolated-csharp"), cp.Text("path")!, cp.Text("sha256")!, bytes, hash, id, TimeSpan.FromMinutes(5));
+            var job = IsolatedCSharpJob.Create(Wire.DataDirectory(isLisp ? "isolated-lisp" : "isolated-csharp"), cp.Text("path")!, cp.Text("sha256")!, bytes, hash, id, TimeSpan.FromMinutes(5), isLisp ? "lisp" : "csharp");
             using var parent = System.Diagnostics.Process.GetCurrentProcess();
             string executable = parent.MainModule?.FileName ?? throw new CadFault("CSHARP_ISOLATION_UNAVAILABLE", "Cannot locate this AutoCAD executable");
             var start = job.AutoCADStart(executable, typeof(Dispatcher).Assembly.Location, Environment.GetCommandLineArgs());
@@ -875,7 +877,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         bool closed = false;
         try
         {
-            if (CSharpExecutionPolicy.Read() != permission || !permission.Allowed)
+            if (request.Operation != "cad_lisp" && (CSharpExecutionPolicy.Read() != permission || !permission.Allowed))
                 throw new CadFault("CSHARP_RESULT_NOT_APPLIED", "The user changed C# permission while the child ran; output remains separate");
             original = documents.Active(request with { ExpectedRevision = revision });
             LocalWorkPolicy.RequireLocal(original.Name);
@@ -922,12 +924,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     {
         RequireBenchmarkSession(job.Request);
         if (!BenchmarkTrace.Record(job.Request, "lisp_queued")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist AutoLISP scheduling trace; script was not sent");
-        job.Document.CommandCancelled += LispInterrupted;
-        job.Document.CommandFailed += LispInterrupted;
-        job.Document.LispWillStart += LispEvaluationStarting;
-        job.Document.LispEnded += LispEvaluationEnded;
-        job.Document.LispCancelled += LispEvaluationEnded;
-        job.Document.SendStringToExecute(LispScript.Wrap(job.Id), false, false, false);
+        // The primary process never evaluates agent AutoLISP. Approval has already been resolved.
+        if (!ReferenceEquals(documents.Active(job.Request), job.Document)) throw new CadFault("DOCUMENT_MISMATCH", "Drawing changed before isolated execution");
+        job.Cancellation.ThrowIfCancellationRequested();
+        RunCSharp(job.Request, job.Cancellation);
+        // The shared isolation monitor owns completion and cancellation from now on.
+        lisp = null;
     }
     private void LispEvaluationStarting(object? sender, LispWillStartEventArgs e)
     {
@@ -1122,15 +1124,18 @@ internal static class LispCallbacks
 {
     public static string? Begin(Dispatcher? dispatcher, ResultBuffer? args)
     {
-        try { return dispatcher is not null && args?.AsArray() is [{ Value: string id }, ..] ? dispatcher.BeginLisp(id) : null; }
+        try { return args?.AsArray() is [{ Value: string id }, ..] ? IsolatedLispWorker.Active ? IsolatedLispWorker.Begin(id) : dispatcher?.BeginLisp(id) : null; }
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpbegin: " + error.Message); return null; }
     }
     public static int Finish(Dispatcher? dispatcher, ResultBuffer? args)
     {
         try
         {
-            if (dispatcher is not null && args?.AsArray() is [{ Value: string id }, { Value: var status }, { Value: var text }])
-                dispatcher.FinishLisp(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
+            if (args?.AsArray() is [{ Value: string id }, { Value: var status }, { Value: var text }])
+            {
+                if (IsolatedLispWorker.Active) IsolatedLispWorker.Finish(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
+                else dispatcher?.FinishLisp(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
+            }
         }
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpfinish: " + error.Message); }
         return 0;

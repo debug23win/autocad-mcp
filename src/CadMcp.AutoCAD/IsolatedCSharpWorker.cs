@@ -23,6 +23,18 @@ internal static class IsolatedCSharpWorker
     {
         if (!App.DocumentManager.IsApplicationContext || App.DocumentManager.MdiActiveDocument?.Editor.IsQuiescent == false) return;
         App.Idle -= Run;
+        // Lisp must execute in document command context, then save on a later application Idle.
+        try
+        {
+            var candidate = IsolatedCSharpJob.Load(requestPath!);
+            if (candidate.Request.Kind == "lisp") { IsolatedLispWorker.Start(candidate); return; }
+        }
+        catch (System.Exception error)
+        {
+            System.Diagnostics.Trace.WriteLine(error);
+            try { App.Quit(); } catch (System.Exception quitError) { System.Diagnostics.Trace.WriteLine(quitError); }
+            return;
+        }
         IsolatedCSharpJob? job = null;
         Document? document = null;
         AssemblyLoadContext? load = null;
@@ -104,5 +116,105 @@ internal static class IsolatedCSharpWorker
             // If AutoCAD shows a startup/quit dialog, the parent's deadline kills only this owned child.
             if (!duplicate) try { App.Quit(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine(error); }
         }
+    }
+}
+
+/// <summary>Callbacks are private to the child. No dispatcher or broker is started in this process.</summary>
+internal static class IsolatedLispWorker
+{
+    private static IsolatedCSharpJob? job;
+    private static Document? document;
+    private static Documents? tracking;
+    private static long revision;
+    private static bool began, finished, success;
+    private static string text = "";
+    internal static bool Active => job is not null;
+    internal static void Start(IsolatedCSharpJob request)
+    {
+        job = request;
+        try
+        {
+            using (var claim = new FileStream(job.FilePath("claimed"), FileMode.CreateNew)) { }
+            using var parent = System.Diagnostics.Process.GetProcessById(job.Request.ParentProcessId);
+            if (parent.HasExited) throw new InvalidOperationException("Parent AutoCAD exited");
+            string code = File.ReadAllText(job.FilePath("script.lsp"));
+            LispScript.ValidateBody(code); LispPolicy.EnsureRunnable(LispPolicy.Scan(code));
+            job.Phase("opening_copy");
+            tracking = new Documents();
+            document = App.DocumentManager.Open(job.FilePath("input.dwg"), false);
+            App.DocumentManager.MdiActiveDocument = document;
+            revision = tracking.Register(document).Revision;
+            job.Phase("lisp_queued_in_child");
+            App.Idle += Save;
+            document.SendStringToExecute(LispScript.Wrap(job.Request.OperationId), false, false, false);
+        }
+        catch (System.Exception error) { Fail(error); Quit(); }
+    }
+    internal static string? Begin(string id)
+    {
+        if (job is null || id != job.Request.OperationId || began || document is null) return null;
+        try
+        {
+            if (DateTimeOffset.UtcNow >= job.Request.Deadline || !ReferenceEquals(document, App.DocumentManager.MdiActiveDocument))
+                throw new InvalidOperationException("Expired or wrong child document");
+            began = true; job.Phase("lisp_wrapper_started");
+            return "(progn\n" + File.ReadAllText(job.FilePath("script.lsp")) + "\n)";
+        }
+        catch (System.Exception error) { Fail(error); finished = true; return null; }
+    }
+    internal static void Finish(string id, bool ok, string value)
+    {
+        if (job is null || id != job.Request.OperationId || !began || finished) return;
+        success = ok; text = value.Length > 16384 ? value.Substring(0, 16384) : value;
+        job.Phase(ok ? "lisp_reported_success" : "lisp_reported_failure"); finished = true;
+    }
+    private static void Save(object? sender, EventArgs args)
+    {
+        if (!finished || !App.DocumentManager.IsApplicationContext || document?.Editor.IsQuiescent == false) return;
+        App.Idle -= Save;
+        try
+        {
+            if (!success) throw new CadFault("LISP_EXECUTION_FAILED", text);
+            if (job is null || document is null || tracking is null || !ReferenceEquals(document, App.DocumentManager.MdiActiveDocument))
+                throw new InvalidOperationException("Child drawing changed");
+            if (DateTimeOffset.UtcNow >= job.Request.Deadline) throw new TimeoutException("Child deadline expired");
+            var state = tracking.Register(document);
+            var changes = state.ChangesSince(revision).Where(c => c.Entity).Select(c => c.Handle.ToString("X")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            bool complete = state.DroppedThrough <= revision, bounded = changes.Sum(h => h.Length + 3) <= 192 * 1024;
+            job.Phase("saving_output");
+            using (document.LockDocument()) document.Database.SaveAs(job.FilePath("result.dwg"), DwgVersion.Current);
+            document.CloseAndDiscard(); document = null;
+            job.Phase("verifying_saved_output");
+            using (var saved = new Database(false, true))
+            { saved.ReadDwgFile(job.FilePath("result.dwg"), FileOpenMode.OpenForReadAndAllShare, true, null); saved.CloseInput(true); }
+            var output = new FileInfo(job.FilePath("result.dwg"));
+            if (output.Length == 0) throw new InvalidDataException("Empty output DWG");
+            job.Write("result.json", new IsolatedCSharpReceipt(job.Request.RunId, job.Request.Nonce, job.Request.OperationId, Environment.ProcessId,
+                "completed", job.Request.SourceSha256, job.Request.InputSha256, IsolatedCSharpJob.HashFile(output.FullName), output.Length,
+                Wire.Element(new { return_value = text }), ChangedHandles: complete && bounded ? changes : null,
+                ChangedEntityCount: complete ? changes.Length : null, ChangedHandlesOmitted: !complete || !bounded));
+            job.Phase("completed");
+        }
+        catch (System.Exception error) { Fail(error); }
+        finally { Quit(); }
+    }
+    private static void Fail(System.Exception error)
+    {
+        success = false;
+        try
+        {
+            job?.Phase("failed");
+            if (job is not null) job.Write("result.json", new IsolatedCSharpReceipt(job.Request.RunId, job.Request.Nonce, job.Request.OperationId,
+                Environment.ProcessId, "failed", job.Request.SourceSha256, job.Request.InputSha256,
+                Error: new(error is CadFault fault ? fault.Code : "LISP_EXECUTION_FAILED", error.Message)));
+        }
+        catch (System.Exception diagnostic) { System.Diagnostics.Trace.WriteLine(diagnostic); }
+    }
+    private static void Quit()
+    {
+        App.Idle -= Save;
+        try { document?.CloseAndDiscard(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine(error); }
+        tracking?.Dispose();
+        try { App.Quit(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine(error); }
     }
 }
