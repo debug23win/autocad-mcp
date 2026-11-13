@@ -248,7 +248,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         // All database access occurs here, on the CAD application thread.
         CheckLisp();
         RefreshAvailability();
-        if (queue.IsEmpty && csharpApplications.TryPeek(out var application) && (application.Work.Task.IsCompleted || CanRun(application.Request)))
+        if (queue.IsEmpty && csharpApplications.TryPeek(out var application) && (application.Work.Task.IsCompleted || App.DocumentManager.IsApplicationContext && CanRun(application.Request)))
         {
             if (csharpApplications.TryDequeue(out application)) application.Work.Run();
             if (!csharpApplications.IsEmpty || !queue.IsEmpty) Wake();
@@ -812,9 +812,11 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             // Process startup/waiting and file verification never block the CAD UI thread.
             var task = Task.Run(async () =>
             {
+                bool releaseIsolationSlot = true;
                 try
                 {
                     var outcome = await job.RunAsync(start, ct).ConfigureAwait(false);
+                    releaseIsolationSlot = !outcome.ProcessStillRunning;
                     CSharpApplication applied = new(false);
                     if (outcome.Success)
                     {
@@ -849,7 +851,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     journal.Complete(id, new Response(request.RequestId, "failed", new { operation_id = id, execution_mode = "isolated_acad", script_executed_in_original = false,
                         artifacts_directory = job.Directory, child_outcome_unknown = true, automatic_retry = false }, session, document, Error: new("CSHARP_ISOLATION_FAILED", error.Message)));
                 }
-                finally { mutationOwners.TryRemove(id, out _); control.Complete(id); Interlocked.Exchange(ref isolatedCSharpRunning, 0); }
+                finally { mutationOwners.TryRemove(id, out _); control.Complete(id); if (releaseIsolationSlot) Interlocked.Exchange(ref isolatedCSharpRunning, 0); }
             });
             _ = task.ContinueWith(t => System.Diagnostics.Trace.WriteLine(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
             handedOff = true;
