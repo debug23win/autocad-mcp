@@ -357,6 +357,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                             .Distinct().Take(50).ToArray(),
                         ucs_to_wcs = isActive?doc.Editor.CurrentUserCoordinateSystem.ToArray():null,
                         editor_context_available=isActive,
+                        computer_use_host_executable = Environment.ProcessPath,
                         database_epoch_revision = state.DatabaseEpochRevision,
                         view = view is null?(object)new{available=false,reason="inactive_document_editor"}:new {available=true,width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),

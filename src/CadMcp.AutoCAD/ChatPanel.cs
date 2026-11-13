@@ -33,6 +33,12 @@ internal sealed class ChatPanel : UserControl
     private readonly System.Windows.Controls.CheckBox allowCSharp = new() { Content = UiText.T("Разрешить C#"), Margin = new Thickness(0, 4, 0, 4),
         ToolTip = UiText.T("C# выполняется один раз на копии DWG в отдельном AutoCAD. Проверенный файл заменит рабочий чертёж, только если он не изменился; исходная копия сохраняется для восстановления.") };
     private readonly Button refreshModels = new() { Content = UiText.T("Обновить список моделей"), Margin = new Thickness(0, 4, 0, 4) };
+    private readonly Button computerUseAccess = new() { Content = UiText.T("Computer Use: доступ…"), ToolTip = UiText.T("Разрешить или отозвать управление интерфейсом подключённого AutoCAD для Codex") };
+    private readonly Button computerUseRevoke = new() { Content = UiText.T("Отозвать Computer Use") };
+    private readonly TextBlock computerUseStatus = new() { Text = UiText.T("Computer Use: разрешение проверяется отдельно"), TextWrapping = TextWrapping.Wrap };
+    private readonly ComputerUseAccessStore computerUseStore = new();
+    private ComputerUseTarget? inspectedComputerTarget;
+    private bool readingComputerTarget;
     private readonly TextBox executable = new() { Text = "codex.exe" };
     private readonly TextBox host = new() { Text = UiText.T("Полный путь к CadMcp.Host.exe") };
     private readonly TextBox directory = new() { Text = LocalWorkPolicy.DefaultWorkspace };
@@ -144,7 +150,9 @@ internal sealed class ChatPanel : UserControl
         foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Официальный CLI (.exe)"), executable), ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
         { connection.Children.Add(new TextBlock { Text = pair.Label }); connection.Children.Add(pair.Control); }
         settings.Children.Add(new Expander { Header = UiText.T("Настройки подключения"), Content = connection, Margin = new Thickness(0, 4, 0, 4) });
-        var accountButtons = new StackPanel { Orientation = Orientation.Horizontal };
+        var accountButtons = new WrapPanel { Orientation = Orientation.Horizontal };
+        computerUseAccess.Click += async (_, _) => await ConfigureComputerUse(); accountButtons.Children.Add(computerUseAccess);
+        computerUseRevoke.Click += (_, _) => RevokeComputerUse(); accountButtons.Children.Add(computerUseRevoke);
         var login = new Button { Content = UiText.T("Войти") }; login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
         var diagnose = new Button { Content = UiText.T("Диагностика") }; diagnose.Click += async (_, _) => await RunAccount(true); accountButtons.Children.Add(diagnose);
         var log = new Button { Content = UiText.T("Журнал ошибок") }; log.Click += (_, _) =>
@@ -153,7 +161,7 @@ internal sealed class ChatPanel : UserControl
             // A UI handler inside AutoCAD: a missing file association must not escape to the dispatcher.
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
             catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Не удалось открыть журнал: ") + path; }
-        }; accountButtons.Children.Add(log); settings.Children.Add(accountButtons);
+        }; accountButtons.Children.Add(log); settings.Children.Add(accountButtons); settings.Children.Add(computerUseStatus);
         int previousProvider = provider.SelectedIndex;
         provider.SelectionChanged += (_, _) =>
         {
@@ -390,6 +398,49 @@ internal sealed class ChatPanel : UserControl
         catch (System.Exception error) { cadContext = null; drawing.Text = UiText.T("AutoCAD занят или недоступен: ") + error.Message; }
         finally { readingContext = false; }
     }
+    private string? ComputerUseExecutable() => cadContext?.Data is JsonElement data ? data.Text("computer_use_host_executable") : null;
+    private async Task<ComputerUseTarget> InspectComputerTarget()
+    {
+        string path = ComputerUseExecutable() ?? throw new IOException(UiText.T("Подключите AutoCAD и перезапустите его после обновления плагина; путь приложения недоступен."));
+        var cached = inspectedComputerTarget;
+        if (cached is not null && cached.ExecutablePath.Equals(path, StringComparison.OrdinalIgnoreCase) &&
+            cached.Sha256 == await Task.Run(() => IsolatedCSharpJob.HashFile(path))) return cached;
+        return inspectedComputerTarget = await Task.Run(() => ComputerUseTarget.Inspect(path));
+    }
+    private async Task<ComputerUseTarget?> GrantedComputerTarget()
+    {
+        if (provider.SelectedIndex != 0 || ComputerUseExecutable() is not { } path || !computerUseStore.Read().Any(p => p.Allowed && p.Target.ExecutablePath.Equals(path, StringComparison.OrdinalIgnoreCase))) return null;
+        if (cadContext?.Data is JsonElement context && context.Text("name") is { } name && LocalWorkPolicy.IsOneDrive(name)) return null;
+        var target = await InspectComputerTarget();
+        return computerUseStore.Permission(target)?.Allowed == true ? target : null;
+    }
+    private async Task ConfigureComputerUse()
+    {
+        if (provider.SelectedIndex != 0 || readingComputerTarget) return;
+        readingComputerTarget = true; computerUseAccess.IsEnabled = false;
+        try
+        {
+            await RefreshCad(); var target = await InspectComputerTarget();
+            if (cadContext?.Data is JsonElement context && context.Text("name") is { } name) LocalWorkPolicy.RequireLocal(name);
+            var dialog = new ComputerUseAccessWindow(target, computerUseStore.Permission(target)?.Allowed == true, running is not null, darkTheme);
+            if (Window.GetWindow(this) is { } owner) dialog.Owner = owner;
+            if (dialog.ShowDialog() != true || dialog.Choice is not { } allowed) return;
+            computerUseStore.Set(target, allowed);
+            computerUseStatus.Text = allowed ? UiText.T("Computer Use: разрешение сохранено для следующего хода Codex") : UiText.T("Computer Use: доступ отозван; начатые действия проверяются по чертежу");
+            if (!allowed) running?.Cancel();
+        }
+        catch (System.Exception error) { computerUseStatus.Text = UiText.T("Computer Use: ") + error.Message; LogError(error); }
+        finally { readingComputerTarget = false; computerUseAccess.IsEnabled = provider.SelectedIndex == 0; }
+    }
+    private void RevokeComputerUse()
+    {
+        try
+        {
+            computerUseStore.RevokeAll(); if (provider.SelectedIndex == 0) running?.Cancel();
+            computerUseStatus.Text = UiText.T("Computer Use: доступ отозван; начатые действия проверяются по чертежу");
+        }
+        catch (System.Exception error) { computerUseStatus.Text = UiText.T("Computer Use: ") + error.Message; LogError(error); }
+    }
     private async Task RunAccount(bool diagnostic)
     {
         if (running is not null) return;
@@ -489,6 +540,7 @@ internal sealed class ChatPanel : UserControl
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy;
+        computerUseAccess.IsEnabled = provider.SelectedIndex == 0 && !readingComputerTarget;
         agentCount.IsEnabled = !busy;
     }
     private void ProviderCompleted()
@@ -569,15 +621,17 @@ internal sealed class ChatPanel : UserControl
             await BrokerBootstrap.EnsureAsync(host.Text, running.Token, brokerPipe);
             await RefreshCad();
             initialDocumentId = CadDocumentId ?? cadContext?.DocumentId; initialSessionId = CadSessionId ?? cadContext?.SessionId;
+            var computerTarget = await GrantedComputerTarget();
+            string? computerPermissionRevision = computerTarget is null ? null : computerUseStore.Permission(computerTarget)?.Revision;
             var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
             var selectedModel = provider.SelectedIndex == 0 ? chosenModel : chosenClaudeModel;
             var selectedEffort = provider.SelectedIndex == 0 ? chosenEffort : chosenClaudeEffort;
-            var selection = (selectedModel ?? "") + "|" + (selectedEffort ?? "") + "|" + maxSubagents;
+            var selection = (selectedModel ?? "") + "|" + (selectedEffort ?? "") + "|" + maxSubagents + "|" + (computerTarget is null ? "computer_use_denied" : computerUseStore.Permission(computerTarget)?.Revision);
             if (adapter is null || adapterKey != key || adapterSelection != selection)
             {
                 var previousSession = adapterKey == key ? adapter?.SessionId : null;
                 var options = new ProviderOptions(executable.Text, host.Text, directory.Text, selectedModel, selectedEffort,
-                    MaxSubagents: maxSubagents, OwnerId: operationOwner, CadSessionId: CadSessionId, CadDocumentId: CadDocumentId ?? cadContext?.DocumentId);
+                    MaxSubagents: maxSubagents, OwnerId: operationOwner, CadSessionId: CadSessionId, CadDocumentId: CadDocumentId ?? cadContext?.DocumentId, ComputerUseTarget: computerTarget, ComputerUseAccessStillValid: computerTarget is null ? null : () => computerUseStore.Permission(computerTarget) is { Allowed: true } permission && permission.Revision == computerPermissionRevision);
                 adapter = provider.SelectedIndex == 0 ? new CodexProvider(options) : new ClaudeProvider(options); adapterKey = key;
                 adapterSelection = selection;
                 adapter.SessionId = previousSession ?? (restored?.AdapterKey == key ? restored.SessionId : null);
@@ -594,6 +648,7 @@ internal sealed class ChatPanel : UserControl
                 if (item.Kind == "rate_limits") { rateLimits = item.RateLimits; quota.Text = rateLimits?.Display() ?? UiText.T("Лимиты Codex: нет данных"); }
                 if (item.Kind == "progress") RecordProgress(item.Text);
                 if (item.Kind == "problem") RecordProblem(item.Text);
+                if (item.Kind == "computer_use_status") computerUseStatus.Text = item.Text;
                 if (item.Kind == "completed") { answerCompleted = true; ProviderCompleted(); }
                 if (item.Kind == "input_ready") _ = DeliverFollowups();
                 if (item.Kind == "response_completed") { FlushText(); UpdateAssistant(line => line with { Text = line.Text + "\n\n" }); }

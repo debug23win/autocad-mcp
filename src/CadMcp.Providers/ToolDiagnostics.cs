@@ -52,7 +52,7 @@ public static class ToolDiagnostics
         bool computerDenied = normalized == "js" && message.StartsWith("Computer Use was not approved", StringComparison.Ordinal);
         if (computerDenied) code = "COMPUTER_USE_NOT_APPROVED";
         string state = computerDenied
-            ? UiText.T("Доступ Computer Use к приложению не разрешён. В панели CadMcp нет интерфейса выдачи этого разрешения; настройки AutoCAD его не заменяют. Используйте CAD MCP, если операция доступна через него. Этот отказ не является квитанцией CAD; ранее принятые операции проверяются отдельно.")
+            ? UiText.T("Доступ Computer Use к приложению не разрешён. Откройте «Computer Use: доступ…» в панели CadMcp и проверьте разрешение для AutoCAD. Оно применяется со следующего хода Codex; ограничения организации и доступность инструмента остаются в силе. Этот отказ не является квитанцией CAD; ранее принятые операции проверяются отдельно.")
             : !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
             ? UiText.T("Инструмент чтения; состояние DWG этим сообщением не подтверждается.")
             : started.ValueKind == JsonValueKind.False ? UiText.T("Этот вызов не начал запись в DWG.")

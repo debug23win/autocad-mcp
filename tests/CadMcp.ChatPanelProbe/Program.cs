@@ -24,6 +24,7 @@ internal static class Program
     {
         var root = Path.GetFullPath(Path.Combine(".runtime", "panel-probe-" + Guid.NewGuid().ToString("N")));
         Environment.SetEnvironmentVariable("CAD_MCP_CSHARP_POLICY_FILE", Path.Combine(root, "csharp-policy.json"));
+        Environment.SetEnvironmentVariable("CAD_MCP_COMPUTER_USE_ACCESS_FILE", Path.Combine(root, "computer-use-access.json"));
         var store = new ChatStateStore(root);
         store.Save(new(0, "codex.exe", "claude.exe", "host.exe", Environment.CurrentDirectory, "kept-session", "", "test-key", "gpt-6-astra", "ultra"));
         var preferences = new ChatPreferencesStore(Path.Combine(root, "preferences.json"));
@@ -42,6 +43,34 @@ internal static class Program
         Assert(CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# checkbox did not save user permission");
         csharp.IsChecked = false;
         Assert(!CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# checkbox did not revoke user permission");
+        var computerTarget = new CadMcp.Core.ComputerUseTarget(Path.Combine(root, "acad.exe"), "AutoCAD 2027", "CN=Autodesk", "AutoCAD", "acad.exe", new string('A', 64));
+        var accessStore = new CadMcp.Core.ComputerUseAccessStore();
+        Assert(accessStore.Permission(computerTarget) is null, "Computer Use must start without a grant");
+        accessStore.Set(computerTarget, true);
+        var revokeComputer = (Button)typeof(ChatPanel).GetField("computerUseRevoke", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
+        revokeComputer.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert(accessStore.Permission(computerTarget)?.Allowed == false, "Computer Use revoke control did not revoke access");
+        for (int choice = 0; choice < 2; choice++)
+        {
+            var dialog = new ComputerUseAccessWindow(computerTarget, choice == 1, choice == 1, true);
+            int clicked = choice;
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() =>
+            {
+                dialog.UpdateLayout();
+                var stack = (StackPanel)dialog.Content; var row = (WrapPanel)stack.Children[stack.Children.Count - 1];
+                var buttons = row.Children.OfType<Button>().ToArray();
+                Assert(buttons[clicked].IsEnabled && !buttons[1 - clicked].IsEnabled, "Computer Use dialog enables the wrong action");
+                if (clicked == 0)
+                {
+                    var bitmap = new RenderTargetBitmap((int)dialog.ActualWidth, (int)dialog.ActualHeight, 96, 96, PixelFormats.Pbgra32); bitmap.Render(dialog);
+                    var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var file = File.Create(Path.Combine(root, "panel-computer-use.png")); png.Save(file);
+                }
+                buttons[clicked].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }));
+            Assert(dialog.ShowDialog() == true && dialog.Choice == (choice == 0), "Computer Use dialog lost the explicit allow/revoke choice");
+        }
+
         Assert((string)model.SelectedValue == "gpt-6-astra" && (string)reasoning.SelectedValue == "ultra", "Saved model not shown");
         model.SelectedValue = "gpt-6-luna";
         Assert((string)reasoning.SelectedValue == "", "Unsupported effort was retained after changing model");
