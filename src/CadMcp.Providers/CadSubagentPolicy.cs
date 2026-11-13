@@ -64,7 +64,7 @@ public static class CadSubagentPolicy
             roles.Add(role);
         }
     }
-    public static string[] Arguments(ProviderOptions options, ICollection<string>? warnings = null)
+    public static string[] Arguments(ProviderOptions options, ICollection<string>? warnings = null, IReadOnlyDictionary<string, string>? deniedAumids = null)
     {
         string directory=Wire.DataDirectory("agents","reviewers");Directory.CreateDirectory(directory);
         string key=Portable.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(options.CadEnvironment)));
@@ -74,7 +74,7 @@ public static class CadSubagentPolicy
             string description="Read-only CAD helper: analyze geometry, requirements or quality; return evidence to the primary writer";
             string path=Path.Combine(directory,key+"-"+role+".toml");
             var text=new StringBuilder("name = "+JsonSerializer.Serialize(role)+"\ndescription = "+JsonSerializer.Serialize(description)+"\nsandbox_mode = \"read-only\"\ndeveloper_instructions = "+JsonSerializer.Serialize(
-                "You are a read-only CAD subagent. Inspect only the assigned DWG; measure native geometry, units, the task acceptance contract and actual rendered images. Never edit, export, publish, focus, cancel, run Lisp or bypass the MCP restriction by launching another host. Return measured evidence, defects and uncertainty to the primary agent. Only the primary applies changes. Do not declare photo fidelity or normative compliance without evidence.")+"\n[mcp_servers.cad.env]\n");
+                "You are a read-only CAD subagent. Inspect only the assigned DWG; measure native geometry, units, the task acceptance contract and actual rendered images. Never edit, export, publish, focus, cancel, run Lisp, use Computer Use or bypass the MCP restriction by launching another host. Return measured evidence, defects and uncertainty to the primary agent. Only the primary applies changes. Do not declare photo fidelity or normative compliance without evidence.")+"\n"+ComputerUseConfiguration.ReviewerToml(deniedAumids)+"[mcp_servers.cad.env]\n");
             foreach(var pair in options.CadEnvironment)text.Append(pair.Key).Append(" = ").Append(JsonSerializer.Serialize(pair.Value)).Append('\n');
             text.Append("CAD_MCP_PRIMARY_THREAD_FILE = ").Append(JsonSerializer.Serialize(PrimaryThreadFile(options))).Append('\n');
             text.Append("CAD_MCP_READ_ONLY = \"1\"\n");

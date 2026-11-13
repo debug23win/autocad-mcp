@@ -1,5 +1,7 @@
 using System.Text.Json;
 using CadMcp.Providers;
+using CadMcp.Core;
+using System.Text.RegularExpressions;
 
 // Test command line for CAD MCP.
 // - "app-server" and "-p" simulate the Codex and Claude Code wire protocols for the automated tests.
@@ -44,9 +46,25 @@ return 2;
 /// <summary>Codex app-server protocol, as far as the CAD MCP chat uses it.</summary>
 internal static class FakeCodex
 {
+    private static System.Text.Json.Nodes.JsonObject ComputerConfig(string[] args)
+    {
+        string exes = args.FirstOrDefault(a => a.StartsWith("computer_use.windows.exes=", StringComparison.Ordinal))?["computer_use.windows.exes=".Length..] ?? "[]";
+        ComputerUseTarget? target = null;
+        if (exes != "[]")
+        {
+            var fields = Regex.Matches(exes, """(publisher_name|product_name|binary_name)=("(?:\\.|[^"\\])*")""")
+                .ToDictionary(m => m.Groups[1].Value, m => JsonSerializer.Deserialize<string>(m.Groups[2].Value)!);
+            target = new(Path.Combine(Path.GetTempPath(), "acad.exe"), "Fixture AutoCAD", fields["publisher_name"], fields["product_name"], fields["binary_name"], new string('A', 64));
+        }
+        var result = JsonSerializer.SerializeToNode(ComputerUseConfiguration.Value(target))!.AsObject();
+        if (args.Any(a => a.Contains("cua-policy-mismatch", StringComparison.Ordinal))) result["default_app_access"] = "allow";
+        if (args.Any(a => a.Contains("global-cua-app", StringComparison.Ordinal))) result["windows"]!["aumids"] = JsonSerializer.SerializeToNode(new Dictionary<string, string> { ["Existing.Package!App"] = "allow" });
+        return result;
+    }
     public static async Task RunAsync(string[] args)
     {
         string? threadModel = null;
+        var computerConfig = ComputerConfig(args);
         int writerErrors = 0;
         foreach (var tool in new[] { "cad_edit", "cad_lisp", "cad_focus" })
             if (!args.Contains($"mcp_servers.cad.tools.{tool}.approval_mode=\"approve\""))
@@ -69,6 +87,11 @@ internal static class FakeCodex
                         : new object[] { new { model = "hidden-model", isDefault = true, hidden = true, defaultReasoningEffort = "low" }, new { model = (string?)null, hidden = (bool?)null } },
                     nextCursor = secondPage ? null : "page2" } }));
             }
+            if (method == "config/read")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { id = e.GetProperty("id").GetInt32(), result = new { config = new { computer_use = computerConfig } } }));
+                continue;
+            }
             if (method is "thread/start" or "thread/resume" or "turn/start")
             {
                 if (!e.GetProperty("params").TryGetProperty("model", out var model) || model.GetString() is not ("available-model" or "alternative-model"))
@@ -77,6 +100,11 @@ internal static class FakeCodex
             if (method is "thread/start" or "thread/resume")
             {
                 threadModel = e.GetProperty("params").GetProperty("model").GetString();
+                var computer = e.GetProperty("params").GetProperty("config").GetProperty("computer_use");
+                if (computer.Text("default_app_access") != "deny" ||
+                    computer.GetProperty("windows").GetProperty("exes").GetRawText() != JsonSerializer.SerializeToElement(computerConfig["windows"]!["exes"]).GetRawText() ||
+                    computer.GetProperty("windows").GetProperty("aumids").EnumerateObject().Any(p => p.Value.GetString() != "deny"))
+                    throw new Exception("Computer Use config missing from new/resumed thread or a global app grant leaked");
                 if (!e.GetProperty("params").GetProperty("developerInstructions").GetString()!.Contains("cad_edit_help")) throw new Exception("Missing stable CAD instructions");
                 if (e.GetProperty("params").GetProperty("approvalPolicy").GetString() != "never" ||
                     e.GetProperty("params").GetProperty("sandbox").GetString() != "workspace-write")

@@ -9,7 +9,8 @@ namespace CadMcp.Providers;
 
 public sealed record ProviderOptions(string Executable, string McpExecutable, string WorkingDirectory,
     string? Model = null, string? ReasoningEffort = null, IReadOnlyList<string>? McpArguments = null,
-    int MaxSubagents = 3, string? OwnerId = null, string? CadSessionId = null, string? CadDocumentId = null)
+    int MaxSubagents = 3, string? OwnerId = null, string? CadSessionId = null, string? CadDocumentId = null, ComputerUseTarget? ComputerUseTarget = null,
+    Func<bool>? ComputerUseAccessStillValid = null)
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
@@ -394,6 +395,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         .. options.CadEnvironment.SelectMany(p => new[] {"-c", "mcp_servers.cad.env." + p.Key + "=" + JsonSerializer.Serialize(p.Value)}),
         .. (options.MaxSubagents>0?CadSubagentPolicy.Arguments(options, warnings):Array.Empty<string>()),
         "-c", "sandbox_workspace_write.network_access=true",
+        .. ComputerUseConfiguration.Arguments(options.ComputerUseTarget),
         "-c", "agents.enabled=" + (options.MaxSubagents > 0 ? "true" : "false"),
         "-c", "agents.max_concurrent_threads_per_session=" + Math.Max(1, options.MaxSubagents),
         // The user authorized direct CAD edits. `never` disables approval dialogs, but does
@@ -409,6 +411,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
     {
         attachments ??= Array.Empty<ChatAttachment>();
+        using var accessLifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var monitorStop = new CancellationTokenSource();
+        ct = accessLifetime.Token;
+        Task accessMonitor = Task.CompletedTask;
+        if (options.ComputerUseTarget is not null && options.ComputerUseAccessStillValid?.Invoke() == false)
+            throw new IOException(UiText.T("Разрешение Computer Use отозвано; начните новый ход без доступа к интерфейсу."));
         var warnings = new List<string>();
         using var p = Process.Start(ProviderProcess.StartInfo(options, Arguments(warnings))) ?? throw new IOException("Cannot start Codex");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
@@ -417,6 +425,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         foreach (var warning in warnings) yield return new("status", warning);
         var models = new List<JsonElement>();
         string? model = null, effort = null;
+        bool computerPolicyReady = false, modelReady = false, threadStarting = false;
+        IReadOnlyDictionary<string, string>? deniedAumids = null;
         string? activeTurnId = null;
         var usageTracker = new CodexUsageTracker(SessionId is not null);
         var answer = new CodexAnswerBuffer();
@@ -435,7 +445,15 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
             activeTurnId = turnId;
             live.Open((id,input,token)=> Send(new { id,method="turn/steer",@params=new {threadId=SessionId,expectedTurnId=turnId,input=LiveInput.CodexContent(input)} }));
         }
-        async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write" } });
+        async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write", config = ComputerUseConfiguration.ThreadOverrides(options.ComputerUseTarget, deniedAumids) } });
+        async Task BeginWhenReady()
+        {
+            if (!computerPolicyReady || !modelReady || threadStarting) return;
+            threadStarting = true;
+            if (SessionId is null)
+                await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write", config = ComputerUseConfiguration.ThreadOverrides(options.ComputerUseTarget, deniedAumids) } });
+            else await Resume();
+        }
         async Task<JsonDocument?> ReadNext()
         {
             bool starting = activeTurnId is null;
@@ -455,6 +473,18 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         }
         try
         {
+            if (options.ComputerUseTarget is not null && options.ComputerUseAccessStillValid is { } stillValid)
+                accessMonitor = Task.Run(async () =>
+                {
+                    using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+                    try
+                    {
+                        while (await timer.WaitForNextTickAsync(monitorStop.Token).ConfigureAwait(false))
+                            if (!stillValid()) { accessLifetime.Cancel(); break; }
+                    }
+                    catch (OperationCanceledException) when (monitorStop.IsCancellationRequested) { }
+                    catch (Exception) { accessLifetime.Cancel(); }
+                });
             await Send(new { id = 1, method = "initialize", @params = new { clientInfo = new { name = "cad_mcp", title = "CAD MCP", version = Wire.Version } } });
             while (await ReadNext() is { } doc)
             {
@@ -495,8 +525,20 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                             await Send(new { method = "initialized", @params = new { } });
                             await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
                             await Send(new { id = 5, method = "account/rateLimits/read", @params = new { } });
+                            await Send(new { id = 6, method = "config/read", @params = new { includeLayers = false, cwd = options.WorkingDirectory } });
                         }
                         else if (id == 5) yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(result));
+                        else if (id == 6)
+                        {
+                            var config = ProviderJson.Child(ProviderJson.Child(result, "config"), "computer_use");
+                            if (!ComputerUseConfiguration.Matches(config, options.ComputerUseTarget))
+                                throw new IOException(UiText.T("Codex не подтвердил настройки Computer Use; доступ не применяется. Проверьте версию CLI и ограничения организации."));
+                            deniedAumids = ComputerUseConfiguration.DeniedAumids(config);
+                            if (options.MaxSubagents > 0) _ = CadSubagentPolicy.Arguments(options, deniedAumids: deniedAumids);
+                            computerPolicyReady = true;
+                            yield return new("computer_use_status", options.ComputerUseTarget is null ? UiText.T("Computer Use: отключён для этого чата") : UiText.T("Computer Use: правило доступа передано Codex для ") + options.ComputerUseTarget.DisplayName);
+                            await BeginWhenReady();
+                        }
                         else if (id == 4)
                         {
                             if (ProviderJson.Child(result, "data") is not { ValueKind: JsonValueKind.Array } data)
@@ -512,9 +554,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                             effort = selection.Effort;
                             yield return new("model", model!);
                             yield return new("effort", effort!);
-                            if (SessionId is null)
-                                await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write" } });
-                            else await Resume();
+                            modelReady = true;
+                            await BeginWhenReady();
                         }
                         else if (id == 2)
                         {
@@ -587,9 +628,15 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     }
                 }
             }
+            ct.ThrowIfCancellationRequested();
             throw new IOException("Codex exited before turn completion. " + await stderr + lines.Skipped);
         }
-        finally { live.Close(); await ProviderProcess.FinishAsync(p, stderr); }
+        finally
+        {
+            monitorStop.Cancel();
+            await accessMonitor;
+            live.Close(); await ProviderProcess.FinishAsync(p, stderr);
+        }
     }
     public static string FriendlyError(string message)
     {
