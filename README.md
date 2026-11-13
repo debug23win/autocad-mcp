@@ -92,3 +92,5 @@ Optional checks with real CLIs, run from the repository root, use `CadMcp.TestCl
 To build the installer, first restore Host and Client for `win-x64`, `SelfContained=true`, `RuntimeFrameworkVersion=8.0.31`, and the 2025.1.4+, 2026.1.2+ and 2027 adapters using the .NET 10 SDK. Then run `scripts/prepare-codex.ps1 -Destination <bundle-folder>` and `scripts/build-installer.ps1 -IsccPath <Inno-Setup-6.7.3/ISCC.exe> -CodexDir <bundle-folder> -DotNet2027 <SDK10/dotnet.exe>`.
 
 Documentation: [changelog and release validation](CHANGELOG.md), [result verification and photos](docs/result-verification.md), [helpers](docs/agents.md), [3D modeling](docs/native-modeling.md), [georeferencing](docs/georeferencing.md), [sheet publishing](docs/publishing.md), [vertical APIs](docs/verticals.md), [attachments](docs/attachments.md), [editing](docs/editing.md), [reading](docs/reading.md), [model selection](docs/model-selection.md), [ClaudeRevit analysis](docs/clauderevit-analysis.md).
+
+Agent AutoLISP process isolation is described in [Isolated AutoLISP](docs/isolated-autolisp.md).

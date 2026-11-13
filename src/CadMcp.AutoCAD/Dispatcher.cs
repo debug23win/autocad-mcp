@@ -157,7 +157,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 // The flag is set first, so the Idle that Wake raises already sees the cancellation.
                 var requested = control.Cancel(r);
                 Wake();
-                return new(r.RequestId, "completed", new { cancellation_requested = requested, boundary = "transaction/action boundary; native kernel calls finish first; running AutoLISP requires Esc" }, documents.SessionId, r.DocumentId);
+                return new(r.RequestId, "completed", new { cancellation_requested = requested, boundary = "transaction/action boundary; native kernel calls finish first; isolated scripts stop only their owned child process" }, documents.SessionId, r.DocumentId);
             }
             return new(r.RequestId, "completed", r.Operation == "cad_diagnostics" ? WorkSafety.Diagnostics(documents.SessionId, r.DocumentId, r.Data.TryGetProperty("verify_checkpoints", out var verify) && verify.ValueKind == JsonValueKind.True, ct) : new { operations = control.Snapshot(r), queued = queue.Count, cad_thread = Health(), document_availability = r.DocumentId is { } targetId && availability.TryGetValue(targetId, out var ready) ? ready : null }, documents.SessionId, r.DocumentId);
         }
@@ -879,6 +879,8 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         {
             if (request.Operation != "cad_lisp" && (CSharpExecutionPolicy.Read() != permission || !permission.Allowed))
                 throw new CadFault("CSHARP_RESULT_NOT_APPLIED", "The user changed C# permission while the child ran; output remains separate");
+            if (request.Operation == "cad_lisp" && CadSettings.EffectiveLispPolicy() == LispPolicyMode.Deny)
+                throw new CadFault("LISP_RESULT_NOT_APPLIED", "The user disabled AutoLISP while the child ran; output remains separate");
             original = documents.Active(request with { ExpectedRevision = revision });
             LocalWorkPolicy.RequireLocal(original.Name);
             if (original.Name != originalName || !string.IsNullOrWhiteSpace(original.CommandInProgress) || !original.Editor.IsQuiescent)
