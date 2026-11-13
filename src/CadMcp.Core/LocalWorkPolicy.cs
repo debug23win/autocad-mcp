@@ -20,12 +20,12 @@ public static class LocalWorkPolicy
             .Any(part => part.Equals("OneDrive", StringComparison.OrdinalIgnoreCase) || part.StartsWith("OneDrive - ", StringComparison.OrdinalIgnoreCase))
             || roots.Any(root => Under(candidate, root));
         if (Synced(full)) return true;
-        try { if (File.Exists(full) && new FileInfo(full).ResolveLinkTarget(returnFinalTarget: true) is { } fileTarget && Synced(fileTarget.FullName)) return true; }
+        try { if (File.Exists(full) && (File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0 && new FileInfo(full).ResolveLinkTarget(returnFinalTarget: true) is { } fileTarget && Synced(fileTarget.FullName)) return true; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { throw new CadFault("WORKSPACE_PATH_UNVERIFIED", "Cannot verify workspace file link: " + e.Message); }
         // Resolve directory junctions too: a local-looking alias must not bypass the synced-root guard.
         for (var directory = new DirectoryInfo(File.Exists(full) ? Path.GetDirectoryName(full)! : full); directory is not null; directory = directory.Parent)
         {
-            try { if (directory.Exists && directory.ResolveLinkTarget(returnFinalTarget: true) is { } target && Synced(target.FullName)) return true; }
+            try { if (directory.Exists && (directory.Attributes & FileAttributes.ReparsePoint) != 0 && directory.ResolveLinkTarget(returnFinalTarget: true) is { } target && Synced(target.FullName)) return true; }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { throw new CadFault("WORKSPACE_PATH_UNVERIFIED", "Cannot verify workspace junction: " + e.Message); }
         }
         return false;

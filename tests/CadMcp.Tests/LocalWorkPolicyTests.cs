@@ -8,6 +8,7 @@ public sealed class LocalWorkPolicyTests
     public void Consumer_business_and_custom_sync_roots_are_blocked_without_prefix_false_positives()
     {
         using var folder = new TempFolder(); string custom = folder.File("SyncedCompany");
+        Assert.False(LocalWorkPolicy.IsOneDrive(Path.GetPathRoot(folder.Path)!, []));
         Assert.True(LocalWorkPolicy.IsOneDrive(Path.Combine(folder.Path, "OneDrive", "a.dwg"), []));
         Assert.True(LocalWorkPolicy.IsOneDrive(Path.Combine(folder.Path, "OneDrive - Company", "a.dwg"), []));
         Assert.True(LocalWorkPolicy.IsOneDrive(Path.Combine(custom, "a.dwg"), [custom]));
