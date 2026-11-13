@@ -2,12 +2,13 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CadMcp.Core;
 
 public sealed record ComputerUseTarget(string ExecutablePath, string DisplayName, string PublisherName, string ProductName, string BinaryName, string Sha256)
 {
-    public string Identity => PublisherName + "\n" + ProductName + "\n" + BinaryName;
+    [JsonIgnore] public string Identity => PublisherName + "\n" + ProductName + "\n" + BinaryName;
     public static ComputerUseTarget Inspect(string path)
     {
         if (!OperatingSystem.IsWindows()) throw new CadFault("COMPUTER_USE_WINDOWS_REQUIRED", "AutoCAD application access requires Windows");
@@ -17,9 +18,11 @@ public sealed record ComputerUseTarget(string ExecutablePath, string DisplayName
         string before = IsolatedCSharpJob.HashFile(path);
         if (!WindowsSignature.Trusted(path)) throw new CadFault("COMPUTER_USE_SIGNATURE_UNVERIFIED", "Windows could not verify the AutoCAD executable signature; access was not granted");
         using var certificate = X509Certificate.CreateFromSignedFile(path);
+        using var signer = new X509Certificate2(certificate);
         var version = FileVersionInfo.GetVersionInfo(path);
         string publisher = certificate.Subject, product = version.ProductName ?? "";
-        if (!publisher.Contains("Autodesk", StringComparison.OrdinalIgnoreCase) || !product.Contains("AutoCAD", StringComparison.OrdinalIgnoreCase) ||
+        string signerName = signer.GetNameInfo(X509NameType.SimpleName, false);
+        if (!new[] { "Autodesk, Inc.", "Autodesk Inc.", "Autodesk" }.Contains(signerName, StringComparer.OrdinalIgnoreCase) || !product.Contains("AutoCAD", StringComparison.OrdinalIgnoreCase) ||
             before != IsolatedCSharpJob.HashFile(path))
             throw new CadFault("COMPUTER_USE_TARGET_INVALID", "Expected an unchanged, signed Autodesk AutoCAD executable");
         return new(path, version.FileDescription ?? product, publisher, product, Path.GetFileName(path), before);
@@ -47,11 +50,22 @@ public sealed class ComputerUseAccessStore(string? path = null)
     public void Set(ComputerUseTarget target, bool allowed)
     {
         if (!Valid(target)) throw new InvalidDataException("Incomplete Computer Use application identity");
-        var values = Read().Where(p => !p.Target.ExecutablePath.Equals(target.ExecutablePath, StringComparison.OrdinalIgnoreCase)).TakeLast(15)
-            .Append(new ComputerUsePermission(target, allowed, Guid.NewGuid().ToString("N"))).ToArray();
-        Save(values);
+        WriteLocked(() => Save(Read().Where(p => !p.Target.ExecutablePath.Equals(target.ExecutablePath, StringComparison.OrdinalIgnoreCase)).TakeLast(15)
+            .Append(new ComputerUsePermission(target, allowed, Guid.NewGuid().ToString("N"))).ToArray()));
     }
-    public void RevokeAll() => Save(Read().Select(p => p with { Allowed = false, Revision = Guid.NewGuid().ToString("N") }).ToArray());
+    public void RevokeAll() => WriteLocked(() => Save(Read().Select(p => p with { Allowed = false, Revision = Guid.NewGuid().ToString("N") }).ToArray()));
+    private void WriteLocked(Action write)
+    {
+        using var mutex = new Mutex(false, "CadMcp-ComputerUse-" + Portable.Hash(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(path).ToUpperInvariant())));
+        bool owned = false;
+        try
+        {
+            try { owned = mutex.WaitOne(TimeSpan.FromSeconds(3)); } catch (AbandonedMutexException) { owned = true; }
+            if (!owned) throw new IOException("Computer Use settings are being changed by another panel");
+            write();
+        }
+        finally { if (owned) mutex.ReleaseMutex(); }
+    }
     private void Save(ComputerUsePermission[] values)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);

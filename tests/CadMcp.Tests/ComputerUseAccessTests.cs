@@ -9,6 +9,14 @@ public sealed class ComputerUseAccessTests
     internal static ComputerUseTarget Target => new(Path.Combine(Path.GetTempPath(), "CAD with spaces", "acad.exe"), "AutoCAD 2027",
         "CN=\"Autodesk, Inc.\", O=Autodesk", "AutoCAD", "acad.exe", new string('A', 64));
     [Fact]
+    public void Unsigned_executable_is_rejected_by_Windows_before_any_grant()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var folder = new TempFolder(); string path = folder.File("acad.exe"); File.WriteAllText(path, "not signed executable data");
+        var error = Assert.Throws<CadFault>(() => ComputerUseTarget.Inspect(path));
+        Assert.Equal("COMPUTER_USE_SIGNATURE_UNVERIFIED", error.Code);
+    }
+    [Fact]
     public void Access_defaults_off_and_changes_to_binary_or_publisher_require_a_new_grant()
     {
         using var folder = new TempFolder(); var store = new ComputerUseAccessStore(folder.File("access.json"));

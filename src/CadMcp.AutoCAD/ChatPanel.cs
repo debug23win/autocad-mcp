@@ -436,7 +436,7 @@ internal sealed class ChatPanel : UserControl
     {
         try
         {
-            computerUseStore.RevokeAll(); running?.Cancel();
+            computerUseStore.RevokeAll(); if (provider.SelectedIndex == 0) running?.Cancel();
             computerUseStatus.Text = UiText.T("Computer Use: доступ отозван; начатые действия проверяются по чертежу");
         }
         catch (System.Exception error) { computerUseStatus.Text = UiText.T("Computer Use: ") + error.Message; LogError(error); }

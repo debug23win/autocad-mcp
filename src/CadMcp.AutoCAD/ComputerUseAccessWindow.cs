@@ -22,7 +22,7 @@ internal sealed class ComputerUseAccessWindow : Window
         Text(UiText.T("Область разрешения: подпись издателя, продукт и имя acad.exe. Она может охватывать другие установленные версии с той же идентичностью."));
         var details = new TextBlock { Text = target.PublisherName + "\n" + target.ProductName + "\n" + target.BinaryName, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) };
         root.Children.Add(new Expander { Header = UiText.T("Проверенная подпись и продукт"), Content = details, Margin = new Thickness(0, 0, 0, 10) });
-        Text(allowed ? UiText.T("Разрешение пользователя сохранено. Доступность инструмента и ограничения организации проверяет Codex.") : UiText.T("Разрешение не выдано. Оно применяется со следующего хода Codex; глобальный config.toml не изменяется."));
+        Text(allowed ? UiText.T("Разрешение пользователя сохранено. Доступность инструмента и ограничения организации проверяет Codex.") : UiText.T("Разрешение не выдано. Оно применяется со следующего хода в CadMcp; настройки других чатов Codex не изменяются."));
         if (running) Text(UiText.T("Отзыв остановит текущий ход. Ранее принятые CAD-операции проверяются отдельно и автоматически не повторяются."));
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
         var allow = new Button { Content = UiText.T("Разрешить со следующего хода"), IsEnabled = !allowed, Margin = new Thickness(4), Padding = new Thickness(10, 5, 10, 5) };
