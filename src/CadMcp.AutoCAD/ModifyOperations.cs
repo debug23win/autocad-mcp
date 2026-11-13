@@ -283,7 +283,12 @@ internal static class ModifyOperations
         bool keep = Bool(op, "keep_original"), attributesAsText = Bool(op, "attributes_as_text", true);
         var source = Edits.Editable(db, tr, Edits.Resolve(db, tr, op, aliases), !keep);
         using var parts = new DBObjectCollection();
-        source.Explode(parts);
+        try { source.Explode(parts); }
+        catch (Autodesk.AutoCAD.Runtime.Exception error)
+        {
+            foreach (DBObject part in parts) if (!part.IsDisposed && part.ObjectId.IsNull) part.Dispose();
+            throw new CadFault("EXPLODE_FAILED", "AutoCAD " + error.ErrorStatus + " while exploding handle " + H(source.ObjectId) + "; transaction was not committed");
+        }
         var items = parts.Cast<DBObject>().ToList();
         var space = (BlockTableRecord)tr.GetObject(source.OwnerId, OpenMode.ForRead);
         var created = new List<ObjectId>();
@@ -311,6 +316,9 @@ internal static class ModifyOperations
                 }
                 if (item is not Entity entity) { item.Dispose(); continue; }
                 if (op.Text("layer") is { } layer) entity.LayerId = Edits.Layer(db, tr, layer);
+                // Explode and attribute-to-text conversion can return transient entities with
+                // no layer id. GetObject(Null) before AppendEntity raised eNullObjectId.
+                if (entity.LayerId.IsNull) entity.LayerId = source.LayerId;
                 Edits.RequireUnlocked(tr, entity);
                 Append(tr, space, entity);
                 // Explode copies nested block references without their attribute values; carry them over as EXPLODE does.

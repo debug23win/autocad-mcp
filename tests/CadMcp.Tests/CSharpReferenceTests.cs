@@ -8,6 +8,16 @@ namespace CadMcp.Tests;
 
 public sealed class CSharpReferenceTests
 {
+    [Fact]
+    public async Task Disabled_Csharp_stops_before_reference_loading_or_mutation()
+    {
+        using var folder = new TempFolder(); string policy = folder.File("csharp.json"); CSharpExecutionPolicy.Store(false, policy);
+        string pipe = "csharp-disabled-" + Guid.NewGuid().ToString("N"); int calls = 0;
+        using var broker = new PipeServer(pipe, (r, _) => { calls++; Assert.Equal("cad_operation_status", r.Operation); return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d")); });
+        broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe, new Dictionary<string, string> { ["CAD_MCP_CSHARP_POLICY_FILE"] = policy });
+        var reply = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "disabled", code = CSharpCadVerifierTests.SafeScript });
+        Assert.True(reply.GetProperty("isError").GetBoolean()); Assert.Contains("CSHARP_DISABLED", reply.GetRawText()); Assert.Equal(1, calls);
+    }
     private static string[] Framework => ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);
     internal static string NativeLibrary(TempFolder folder)
     {

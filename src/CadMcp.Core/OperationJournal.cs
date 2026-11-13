@@ -163,6 +163,12 @@ public sealed class OperationJournal
         return new { operation_id = id, document_id = entry.DocumentId, owner_id=entry.Request?.OwnerId,
             state = !active && (entry.State is "queued" or "running") ? "unknown" : entry.State, phase = entry.Phase,
             operation = entry.Request?.Operation, created_at = entry.CreatedAt, updated_at = entry.UpdatedAt,
+            execution_mode = outer.Text("execution_mode") ?? (entry.Phase?.StartsWith("isolated_", StringComparison.Ordinal) == true ? "isolated_acad" : null),
+            applied_to_original = outer.TryGetProperty("applied_to_original", out var applied) ? (JsonElement?)applied.Clone() : null,
+            replacement = outer.TryGetProperty("replacement", out var replacement) ? (JsonElement?)replacement.Clone() : null,
+            output_file = outer.TryGetProperty("output_file", out var output) ? (JsonElement?)output.Clone() : null,
+            process_id = outer.TryGetProperty("process_id", out var process) ? (JsonElement?)process.Clone() : null,
+            exit_code_hex = outer.Text("exit_code_hex"), artifacts_directory = outer.Text("artifacts_directory"),
             error = entry.Result?.Error, acceptance = result.TryGetProperty("acceptance", out var a) ? (JsonElement?)a.Clone() : null,
             changed_entities = result.TryGetProperty("changed_entity_count", out var changedCount) && changedCount.ValueKind == JsonValueKind.Number && changedCount.TryGetInt32(out int changedTotal) ? changedTotal
                 : result.TryGetProperty("entity_count", out var count) && count.TryGetInt32(out int total) ? total

@@ -21,6 +21,7 @@ public sealed class Plugin : IExtensionApplication
     [System.Runtime.InteropServices.DllImport("user32.dll")]private static extern bool ShowWindow(IntPtr window,int command);
     public void Initialize()
     {
+        if (IsolatedCSharpWorker.TryStart()) return;
         try
         {
         documents = new(); dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show }; dispatcher.Start();

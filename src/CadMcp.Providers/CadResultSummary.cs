@@ -6,6 +6,8 @@ namespace CadMcp.Providers;
 
 public static class CadResultSummary
 {
+    public static bool AppliesToLiveDrawing(JsonElement operation) => operation.Text("execution_mode") != "isolated_acad" ||
+        operation.TryGetProperty("applied_to_original", out var applied) && applied.ValueKind == JsonValueKind.True;
     /// <summary>Preview accepts top-level entities in one space; definition geometry is still verified, but never framed directly.</summary>
     public static string[] PreviewHandles(IEnumerable<JsonElement> entities, string? currentSpaceHandle)
     {
@@ -17,7 +19,7 @@ public static class CadResultSummary
             .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToArray();
     }
     public static string[] ChangedHandles(JsonElement operations) => operations.EnumerateArray()
-        .Where(o=>o.Text("state")=="completed"&&o.Text("operation") is "cad_edit" or "cad_csharp")
+        .Where(o=>AppliesToLiveDrawing(o)&&o.Text("state")=="completed"&&o.Text("operation") is "cad_edit" or "cad_csharp")
         .SelectMany(o=>o.TryGetProperty("handles",out var handles)&&handles.ValueKind==JsonValueKind.Array?handles.EnumerateArray().Select(h=>h.GetString()!):[])
         .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     public static string Describe(JsonElement data, JsonElement? review = null)
@@ -26,6 +28,19 @@ public static class CadResultSummary
         var items=operations.EnumerateArray().ToArray(); var text=new StringBuilder(UiText.T("**Проверка плагина:**\n\n"));
         int completed=items.Count(o=>o.Text("state")=="completed"), failed=items.Count(o=>o.Text("state")=="failed"), pending=items.Length-completed-failed;
         text.Append(UiText.T("Операций подтверждено: ")).Append(completed).Append(UiText.T("; ошибок: ")).Append(failed).Append(UiText.T("; ожидают завершения или проверки: ")).Append(pending).Append(".\n");
+        foreach (var isolated in items.Where(o => o.Text("execution_mode") == "isolated_acad"))
+        {
+            text.Append(UiText.T("C# выполнен в отдельном процессе AutoCAD; скрипт в основном процессе повторно не запускается.\n"));
+            bool applied = isolated.TryGetProperty("applied_to_original", out var appliedValue) && appliedValue.ValueKind == JsonValueKind.True;
+            text.Append(applied ? UiText.T("Рабочий чертёж заменён проверенным DWG; исходная копия сохранена для восстановления.\n") : UiText.T("Замена рабочего чертежа не подтверждена; проверьте квитанцию и сохранённый результат.\n"));
+            if (isolated.TryGetProperty("output_file", out var output) && output.ValueKind == JsonValueKind.Object)
+                text.Append(UiText.T("Отдельный DWG: ")).Append(output.Text("path")).Append("\nSHA-256: ").Append(output.Text("sha256")).Append('\n');
+            if (isolated.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+                text.Append(error.Text("code")).Append(": ").Append(error.Text("message")).Append('\n');
+            if (isolated.Text("exit_code_hex") is { } exit) text.Append("Exit: ").Append(exit).Append('\n');
+            if (isolated.Text("artifacts_directory") is { } artifacts) text.Append(UiText.T("Диагностика дочернего процесса: ")).Append(artifacts).Append('\n');
+        }
+        if (items.All(o => !AppliesToLiveDrawing(o))) return text.ToString();
         if(data.TryGetProperty("truncated",out var truncated)&&truncated.ValueKind==JsonValueKind.True)text.Append(UiText.T("История операций ограничена; автоматическая проверка всего ответа может быть неполной. Требуется итоговая проверка всех объектов задания.\n"));
         if(items.Any(o=>o.TryGetProperty("handles_truncated",out var limited)&&limited.ValueKind==JsonValueKind.True))
             text.Append(UiText.T("Перечень изменённых объектов неполон; полная проверка операции не подтверждена.\n"));

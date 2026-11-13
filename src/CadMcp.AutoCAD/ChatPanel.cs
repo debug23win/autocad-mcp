@@ -29,10 +29,13 @@ internal sealed class ChatPanel : UserControl
     // One user-wide AutoLISP policy (same order as LispPolicyMode); agents cannot change it.
     private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { UiText.T("Спрашивать перед каждым запуском"), UiText.T("Без вопросов, если нет опасных функций"), UiText.T("Разрешать без вопросов"), UiText.T("Запретить") } };
     private bool loadingLispPolicy;
+    private bool loadingCSharpPolicy;
+    private readonly System.Windows.Controls.CheckBox allowCSharp = new() { Content = UiText.T("Разрешить C#"), Margin = new Thickness(0, 4, 0, 4),
+        ToolTip = UiText.T("C# выполняется один раз на копии DWG в отдельном AutoCAD. Проверенный файл заменит рабочий чертёж, только если он не изменился; исходная копия сохраняется для восстановления.") };
     private readonly Button refreshModels = new() { Content = UiText.T("Обновить список моделей"), Margin = new Thickness(0, 4, 0, 4) };
     private readonly TextBox executable = new() { Text = "codex.exe" };
     private readonly TextBox host = new() { Text = UiText.T("Полный путь к CadMcp.Host.exe") };
-    private readonly TextBox directory = new() { Text = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) };
+    private readonly TextBox directory = new() { Text = LocalWorkPolicy.DefaultWorkspace };
     private readonly TextBox input = new() { AcceptsReturn = true, Height = 80, TextWrapping = TextWrapping.Wrap };
     private readonly List<ChatAttachment> attachments = new();
     private readonly WrapPanel attachmentItems = new();
@@ -88,6 +91,7 @@ internal sealed class ChatPanel : UserControl
         this.brokerPipe = brokerPipe ?? Wire.BrokerPipe;
         store = stateStore ?? new(Wire.DataDirectory("chat"));
         this.preferences = preferences ?? new();
+        Directory.CreateDirectory(LocalWorkPolicy.DefaultWorkspace);
         var assemblyDir = Path.GetDirectoryName(typeof(ChatPanel).Assembly.Location)!;
         var installedHost = Path.GetFullPath(Path.Combine(assemblyDir, "..", "Host", "CadMcp.Host.exe"));
         if (File.Exists(installedHost)) host.Text = installedHost;
@@ -135,6 +139,7 @@ internal sealed class ChatPanel : UserControl
         foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Провайдер"), provider), (UiText.T("Модель"), model), (UiText.T("Глубина рассуждений"), reasoning), (UiText.T("Помощники"), agentCount), (UiText.T("AutoLISP по запросу агента"), lispPolicy) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
         settings.Children.Add(refreshModels);
+        settings.Children.Add(allowCSharp);
         var connection = new StackPanel();
         foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Официальный CLI (.exe)"), executable), ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
         { connection.Children.Add(new TextBlock { Text = pair.Label }); connection.Children.Add(pair.Control); }
@@ -192,6 +197,16 @@ internal sealed class ChatPanel : UserControl
         };
         void LoadLispPolicy() { loadingLispPolicy = true; try { lispPolicy.SelectedIndex = (int)CadSettings.StoredLispPolicy(); } finally { loadingLispPolicy = false; } }
         LoadLispPolicy();
+        void LoadCSharpPolicy() { loadingCSharpPolicy = true; try { allowCSharp.IsChecked = CSharpExecutionPolicy.Read().Allowed; } finally { loadingCSharpPolicy = false; } }
+        LoadCSharpPolicy();
+        Loaded += (_, _) => LoadCSharpPolicy();
+        void StoreCSharpPolicy()
+        {
+            if (loadingCSharpPolicy) return;
+            try { CSharpExecutionPolicy.Store(allowCSharp.IsChecked == true); }
+            catch (System.Exception error) { LoadCSharpPolicy(); activity.Text = UiText.T("Не удалось сохранить разрешение C#: ") + error.Message; }
+        }
+        allowCSharp.Checked += (_, _) => StoreCSharpPolicy(); allowCSharp.Unchecked += (_, _) => StoreCSharpPolicy();
         Loaded += (_, _) => LoadLispPolicy();
         void StoreLispPolicy()
         {
@@ -520,6 +535,8 @@ internal sealed class ChatPanel : UserControl
         if (documentClosed || benchmarkBusy) return;
         if (string.IsNullOrWhiteSpace(input.Text) && attachments.Count == 0) return;
         if (running is not null) { if (acceptingInput) await AddFollowup(); return; }
+        try { LocalWorkPolicy.RequireLocal(directory.Text); }
+        catch (CadFault error) { activity.Text = error.Code + ": " + error.Message; return; }
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
         { activity.Text = UiText.T("Укажите существующие MCP host и рабочую папку."); return; }
         // A saved Claude model or level the CLI no longer offers is reported before the message is sent.
@@ -669,7 +686,7 @@ internal sealed class ChatPanel : UserControl
             { if(preview)await AttachPreview(document); return; }
             var records=ops.EnumerateArray().ToArray(); JsonElement? review=null;
             var changedHandles=CadResultSummary.ChangedHandles(ops);var liveHandles=new List<string>();
-            var completed=records.FirstOrDefault(o=>o.Text("state")=="completed" && o.Text("operation") is "cad_edit" or "cad_csharp");
+            var completed=records.FirstOrDefault(o=>CadResultSummary.AppliesToLiveDrawing(o) && o.Text("state")=="completed" && o.Text("operation") is "cad_edit" or "cad_csharp");
             if(completed.ValueKind==JsonValueKind.Object)
             {
                 await RefreshCad();
@@ -699,7 +716,7 @@ internal sealed class ChatPanel : UserControl
             var summary=CadResultSummary.Describe(data,review);
             UpdateAssistant(line=>line with{Text=line.Text+"\n\n"+summary});
             bool pending=records.Any(o=>o.Text("state") is "queued" or "running" or "unknown");
-            if(!pending && (preview || completed.ValueKind==JsonValueKind.Object))
+            if(!pending && (preview && records.Any(CadResultSummary.AppliesToLiveDrawing) || completed.ValueKind==JsonValueKind.Object))
             {
                 var views=review is {} rr&&rr.TryGetProperty("verification",out var vr)&&vr.TryGetProperty("review_views",out var v)?v.EnumerateArray().Select(x=>x.GetString()!).Distinct().ToArray():[];
                 if(views.Length==0)views=["current"];

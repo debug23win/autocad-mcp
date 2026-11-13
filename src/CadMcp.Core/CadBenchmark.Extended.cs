@@ -153,6 +153,14 @@ public static class CadMcpScript {
                 {
                     var made = await Mutate(tool, new { code = CSharpFixture }, ct);
                     Is("required checkpoint", made.TryGetProperty("checkpoint", out var cp) && cp.Text("path") is { Length: > 0 } path && File.Exists(path), made);
+                    if (made.Text("execution_mode") == "isolated_acad")
+                    {
+                        var output = made.GetProperty("output_file");
+                        string saved = output.Text("path")!;
+                        Is("separate saved DWG with matching hash", File.Exists(saved) && IsolatedCSharpJob.HashFile(saved) == output.Text("sha256"), output);
+                        Is("separate AutoCAD process", made.GetProperty("process_id").GetInt32() != made.GetProperty("parent_process_id").GetInt32(), made);
+                        Is("checked DWG replaced the original without replay", made.GetProperty("applied_to_original").ValueKind == JsonValueKind.True, made);
+                    }
                     extra = made.GetProperty("result").GetProperty("value"); extraReady = true;
                     var line = await Tool("cad_entity_get", new { handle = Extra("line") }, ct);
                     Number("compiled C# line length", 100, line.GetProperty("length").GetDouble()); Point("compiled C# line start", line.GetProperty("start"), 9000, 0);

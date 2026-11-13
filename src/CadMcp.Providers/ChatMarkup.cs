@@ -42,7 +42,14 @@ public static class ChatMarkup
             html.Append("<header>").Append(role switch { "user" => UiText.T("Вы"), "assistant" => UiText.T("Ассистент"), "progress" => UiText.T("Ход работы"), _ => UiText.T("История") });
             if (!string.IsNullOrWhiteSpace(message.Model)) html.Append(" <small>").Append(WebUtility.HtmlEncode(message.Model)).Append("</small>");
             if (!string.IsNullOrWhiteSpace(message.Effort)) html.Append(" <small>· ").Append(WebUtility.HtmlEncode(message.Effort)).Append("</small>");
-            html.Append("</header><div class='content'>").Append(MarkdownHtml(message.Text)).Append("</div>");
+            html.Append("</header>");
+            if (message.Steps is { Count: > 0 })
+            {
+                html.Append(UiText.T("<details class='progress-notes' open><summary>Ход работы</summary><ol>"));
+                foreach (string step in message.Steps.Where(s => !IsTechnicalStep(s))) html.Append("<li>").Append(MarkdownHtml(step)).Append("</li>");
+                html.Append("</ol></details>");
+            }
+            html.Append("<div class='content'>").Append(MarkdownHtml(message.Text)).Append("</div>");
             if (!string.IsNullOrWhiteSpace(message.Delivery)) html.Append("<p class='delivery'>").Append(WebUtility.HtmlEncode(message.Delivery)).Append("</p>");
             if (message.Images is { Count: > 0 })
             {
@@ -67,12 +74,6 @@ public static class ChatMarkup
             if (!string.IsNullOrWhiteSpace(message.ReasoningSummary))
                 html.Append(UiText.T("<section class='reasoning'><strong>Краткий ход рассуждений</strong>"))
                     .Append(MarkdownHtml(message.ReasoningSummary)).Append("</section>");
-            if (message.Steps is { Count: > 0 })
-            {
-                html.Append(UiText.T("<details class='progress-notes' open><summary>Ход работы</summary><ol>"));
-                foreach (string step in message.Steps.Where(s => !IsTechnicalStep(s))) html.Append("<li>").Append(MarkdownHtml(step)).Append("</li>");
-                html.Append("</ol></details>");
-            }
             if (message.Role == "assistant")
                 html.Append("<div class='message-actions'><button type='button' class='copy-answer' data-index='").Append(index)
                     .Append(UiText.T("' title='Копировать ответ' aria-label='Копировать ответ'>Копировать</button></div>"));

@@ -26,6 +26,7 @@ public static class ProviderProcess
 {
     public static ProcessStartInfo StartInfo(ProviderOptions options, IEnumerable<string> arguments)
     {
+        LocalWorkPolicy.RequireLocal(options.WorkingDirectory);
         var info = new ProcessStartInfo(options.Executable)
         {
             WorkingDirectory = options.WorkingDirectory, UseShellExecute = false, CreateNoWindow = true,

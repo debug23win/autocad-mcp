@@ -11,7 +11,9 @@ namespace CadMcp.AutoCAD;
 internal sealed class DocumentState(Database database)
 {
     public Database Database { get; } = database;
-    public string Id { get; } = Guid.NewGuid().ToString("N");
+    public string Id { get; init; } = Guid.NewGuid().ToString("N");
+    public string? ProjectKeyOverride { get; init; }
+    public void Replaced(long revision) { Revision = revision; DroppedThrough = revision; }
     public long Revision { get; set; }
     public int ReadDepth { get; set; }
     public bool TablesDirty { get; set; }
@@ -34,6 +36,9 @@ internal sealed class DocumentState(Database database)
     public string? TableError { get; set; }
     public bool HistoryCommand { get; set; }
     public long ReadSideEffectEvents { get; set; }
+    public long ChangeLogFailures { get; set; }
+    public object? LastRevisionEvent { get; set; }
+    public string? LastChangeLogError { get; set; }
 
     /// <summary>The CAD MCP operation changing the drawing right now; null means the user or another program.</summary>
     public string? Author { get; set; }
@@ -115,6 +120,7 @@ internal sealed class Documents : IDisposable
                 // its transaction. This is synchronous on the CAD thread, not a user edit.
                 if (state.ReadDepth != 0) { state.ReadSideEffectEvents++; continue; }
                 state.Revision++;
+                state.LastRevisionEvent = new { revision = state.Revision, kind, entity = changed is Entity, managed_type = changed.GetType().Name, author = state.Author, at = DateTimeOffset.UtcNow };
                 // The change log must never disturb the edit that raised the event.
                 try
                 {
@@ -123,7 +129,7 @@ internal sealed class Documents : IDisposable
                     bool foreign = !layer.IsNull && layer.Database is { } owner && owner.UnmanagedObject != db.UnmanagedObject;
                     state.Record(changed.Handle.Value, kind, DxfName(changed), foreign ? ObjectId.Null : layer, foreign ? ((Entity)changed).Layer : null, changed is Entity);
                 }
-                catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP change log: " + error.Message); }
+                catch (System.Exception error) { state.ChangeLogFailures++; state.LastChangeLogError = error.Message; System.Diagnostics.Trace.WriteLine("CAD MCP change log: " + error.Message); }
             }
     }
     public IDisposable ReadScope(Document document)
@@ -142,11 +148,13 @@ internal sealed class Documents : IDisposable
             state.ReadDepth--;
         }
     }
-    public DocumentState Register(Document d)
+    public DocumentState Register(Document d, string? replacementId = null, long replacementRevision = 0, string? projectKey = null)
     {
-        if (states.TryGetValue(d, out var state)) return state;
+        if (states.TryGetValue(d, out var state)) { if (replacementId is null) return state; Remove(d); }
         // Linked tables are recalculated after changes, not when a drawing is opened: opening must not modify it.
-        state = new(d.Database); states.Add(d, state);
+        state = replacementId is null ? new(d.Database) : new(d.Database) { Id = replacementId, ProjectKeyOverride = projectKey };
+        if (replacementId is not null) state.Replaced(replacementRevision);
+        states.Add(d, state);
         d.CommandWillStart+=CommandStarting;d.CommandEnded+=CommandFinished;d.CommandCancelled+=CommandFinished;d.CommandFailed+=CommandFinished;
         state.Database.ObjectAppended += Appended; state.Database.ObjectModified += Modified; state.Database.ObjectErased += Erased;
         state.Database.ObjectUnappended += Unappended; state.Database.ObjectReappended += Reappended;
@@ -160,8 +168,9 @@ internal sealed class Documents : IDisposable
         state.Database.ObjectUnappended -= Unappended; state.Database.ObjectReappended -= Reappended;
         states.Remove(d);
     }
+    public string ProjectKey(Document doc) => Register(doc).ProjectKeyOverride ?? (Path.IsPathFullyQualified(doc.Name) ? Portable.Hash(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(doc.Name).ToUpperInvariant())) : Register(doc).Id);
     public object Catalog() => states.Select(p=>new {document_id=p.Value.Id,name=p.Key.Name,active=ReferenceEquals(p.Key,App.DocumentManager.MdiActiveDocument),revision=p.Value.Revision,dark_theme=Convert.ToInt32(App.GetSystemVariable("COLORTHEME"))==0,
-        project_key=System.IO.Path.IsPathFullyQualified(p.Key.Name)?Portable.Hash(System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(p.Key.Name).ToUpperInvariant())):p.Value.Id}).ToArray();
+        project_key=ProjectKey(p.Key)}).ToArray();
     public Document Active(Request r, bool checkRevision = true, bool allowInactive = false)
     {
         if (r.SessionId != SessionId) throw new CadFault("SESSION_MISMATCH", "Native worker session changed");
