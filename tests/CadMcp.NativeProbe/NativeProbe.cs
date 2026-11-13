@@ -7,16 +7,16 @@ using CadMcp.AutoCAD;
 using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 [assembly: CommandClass(typeof(CadMcp.NativeProbe.NativeProbe))]
+[assembly: ExtensionApplication(typeof(CadMcp.NativeProbe.IsolationExtension))]
 namespace CadMcp.NativeProbe;
 
 public static class NativeProbe
 {
     private static Dispatcher? dispatcher;
     [LispFunction("CADMCPBEGIN")]
-    public static string? Begin(ResultBuffer args) => dispatcher?.BeginLisp((string)args.AsArray()[0].Value);
+    public static string? Begin(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]
-    public static int Finish(ResultBuffer args)
-    { var v = args.AsArray(); dispatcher?.FinishLisp((string)v[0].Value, Convert.ToInt32(v[1].Value) == 1, (string)v[2].Value); return 0; }
+    public static int Finish(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     [CommandMethod("CADMCPPROBE", CommandFlags.Session)]
     public static async void Run()
     {
@@ -192,4 +192,10 @@ public static class NativeProbe
             }, null);
         }
     }
+}
+
+public sealed class IsolationExtension : IExtensionApplication
+{
+    public void Initialize() => IsolatedCSharpWorker.TryStart();
+    public void Terminate() { }
 }

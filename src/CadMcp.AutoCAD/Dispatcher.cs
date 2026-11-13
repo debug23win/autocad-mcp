@@ -777,9 +777,14 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     }
     private sealed record CSharpApplication(bool Applied, long? Revision = null, object? DocumentState = null, string? Target = null, string? Backup = null, string? Recovery = null, Fault? Error = null, bool ManualRecoveryRequired = false);
     private readonly ConcurrentQueue<(Request Request, DeferredCadAction<CSharpApplication> Work)> csharpApplications = new();
+#if !CORE_CONSOLE
     private int isolatedCSharpRunning;
+#endif
     private Response RunCSharp(Request request, CancellationToken ct)
     {
+#if CORE_CONSOLE
+        throw new CadFault("GUI_REQUIRED", "Isolated scripts require interactive acad.exe");
+#else
         bool isLisp = request.Operation == "cad_lisp";
         var permission = CSharpExecutionPolicy.Read(); if (!isLisp) permission.RequireAllowed();
         var doc = documents.Active(request); var state = documents.Register(doc);
@@ -865,6 +870,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 requires_poll = "cad_operation_status", automatic_retry = false }, documents.SessionId, state.Id);
         }
         finally { if (!handedOff) Interlocked.Exchange(ref isolatedCSharpRunning, 0); }
+#endif
     }
     private CSharpApplication ApplyIsolatedCSharp(Request request, IsolatedCSharpJob job, IsolatedCSharpOutcome outcome,
         CSharpExecutionPolicy permission, long revision, string originalName, string? originalPath, string? originalDiskHash, string projectKey, string checkpoint)
@@ -1126,8 +1132,12 @@ internal static class LispCallbacks
 {
     public static string? Begin(Dispatcher? dispatcher, ResultBuffer? args)
     {
+#if CORE_CONSOLE
+        return null;
+#else
         try { return args?.AsArray() is [{ Value: string id }, ..] ? IsolatedLispWorker.Active ? IsolatedLispWorker.Begin(id) : null : null; }
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpbegin: " + error.Message); return null; }
+#endif
     }
     public static int Finish(Dispatcher? dispatcher, ResultBuffer? args)
     {
@@ -1135,8 +1145,11 @@ internal static class LispCallbacks
         {
             if (args?.AsArray() is [{ Value: string id }, { Value: var status }, { Value: var text }])
             {
+#if !CORE_CONSOLE
                 if (IsolatedLispWorker.Active) IsolatedLispWorker.Finish(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
-                else dispatcher?.FinishLisp(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
+                else
+#endif
+                    dispatcher?.FinishLisp(id, Convert.ToInt32(status) == 1, Convert.ToString(text) ?? "");
             }
         }
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpfinish: " + error.Message); }
