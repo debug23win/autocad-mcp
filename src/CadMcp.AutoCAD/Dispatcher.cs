@@ -138,7 +138,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (r.SessionId != documents.SessionId || r.DocumentId is null || !availability.ContainsKey(r.DocumentId)) throw new CadFault("DOCUMENT_CLOSED", "Pinned drawing is unavailable");
             var loaded = AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).Select(a => a.Location).Where(File.Exists);
             var references = csharpReferences.Concat(loaded).Concat(new[] { Path.Combine(Path.GetDirectoryName(typeof(Database).Assembly.Location)!, "AcDbMgdBrep.dll") }).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            return new(r.RequestId, "completed", new { references }, documents.SessionId, r.DocumentId);
+            return new(r.RequestId, "completed", new { references, csharp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, documents.SessionId, r.DocumentId);
         }
         if (r.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true && r.Operation is not ("benchmark_create" or "cad_documents"))
         {

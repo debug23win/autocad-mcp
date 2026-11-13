@@ -38,6 +38,8 @@ public sealed class CadTools
             var references = await ScopedResponse("csharp_references", session_id, document_id, new { }, null, ct);
             if (references.Error is not null) return Result(references);
             var data = Wire.Element(references.Data!);
+            if (data.Text("csharp_execution_mode") != "isolated_acad" || data.Text("csharp_policy") != "user_checkbox" || data.Text("dwg_replacement") != "guarded")
+                throw new CadFault("CSHARP_ISOLATION_UNAVAILABLE", "The connected native plugin does not confirm isolated execution and guarded replacement. Update/restart AutoCAD; no script was submitted.");
             byte[] assembly = CSharpReferenceCompiler.Compile(code, data.GetProperty("references").EnumerateArray().Select(p => p.GetString()!), verifyCad: true);
             submitted = true;
             return await Call("cad_csharp", session_id, document_id, new { operation_id, code, assembly_base64 = Convert.ToBase64String(assembly), source_sha256 = intent.Data.Text("source_sha256") }, expected_revision, ct);
