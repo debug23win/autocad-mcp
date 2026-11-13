@@ -281,22 +281,29 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         {
             RequireBenchmarkSession(job.Request);
             if (!BenchmarkTrace.Record(job.Request, "begin")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist the benchmark native-call trace; this CAD operation was not started");
-            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
+            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");if(!ReferenceEquals(target,originalDocument))App.DocumentManager.MdiActiveDocument=target;}
             response = Execute(job.Request, job.Token);
         }
         catch (CadFault error)
         {
             response = Response.Fail(job.Request, error.Code, error.Message);
+            if (error.Code is "CSHARP_DISABLED" or "ONEDRIVE_WORKSPACE_BLOCKED" or "WORKSPACE_PATH_UNVERIFIED" or "CSHARP_ISOLATION_BUSY")
+                response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false } };
             // Only this exact admission guard runs before the operation touches the database.
             if (error.Code == "REVISION_CONFLICT" && error.Message == "Refresh document context")
             {
-                var target = documents.Register(documents.Active(job.Request, checkRevision: false, allowInactive: true));
-                response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false, requires_context_refresh = true,
-                    expected_revision = job.Request.ExpectedRevision, current_revision = target.Revision, last_revision_event = target.LastRevisionEvent, change_log_failures = target.ChangeLogFailures } };
+                response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false, requires_context_refresh = true, expected_revision = job.Request.ExpectedRevision } };
+                try
+                {
+                    var target = documents.Register(documents.Active(job.Request, checkRevision: false, allowInactive: true));
+                    response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false, requires_context_refresh = true,
+                        expected_revision = job.Request.ExpectedRevision, current_revision = target.Revision, last_revision_event = target.LastRevisionEvent, change_log_failures = target.ChangeLogFailures } };
+                }
+                catch (System.Exception diagnosticError) { System.Diagnostics.Trace.WriteLine(diagnosticError); }
             }
         }
         catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
-        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
+        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed && !ReferenceEquals(App.DocumentManager.MdiActiveDocument,originalDocument))try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
         if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
         {
             string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
