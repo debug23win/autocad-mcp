@@ -14,7 +14,8 @@ internal sealed class DocumentState(Database database)
     public Database Database { get; } = database;
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string? ProjectKeyOverride { get; init; }
-    public void Replaced(long revision) { Revision = revision; DroppedThrough = revision; }
+    public long DatabaseEpochRevision { get; private set; }
+    public void Replaced(long revision) { Revision = revision; DroppedThrough = revision; DatabaseEpochRevision = revision; }
     public long Revision { get; set; }
     public int ReadDepth { get; set; }
     public bool TablesDirty { get; set; }

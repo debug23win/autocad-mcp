@@ -357,6 +357,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                             .Distinct().Take(50).ToArray(),
                         ucs_to_wcs = isActive?doc.Editor.CurrentUserCoordinateSystem.ToArray():null,
                         editor_context_available=isActive,
+                        database_epoch_revision = state.DatabaseEpochRevision,
                         view = view is null?(object)new{available=false,reason="inactive_document_editor"}:new {available=true,width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),
                         capabilities = CadOperations.WorkerOperations,
@@ -411,6 +412,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_verify":
                 var reviewOptions = r.Data.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
                 reviewOptions["verified_document_id"] = state.Id;
+                reviewOptions["database_epoch_revision"] = state.DatabaseEpochRevision;
                 data = DrawingReview.Verify(doc, tr, Wire.Element(reviewOptions), journal, ct); break;
             case "cad_vertical_capabilities":data=VerticalEditing.Capabilities(doc.Database);break;
             case "cad_vertical_catalog":

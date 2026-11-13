@@ -35,6 +35,9 @@ internal static class DrawingReview
             var entry = journal.Find(operation) ?? throw new CadFault("OPERATION_NOT_FOUND", "No receipt: provide explicit handles and reconcile the drawing");
             if (entry.DocumentId != options.Text("verified_document_id")) throw new CadFault("DOCUMENT_MISMATCH", "Operation belongs to another document");
             if (entry.Result is null) throw new CadFault("OPERATION_PENDING", "Wait for the operation receipt before verifying its entities");
+            if (options.TryGetProperty("database_epoch_revision", out var epoch) && epoch.GetInt64() > 0 &&
+                (entry.Result.Revision is not { } receiptRevision || receiptRevision < epoch.GetInt64()))
+                throw new CadFault("VERIFICATION_STALE_DATABASE", "The working DWG was replaced after this operation. Old handles cannot establish object identity; read fresh objects before verification.");
             var outer = Wire.Element(entry.Result.Data ?? new { });
             var result = outer.TryGetProperty("result", out var r) ? r : outer;
             // A large edit lists every changed handle separately from its shortened readback.
