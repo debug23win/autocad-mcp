@@ -150,7 +150,7 @@ internal sealed class ChatPanel : UserControl
         foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Официальный CLI (.exe)"), executable), ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
         { connection.Children.Add(new TextBlock { Text = pair.Label }); connection.Children.Add(pair.Control); }
         settings.Children.Add(new Expander { Header = UiText.T("Настройки подключения"), Content = connection, Margin = new Thickness(0, 4, 0, 4) });
-        var accountButtons = new StackPanel { Orientation = Orientation.Horizontal };
+        var accountButtons = new WrapPanel { Orientation = Orientation.Horizontal };
         computerUseAccess.Click += async (_, _) => await ConfigureComputerUse(); accountButtons.Children.Add(computerUseAccess);
         computerUseRevoke.Click += (_, _) => RevokeComputerUse(); accountButtons.Children.Add(computerUseRevoke);
         var login = new Button { Content = UiText.T("Войти") }; login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
