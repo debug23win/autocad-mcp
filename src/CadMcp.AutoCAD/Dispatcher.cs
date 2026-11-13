@@ -248,7 +248,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         // All database access occurs here, on the CAD application thread.
         CheckLisp();
         RefreshAvailability();
-        if (csharpApplications.TryPeek(out var application) && (application.Work.Task.IsCompleted || CanRun(application.Request)))
+        if (queue.IsEmpty && csharpApplications.TryPeek(out var application) && (application.Work.Task.IsCompleted || CanRun(application.Request)))
         {
             if (csharpApplications.TryDequeue(out application)) application.Work.Run();
             if (!csharpApplications.IsEmpty || !queue.IsEmpty) Wake();
@@ -764,7 +764,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return journal.Complete(id, response);
         }
     }
-    private sealed record CSharpApplication(bool Applied, long? Revision = null, object? DocumentState = null, string? Target = null, string? Backup = null, string? Recovery = null, Fault? Error = null);
+    private sealed record CSharpApplication(bool Applied, long? Revision = null, object? DocumentState = null, string? Target = null, string? Backup = null, string? Recovery = null, Fault? Error = null, bool ManualRecoveryRequired = false);
     private readonly ConcurrentQueue<(Request Request, DeferredCadAction<CSharpApplication> Work)> csharpApplications = new();
     private int isolatedCSharpRunning;
     private Response RunCSharp(Request request, CancellationToken ct)
@@ -881,7 +881,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         catch (System.Exception error)
         {
             string? recovery = null;
+            bool manualRecovery = false;
             string message = error.Message;
+            if (original?.IsDisposed == true) closed = true;
             if (closed)
             {
                 try
@@ -892,12 +894,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                     var restored = App.DocumentManager.Open(checkpoint, false); App.DocumentManager.MdiActiveDocument = restored;
                     documents.Register(restored, request.DocumentId, revision + 1, projectKey); recovery = checkpoint;
                 }
-                catch (System.Exception restoreError) { message += "; recovery requires opening checkpoint manually: " + restoreError.Message; }
+                catch (System.Exception restoreError) { manualRecovery = true; message += "; recovery requires opening checkpoint manually: " + restoreError.Message; }
             }
             try { job.Write("replacement.json", new { phase = "not_applied", error = message, checkpoint, recovery, backup = disk?.Backup }); }
             catch (System.Exception logError) { System.Diagnostics.Trace.WriteLine(logError); }
             return new(false, Recovery: recovery ?? checkpoint, Backup: disk is not null && File.Exists(disk.Backup) ? disk.Backup : null,
-                Error: new(error is CadFault fault ? fault.Code : "CSHARP_REPLACEMENT_FAILED", message));
+                Error: new(error is CadFault fault ? fault.Code : "CSHARP_REPLACEMENT_FAILED", message), ManualRecoveryRequired: manualRecovery);
         }
     }
     private void StartLisp(LispJob job)

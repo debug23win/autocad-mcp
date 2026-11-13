@@ -35,6 +35,7 @@ internal static class IsolatedCSharpWorker
             catch (IOException) when (File.Exists(job.FilePath("claimed"))) { duplicate = true; return; }
             using (var parent = System.Diagnostics.Process.GetProcessById(job.Request.ParentProcessId))
                 if (parent.HasExited) throw new InvalidOperationException("Parent AutoCAD is no longer running");
+            CSharpExecutionPolicy.Read().RequireAllowed();
             job.Phase("opening_copy");
             using var tracking = new Documents();
             document = App.DocumentManager.Open(job.FilePath("input.dwg"), false);

@@ -105,3 +105,27 @@ On Windows with installed AutoCAD, build `tests/CadMcp.CoreProbe` and run a sepa
 Run GUI Undo/Redo probes separately, including an open idle MCP chat; Core Console does not validate GUI command history. Test each supported installed product/runtime: AutoCAD 2025 .NET 8, updated 2025/2026 .NET 10, 2027, and available Civil/Map variants. Include a controlled post-commit disconnect and reopen checks. Record exact product/update and skipped prerequisites; a missing product is unperformed coverage.
 
 `ConservativeReviewFixTests` exercises actual stdio MCP Host diagnostics, compact archived C# status with persisted replay identity, untouched valid xref-stream PDFs, rejected invalid PDFs, and unchanged/repairable classic PDFs. PDF normalization is linked directly from its production source into the managed test project. Queue admission now uses the same gate for reads and writes, preserving durable journal acceptance before enqueue; installed-AutoCAD concurrency remains a native check. Added disposal of temporary native collections requires the existing geometry probes in installed products.
+
+## Isolated C# and guarded replacement
+
+With Allow C# off, cad_csharp must fail with CSHARP_DISABLED before reference
+loading/submission; historical receipts remain readable. With it on, verify a
+different acad.exe PID, one script invocation, clean child exit, saved output
+readback/hash and replacement of the same logical document/project. Verify both
+a saved DWG and an unsaved drawing, a retained pre-operation checkpoint and
+old disk backup. The reopened drawing has a new native database and Undo history.
+
+Force a crash, a startup dialog/timeout and cancellation in the child. The primary
+AutoCAD and a second unrelated AutoCAD must remain running, the original must
+not be replaced, the receipt must expose exit/PID/last phase, and no replay occurs.
+Modify the original, change its filename/disk file, revoke/re-enable permission
+or keep a CAD command active while the child runs: replacement must refuse and
+retain output. Force reopening/rollback errors and verify manual-recovery evidence.
+
+Use CADMCPFEATUREPROBE for attributed-block explode preview: attribute text must
+read back, the original reference must survive rollback and the tracked revision
+must remain stable under the read scope. DBMOD may still change and is disclosed.
+Verify OneDrive consumer/business/custom roots and junction aliases are refused
+for workspaces and mutable outputs while reference reads remain available.
+
+Managed CI does not establish that these live AutoCAD scenarios passed.

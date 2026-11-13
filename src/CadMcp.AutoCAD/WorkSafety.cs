@@ -16,6 +16,7 @@ internal static class WorkSafety
             or "text_replace" or "layer_merge" or "explode" or "trim" or "join" or "block_import" || p.Text("action") == "delete") == true;
     internal static object Checkpoint(Document doc, string session, string document, string operation, DocumentState? state = null)
     {
+        LocalWorkPolicy.RequireLocal(Root);
         string directory = Path.Combine(Root, session, Portable.Hash(System.Text.Encoding.UTF8.GetBytes(document)));
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff") + "-" + Guid.NewGuid().ToString("N") + ".dwg");

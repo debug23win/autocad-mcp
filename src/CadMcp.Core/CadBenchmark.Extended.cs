@@ -151,6 +151,9 @@ public static class CadMcpScript {
             {
                 case "cad_csharp":
                 {
+                    var context = await Tool("cad_context", new { }, ct);
+                    if (context.TryGetProperty("editing", out var editing) && editing.TryGetProperty("csharp_allowed", out var allowed) && allowed.ValueKind == JsonValueKind.False)
+                        throw new Fault("CSHARP_DISABLED", "The user has not enabled Allow C#; the benchmark must not enable it", skipped: true);
                     var made = await Mutate(tool, new { code = CSharpFixture }, ct);
                     Is("required checkpoint", made.TryGetProperty("checkpoint", out var cp) && cp.Text("path") is { Length: > 0 } path && File.Exists(path), made);
                     if (made.Text("execution_mode") == "isolated_acad")

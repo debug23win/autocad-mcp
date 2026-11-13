@@ -35,6 +35,7 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
     public static IsolatedCSharpJob Create(string root, string checkpoint, string checkpointHash, byte[] assembly,
         string sourceHash, string operationId, TimeSpan timeout)
     {
+        LocalWorkPolicy.RequireLocal(root);
         string run = Guid.NewGuid().ToString("N"), directory = Path.Combine(root, run);
         System.IO.Directory.CreateDirectory(directory);
         File.Copy(checkpoint, Path.Combine(directory, "input.dwg"), overwrite: false);
