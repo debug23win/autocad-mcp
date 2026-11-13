@@ -855,6 +855,9 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private CSharpApplication ApplyIsolatedCSharp(Request request, IsolatedCSharpJob job, IsolatedCSharpOutcome outcome,
         CSharpExecutionPolicy permission, long revision, string originalName, string? originalPath, string? originalDiskHash, string projectKey, string checkpoint)
     {
+#if CORE_CONSOLE
+        return new(false, Error: new("GUI_REQUIRED", "DWG replacement requires interactive acad.exe, not Core Console"));
+#else
         Document? original = null, replacement = null;
         DwgFileReplacement? disk = null;
         bool closed = false;
@@ -901,6 +904,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return new(false, Recovery: recovery ?? checkpoint, Backup: disk is not null && File.Exists(disk.Backup) ? disk.Backup : null,
                 Error: new(error is CadFault fault ? fault.Code : "CSHARP_REPLACEMENT_FAILED", message), ManualRecoveryRequired: manualRecovery);
         }
+#endif
     }
     private void StartLisp(LispJob job)
     {

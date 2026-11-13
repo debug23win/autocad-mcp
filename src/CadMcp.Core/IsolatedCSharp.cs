@@ -65,6 +65,8 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
         if (plugin.IndexOfAny(['\r', '\n', '"']) >= 0) throw new InvalidDataException("Invalid plugin path");
         File.WriteAllText(FilePath("startup.scr"), "_NETLOAD\n\"" + plugin.Replace('\\', '/') + "\"\n", new UTF8Encoding(false));
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)!, WindowStyle = ProcessWindowStyle.Minimized };
+        string cache = Path.Combine(start.WorkingDirectory, "UserDataCache");
+        if (System.IO.Directory.Exists(cache)) start.WorkingDirectory = cache;
         string[] args = parentArguments.ToArray();
         for (int i = 0; i + 1 < args.Length; i++)
             if (args[i].Equals("/product", StringComparison.OrdinalIgnoreCase) || args[i].Equals("/language", StringComparison.OrdinalIgnoreCase))

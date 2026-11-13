@@ -2,6 +2,7 @@
 // Copyright (c) 2024 AutoCAD MCP Server Contributors. See licenses/beiming-MIT.txt.
 // Changes: read-only contract, explicit event disposal, no mutation event suppression.
 using Autodesk.AutoCAD.ApplicationServices;
+using System.IO;
 using Autodesk.AutoCAD.DatabaseServices;
 using CadMcp.Core;
 using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;

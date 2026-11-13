@@ -226,7 +226,7 @@ internal sealed class ChatPanel : UserControl
         Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; await RefreshModels(); } };
         Loaded += async (_, _) => { ApplyTheme(); if (!documentClosed) { contextTimer.Start(); await RefreshCad(); } };
         Unloaded += (_, _) => contextTimer.Stop();
-        contextTimer.Tick += async (_, _) => { ApplyTheme(); if (running is null) await RefreshCad(); };
+        contextTimer.Tick += async (_, _) => { ApplyTheme(); LoadCSharpPolicy(); if (running is null) await RefreshCad(); };
         ApplyProviderChoices();
         SetBusy(false);
         settings.Children.Add(activity);
