@@ -71,4 +71,35 @@ public sealed class IsolatedCSharpTests
         Assert.False(start.UseShellExecute); Assert.DoesNotContain("SECURELOAD", File.ReadAllText(job.FilePath("startup.scr")));
         Assert.DoesNotContain("user.dwg", string.Join(' ', start.ArgumentList));
     }
+    [Theory]
+    [InlineData("success", null)]
+    [InlineData("crash", "LISP_ISOLATED_PROCESS_EXITED")]
+    [InlineData("receipt_then_crash", "LISP_ISOLATED_PROCESS_EXITED")]
+    [InlineData("wrong_hash", "LISP_ISOLATION_FAILED")]
+    public async Task Lisp_uses_the_same_single_execution_and_verified_output_gate(string mode, string? error)
+    {
+        using var folder = new TempFolder();
+        string input = folder.File("before.dwg"); File.WriteAllText(input, "original");
+        var script = System.Text.Encoding.UTF8.GetBytes("(princ)");
+        var job = IsolatedCSharpJob.Create(folder.Path, input, IsolatedCSharpJob.HashFile(input), script,
+            "LISP-SOURCE", "lisp-test", TimeSpan.FromSeconds(20), "lisp");
+        Assert.Equal(script, File.ReadAllBytes(job.FilePath("script.lsp")));
+        Assert.False(File.Exists(job.FilePath("script.dll")));
+        var outcome = await job.RunAsync(Start(mode), default);
+        Assert.Equal(error is null, outcome.Success); Assert.Equal(error, outcome.Error?.Code);
+        Assert.Equal("original", File.ReadAllText(input));
+        Assert.NotEqual(Environment.ProcessId, outcome.ProcessId);
+        Assert.False((await job.RunAsync(Start("success"), default)).Success);
+    }
+    [Fact]
+    public async Task Lisp_tampering_is_rejected_in_the_child_before_execution()
+    {
+        using var folder = new TempFolder(); string input = folder.File("before.dwg"); File.WriteAllText(input, "original");
+        var job = IsolatedCSharpJob.Create(folder.Path, input, IsolatedCSharpJob.HashFile(input), [1], "s", "lisp-test", TimeSpan.FromSeconds(20), "lisp");
+        File.WriteAllText(job.FilePath("script.lsp"), "changed");
+        var outcome = await job.RunAsync(Start("success"), default);
+        Assert.False(outcome.Success); Assert.Null(outcome.Receipt);
+        Assert.False(File.Exists(job.FilePath("result.dwg")));
+        Assert.Equal("prepared", outcome.LastPhase);
+    }
 }
