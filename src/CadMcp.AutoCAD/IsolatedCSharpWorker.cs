@@ -126,7 +126,8 @@ internal static class IsolatedLispWorker
     private static Document? document;
     private static Documents? tracking;
     private static long revision;
-    private static bool began, finished, success;
+    private static bool began, finished, success, evaluationEnded;
+    private static int evaluationDepth;
     private static string text = "";
     internal static bool Active => job is not null;
     internal static void Start(IsolatedCSharpJob request)
@@ -145,6 +146,9 @@ internal static class IsolatedLispWorker
             App.DocumentManager.MdiActiveDocument = document;
             revision = tracking.Register(document).Revision;
             job.Phase("lisp_queued_in_child");
+            document.LispWillStart += EvaluationStarting;
+            document.LispEnded += EvaluationEnded;
+            document.LispCancelled += EvaluationEnded;
             App.Idle += Save;
             document.SendStringToExecute(LispScript.Wrap(job.Request.OperationId), false, false, false);
         }
@@ -168,9 +172,18 @@ internal static class IsolatedLispWorker
         success = ok; text = value.Length > 16384 ? value.Substring(0, 16384) : value;
         job.Phase(ok ? "lisp_reported_success" : "lisp_reported_failure"); finished = true;
     }
+    private static void EvaluationStarting(object? sender, LispWillStartEventArgs args) => evaluationDepth++;
+    private static void EvaluationEnded(object? sender, EventArgs args)
+    { if (--evaluationDepth <= 0) evaluationEnded = true; }
     private static void Save(object? sender, EventArgs args)
     {
-        if (!finished || !App.DocumentManager.IsApplicationContext || document?.Editor.IsQuiescent == false) return;
+        if (!evaluationEnded || evaluationDepth > 0 || !App.DocumentManager.IsApplicationContext || document?.Editor.IsQuiescent == false) return;
+        if (!finished)
+        {
+            if (!began) return;
+            Fail(new CadFault("LISP_RESULT_MISSING", "AutoLISP evaluation ended without its final callback"));
+            finished = true;
+        }
         App.Idle -= Save;
         try
         {
@@ -183,6 +196,9 @@ internal static class IsolatedLispWorker
             bool complete = state.DroppedThrough <= revision, bounded = changes.Sum(h => h.Length + 3) <= 192 * 1024;
             job.Phase("saving_output");
             using (document.LockDocument()) document.Database.SaveAs(job.FilePath("result.dwg"), DwgVersion.Current);
+            document.LispWillStart -= EvaluationStarting;
+            document.LispEnded -= EvaluationEnded;
+            document.LispCancelled -= EvaluationEnded;
             document.CloseAndDiscard(); document = null;
             job.Phase("verifying_saved_output");
             using (var saved = new Database(false, true))
@@ -213,6 +229,12 @@ internal static class IsolatedLispWorker
     private static void Quit()
     {
         App.Idle -= Save;
+        if (document is { IsDisposed: false })
+        {
+            document.LispWillStart -= EvaluationStarting;
+            document.LispEnded -= EvaluationEnded;
+            document.LispCancelled -= EvaluationEnded;
+        }
         try { document?.CloseAndDiscard(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine(error); }
         tracking?.Dispose();
         try { App.Quit(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine(error); }

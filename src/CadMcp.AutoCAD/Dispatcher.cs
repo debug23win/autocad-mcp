@@ -1126,7 +1126,7 @@ internal static class LispCallbacks
 {
     public static string? Begin(Dispatcher? dispatcher, ResultBuffer? args)
     {
-        try { return args?.AsArray() is [{ Value: string id }, ..] ? IsolatedLispWorker.Active ? IsolatedLispWorker.Begin(id) : dispatcher?.BeginLisp(id) : null; }
+        try { return args?.AsArray() is [{ Value: string id }, ..] ? IsolatedLispWorker.Active ? IsolatedLispWorker.Begin(id) : null : null; }
         catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP: cadmcpbegin: " + error.Message); return null; }
     }
     public static int Finish(Dispatcher? dispatcher, ResultBuffer? args)
