@@ -2,11 +2,11 @@
 
 **English** | [Русский](README.ru.md)
 
-Version 0.11.8-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
+Version 0.11.13-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is in English.
 
-Version 0.11.12 adds mandatory semantic C# preflight before CAD execution, rejecting selected dangerous APIs including direct cloning. It is not a sandbox or proof against native crashes. The internal COM Properties palette is temporarily disabled in the AutoCAD 2027 adapter as a crash workaround; `cad_properties` reports it as unavailable. [Changes and validation](CHANGELOG.md#01112-preview).
+Version 0.11.13 adds the **Allow C#** checkbox (off by default), execution on a DWG copy in a separate acad.exe and guarded replacement of the unchanged working drawing without replay. OneDrive workspaces are blocked, progress precedes the answer, and revision/explode diagnostics are improved. Live AutoCAD validation remains pending. [Changes and validation](CHANGELOG.md#01113-preview).
 
 Version 0.11.7 restricts the native benchmark to an AutoCAD process with no open DWGs, stops after the first unexpected failure and records durable native-call traces. The reported native crash is not yet proven resolved. [Safety and limits](docs/in-app-benchmark.md).
 
