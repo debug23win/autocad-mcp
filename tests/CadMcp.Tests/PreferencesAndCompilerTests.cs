@@ -46,5 +46,6 @@ public sealed class PreferencesAndCompilerTests
         string html = ChatMarkup.ConversationHtml(lines, folder.Path);
         Assert.Contains("Ход работы", html); Assert.Contains("Читаю страницы PDF", html); Assert.DoesNotContain("cad_search", html);
         Assert.Equal("Готово", ChatMarkup.AnswerText(lines, 0));
+        Assert.True(html.IndexOf("progress-notes", StringComparison.Ordinal) < html.IndexOf("class='content'", StringComparison.Ordinal));
     }
 }

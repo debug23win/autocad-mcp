@@ -3,6 +3,23 @@ using CadMcp.Providers;
 namespace CadMcp.Tests;
 public sealed class ToolDiagnosticsTests
 {
+    [Fact]
+    public void Conflict_preserves_nested_code_and_only_explicit_no_write_evidence()
+    {
+        var result = Result(new { request_id = "conflict-req", status = "conflict", data = new { changes_started = false }, error = new { code = "REVISION_CONFLICT", message = "Refresh document context" } });
+        string text = ToolDiagnostics.Describe("cad_edit", result, false)!;
+        Assert.Contains("REVISION_CONFLICT", text); Assert.DoesNotContain("TOOL_ERROR", text);
+        Assert.Contains("Этот вызов не начал запись", text); Assert.Contains("cad_context", text);
+        var uncertain = Result(new { status = "conflict", error = new { code = "REVISION_CONFLICT", message = "Refresh document context" } });
+        Assert.Contains("Исход записи не подтверждён", ToolDiagnostics.Describe("cad_edit", uncertain, false));
+    }
+    [Fact]
+    public void Computer_use_denial_has_a_distinct_code_and_is_not_a_CAD_receipt()
+    {
+        string text = ToolDiagnostics.Describe("js", Wire.Element(new { content = "Computer Use was not approved to use AutoCAD 2027 — Русский (Russian)" }), true)!;
+        Assert.Contains("COMPUTER_USE_NOT_APPROVED", text); Assert.Contains("не является квитанцией CAD", text);
+        Assert.DoesNotContain("Исход записи не подтверждён", text);
+    }
     private static System.Text.Json.JsonElement Result(object data, bool isError = false) => Wire.Element(new { isError, content = new[] { new { type = "text", text = System.Text.Json.JsonSerializer.Serialize(data) } } });
     [Fact]
     public void Pre_execution_error_explains_stage_code_operation_and_narrow_write_guarantee()

@@ -2,6 +2,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.Runtime;
 using CadMcp.AutoCAD;
 using CadMcp.Core;
@@ -24,6 +25,31 @@ public static class FeatureProbe
             JsonElement Edit(string json)=>Wire.Element(Edits.Execute(doc,EditPlan.Parse(json),CancellationToken.None));
             string Handle(JsonElement r,string alias)=>r.GetProperty("results").EnumerateArray().First(x=>x.Text("id")==alias).Text("handle")!;
             double Value(string h,string cell){using var tr=doc.Database.TransactionManager.StartOpenCloseTransaction();var table=(Table)tr.GetObject(NativeTables.Resolve(doc.Database,h),OpenMode.ForRead);var(r,c)=DraftingPlan.Address(cell);return Convert.ToDouble(table.Cells[r,c].Value);}
+            ObjectId attributed;
+            using (var tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                var blocks = (BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForWrite);
+                using var definition = new BlockTableRecord { Name = "PREVIEW_ATTRIBUTE_" + Guid.NewGuid().ToString("N") };
+                blocks.Add(definition); tr.AddNewlyCreatedDBObject(definition, true);
+                using var attribute = new AttributeDefinition { Tag = "VALUE", Prompt = "Value", TextString = "default", Height = 2, Position = Point3d.Origin };
+                attribute.SetDatabaseDefaults(doc.Database); definition.AppendEntity(attribute); tr.AddNewlyCreatedDBObject(attribute, true);
+                var space = (BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForWrite);
+                using var block = new BlockReference(new Point3d(500, 500, 0), definition.ObjectId);
+                block.SetDatabaseDefaults(doc.Database); attributed = space.AppendEntity(block); tr.AddNewlyCreatedDBObject(block, true);
+                using var value = new AttributeReference(); value.SetAttributeFromBlock(attribute, block.BlockTransform); value.TextString = "preserved value";
+                block.AttributeCollection.AppendAttribute(value); tr.AddNewlyCreatedDBObject(value, true); tr.Commit();
+            }
+            using (var registry = new Documents())
+            {
+                var tracked = registry.Register(doc); long before = tracked.Revision;
+                var plan = EditPlan.Parse(JsonSerializer.Serialize(new[] { new { op = "explode", handle = attributed.Handle.ToString(), attributes_as_text = true } }));
+                JsonElement preview;
+                using (registry.ReadScope(doc)) preview = Wire.Element(Edits.Execute(doc, plan, CancellationToken.None, preview: true));
+                Check(preview.GetProperty("entities").EnumerateArray().Any(e => e.Text("text") == "preserved value"), "Explode preview preserves attribute text without null layer ids");
+                using var verify = doc.Database.TransactionManager.StartOpenCloseTransaction();
+                Check(!((BlockReference)verify.GetObject(attributed, OpenMode.ForRead)).IsErased && tracked.Revision == before,
+                    "Rolled-back explode preview preserves the block and working revision even if DBMOD changes");
+            }
             File.WriteAllText(output+".phase","creating tables");
             var tables=Edit("""[{"op":"table_create","id":"s","position":[0,0,0],"rows":3,"columns":3,"cells":[{"cell":"A1","value":4},{"cell":"B1","value":5},{"cell":"C1","formula":"=A1*B1"}]},{"op":"table_create","id":"d","position":[120,0,0],"rows":2,"columns":2,"cells":[{"cell":"A1","formula":"={{v}}*2","references":[{"name":"v","table_target":"s","cell":"C1"}]}]}]""");
             string source=Handle(tables,"s"),dependent=Handle(tables,"d");Check(Value(dependent,"A1")==40,"Linked native formula initially evaluates to 40");

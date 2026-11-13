@@ -138,7 +138,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (r.SessionId != documents.SessionId || r.DocumentId is null || !availability.ContainsKey(r.DocumentId)) throw new CadFault("DOCUMENT_CLOSED", "Pinned drawing is unavailable");
             var loaded = AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).Select(a => a.Location).Where(File.Exists);
             var references = csharpReferences.Concat(loaded).Concat(new[] { Path.Combine(Path.GetDirectoryName(typeof(Database).Assembly.Location)!, "AcDbMgdBrep.dll") }).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            return new(r.RequestId, "completed", new { references }, documents.SessionId, r.DocumentId);
+            return new(r.RequestId, "completed", new { references, csharp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, documents.SessionId, r.DocumentId);
         }
         if (r.OwnerId?.StartsWith("benchmark-", StringComparison.Ordinal) == true && r.Operation is not ("benchmark_create" or "cad_documents"))
         {
@@ -248,6 +248,12 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         // All database access occurs here, on the CAD application thread.
         CheckLisp();
         RefreshAvailability();
+        if (queue.IsEmpty && csharpApplications.TryPeek(out var application) && (application.Work.Task.IsCompleted || App.DocumentManager.IsApplicationContext && CanRun(application.Request)))
+        {
+            if (csharpApplications.TryDequeue(out application)) application.Work.Run();
+            if (!csharpApplications.IsEmpty || !queue.IsEmpty) Wake();
+            return;
+        }
         if (!queue.TryTake(p => p.Request.DocumentId ?? "", p => CanRun(p.Request), p => p.Token.IsCancellationRequested || p.Request.Deadline <= DateTimeOffset.UtcNow, out var pending))
         {
             var doc=App.DocumentManager.MdiActiveDocument;
@@ -275,12 +281,29 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
         {
             RequireBenchmarkSession(job.Request);
             if (!BenchmarkTrace.Record(job.Request, "begin")) throw new CadFault("BENCHMARK_TRACE_UNAVAILABLE", "Could not persist the benchmark native-call trace; this CAD operation was not started");
-            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");App.DocumentManager.MdiActiveDocument=target;}
+            if(activate){var target=documents.Active(job.Request,checkRevision:false,allowInactive:true);if(!string.IsNullOrWhiteSpace(target.CommandInProgress)||ReferenceEquals(target,originalDocument)&&!target.Editor.IsQuiescent)throw new CadFault("DOCUMENT_BUSY","Target drawing has an active command");if(!ReferenceEquals(target,originalDocument))App.DocumentManager.MdiActiveDocument=target;}
             response = Execute(job.Request, job.Token);
         }
-        catch (CadFault error) { response = Response.Fail(job.Request, error.Code, error.Message); }
+        catch (CadFault error)
+        {
+            response = Response.Fail(job.Request, error.Code, error.Message);
+            if (error.Code is "CSHARP_DISABLED" or "ONEDRIVE_WORKSPACE_BLOCKED" or "WORKSPACE_PATH_UNVERIFIED" or "CSHARP_ISOLATION_BUSY")
+                response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false } };
+            // Only this exact admission guard runs before the operation touches the database.
+            if (error.Code == "REVISION_CONFLICT" && error.Message == "Refresh document context")
+            {
+                response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false, requires_context_refresh = true, expected_revision = job.Request.ExpectedRevision } };
+                try
+                {
+                    var target = documents.Register(documents.Active(job.Request, checkRevision: false, allowInactive: true));
+                    response = response with { Data = new { operation_id = job.Request.Data.Text("operation_id"), changes_started = false, requires_context_refresh = true,
+                        expected_revision = job.Request.ExpectedRevision, current_revision = target.Revision, last_revision_event = target.LastRevisionEvent, change_log_failures = target.ChangeLogFailures } };
+                }
+                catch (System.Exception diagnosticError) { System.Diagnostics.Trace.WriteLine(diagnosticError); }
+            }
+        }
         catch (System.Exception error) { response = Response.Fail(job.Request, "CAD_ERROR", error.Message); }
-        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed)try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
+        finally { if(activate && (lisp is null || ReferenceEquals(lisp,lispBefore)) && originalDocument is not null && !originalDocument.IsDisposed && !ReferenceEquals(App.DocumentManager.MdiActiveDocument,originalDocument))try{App.DocumentManager.MdiActiveDocument=originalDocument;}catch(System.Exception restoreError){System.Diagnostics.Trace.WriteLine("Restore document: "+restoreError.Message);} }
         if (MutationRecovery.IsMutation(job.Request.Operation) && response.Status != "queued")
         {
             string id = EditPlan.RequiredText(job.Request.Data, "operation_id");
@@ -295,6 +318,13 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
     private Response Execute(Request r, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (CadOperations.IsMutation(r.Operation) || r.Operation == "cad_edit_preview")
+        {
+            var target = documents.Active(r, checkRevision: false, allowInactive: true);
+            LocalWorkPolicy.RequireLocal(target.Name);
+            if (r.Operation == "cad_export" && r.Data.Text("path") is { } outputPath) LocalWorkPolicy.RequireLocal(outputPath);
+            if (r.Operation == "cad_publish" && r.Data.Text("output_folder") is { } folder) LocalWorkPolicy.RequireLocal(folder);
+        }
         if (r.Operation == "benchmark_create") return CreateBenchmark(r);
         if (r.Operation == "benchmark_activate" || r.Operation == "benchmark_gate" || r.Operation == "benchmark_settle_gate") return BenchmarkControl(r);
         if (r.Operation == "cad_documents") return new(r.RequestId,"completed",documents.Catalog(),documents.SessionId,r.DocumentId);
@@ -327,13 +357,16 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                             .Distinct().Take(50).ToArray(),
                         ucs_to_wcs = isActive?doc.Editor.CurrentUserCoordinateSystem.ToArray():null,
                         editor_context_available=isActive,
+                        database_epoch_revision = state.DatabaseEpochRevision,
                         view = view is null?(object)new{available=false,reason="inactive_document_editor"}:new {available=true,width = view.Width, height = view.Height, perspective = view.PerspectiveEnabled },
                         document_state = DrawingReview.DocumentState(doc),
                         capabilities = CadOperations.WorkerOperations,
                         editing = new { coordinates = "WCS", units = "drawing_units", angles = "degrees", native_transaction = true, lisp_atomic = false, operation_records = journal.Count, journal = journal.Persistence, pending_lisp = lisp?.Id,
-                            lisp_policy = LispPolicy.Name(CadSettings.EffectiveLispPolicy()), lisp_policy_owner = "user (AutoCAD command CADMCPLISP)" },
+                            lisp_policy = LispPolicy.Name(CadSettings.EffectiveLispPolicy()), lisp_policy_owner = "user (AutoCAD command CADMCPLISP)",
+                            csharp_allowed = CSharpExecutionPolicy.Read().Allowed, csharp_execution = "separate_acad_process_with_guarded_DWG_replacement" },
                         cache = new { catalog_hits = catalogCache.Hits, catalog_misses = catalogCache.Misses, search_hits = searchCache.Hits, search_misses = searchCache.Misses, invalidation = "document_revision_and_space", render_cached = false,
-                            table_dependency_error = state.TableError, ignored_read_side_effect_events = state.ReadSideEffectEvents },
+                            table_dependency_error = state.TableError, ignored_read_side_effect_events = state.ReadSideEffectEvents,
+                            last_revision_event = state.LastRevisionEvent, change_log_failures = state.ChangeLogFailures, last_change_log_error = state.LastChangeLogError },
                         limitations = new[] { "preview_render_unverified", "Civil3D_Map3D_SPDS_special_geometry_partial", "native_edits_current_space_only" } };
                 break;
             case "cad_review":
@@ -379,6 +412,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_verify":
                 var reviewOptions = r.Data.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
                 reviewOptions["verified_document_id"] = state.Id;
+                reviewOptions["database_epoch_revision"] = state.DatabaseEpochRevision;
                 data = DrawingReview.Verify(doc, tr, Wire.Element(reviewOptions), journal, ct); break;
             case "cad_vertical_capabilities":data=VerticalEditing.Capabilities(doc.Database);break;
             case "cad_vertical_catalog":
@@ -692,7 +726,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             using var locked = doc.LockDocument();
             ct.ThrowIfCancellationRequested();
             control.Phase(id, "checkpoint");
-            if(WorkSafety.Required(r,operations)){using var reading=documents.ReadScope(doc);checkpoint=WorkSafety.Checkpoint(doc,documents.SessionId,state.Id,id);}
+            if(WorkSafety.Required(r,operations)){using var reading=documents.ReadScope(doc);checkpoint=WorkSafety.Checkpoint(doc,documents.SessionId,state.Id,id,state);}
             WorkSafety.Start(documents.SessionId, r, checkpoint);
             if (code is not null)
             {
@@ -739,13 +773,17 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             return journal.Complete(id, response);
         }
     }
+    private sealed record CSharpApplication(bool Applied, long? Revision = null, object? DocumentState = null, string? Target = null, string? Backup = null, string? Recovery = null, Fault? Error = null, bool ManualRecoveryRequired = false);
+    private readonly ConcurrentQueue<(Request Request, DeferredCadAction<CSharpApplication> Work)> csharpApplications = new();
+    private int isolatedCSharpRunning;
     private Response RunCSharp(Request request, CancellationToken ct)
     {
+        var permission = CSharpExecutionPolicy.Read(); permission.RequireAllowed();
         var doc = documents.Active(request); var state = documents.Register(doc);
         string id = EditPlan.RequiredText(request.Data, "operation_id");
-        long beforeRevision = state.Revision;
-        object? checkpoint = null; bool started = false, committed = false;
-        System.Runtime.Loader.AssemblyLoadContext? load = null;
+        if (Interlocked.CompareExchange(ref isolatedCSharpRunning, 1, 0) != 0)
+            throw new CadFault("CSHARP_ISOLATION_BUSY", "An isolated AutoCAD is already running; poll its receipt instead of starting another");
+        bool handedOff = false;
         try
         {
             string code = EditPlan.RequiredText(request.Data, "code");
@@ -754,48 +792,130 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             if (request.Data.Text("source_sha256") != hash) throw new CadFault("CSHARP_SOURCE_MISMATCH", "Source hash changed");
             byte[] bytes = Convert.FromBase64String(EditPlan.RequiredText(request.Data, "assembly_base64"));
             if (bytes.Length > 4 * 1024 * 1024) throw new CadFault("CSHARP_TOO_LARGE", "Assembly exceeds 4 MiB");
-            using var locked = doc.LockDocument(); ct.ThrowIfCancellationRequested();
-            control.Phase(id, "checkpoint");
-            using (documents.ReadScope(doc)) checkpoint = WorkSafety.Checkpoint(doc, documents.SessionId, state.Id, id);
-            WorkSafety.Start(documents.SessionId, request, checkpoint);
-            journal.Running(id); control.Phase(id, "running"); state.Author = id;
-            using var undo = new UndoGroup(doc);
-            using var transaction = doc.Database.TransactionManager.StartTransaction();
-            started = true;
-            load = new System.Runtime.Loader.AssemblyLoadContext("cadmcp-script-" + Guid.NewGuid().ToString("N"), isCollectible: true);
-            using var stream = new MemoryStream(bytes);
-            var assembly = load.LoadFromStream(stream);
-            var method = assembly.GetType("CadMcpScript")?.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
-                null, [typeof(Database), typeof(Transaction), typeof(CancellationToken)], null)
-                ?? throw new CadFault("CSHARP_ENTRYPOINT", "Expected public static object CadMcpScript.Run(Database, Transaction, CancellationToken)");
-            if (method.ReturnType != typeof(object))
-                throw new CadFault("CSHARP_ENTRYPOINT", "Run must return object synchronously, not Task or ValueTask; return a completed serializable DTO");
-            object? result;
-            try { result = method.Invoke(null, [doc.Database, transaction, ct]); }
-            catch (System.Reflection.TargetInvocationException error) { throw error.InnerException ?? error; }
             ct.ThrowIfCancellationRequested();
-            if (result is Task or ValueTask || result is not null && result.GetType().IsGenericType && result.GetType().GetGenericTypeDefinition() == typeof(ValueTask<>))
-                throw new CadFault("CSHARP_ASYNC_RESULT", "Run returned an asynchronous operation. Return a completed DTO; do not schedule CAD work outside the supplied transaction");
-            var detached = Wire.Element(result ?? new { });
-            if (ReadPayloadBudget.Bytes(detached) > ReadPayloadBudget.EntityBytes) throw new CadFault("CSHARP_RESULT_TOO_LARGE", "Return a bounded DTO/handles, not full drawing geometry. The supplied transaction was not committed.");
-            transaction.Commit(); committed = true;
-            journal.Phase(id, "committed");
-            WorkSafety.Phase(documents.SessionId, id, "committed", final: true);
-            var changes = state.ChangesSince(beforeRevision).Where(c => c.Entity).Select(c => c.Handle.ToString("X")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            var response = new Response(request.RequestId, "completed", new { operation_id = id, checkpoint, source_sha256 = hash, result = new { value = detached,
-                    changed_handles = state.DroppedThrough <= beforeRevision && changes.Sum(h => h.Length + 3) <= 192 * 1024 ? changes : null,
-                    changed_entity_count = state.DroppedThrough <= beforeRevision ? (int?)changes.Length : null,
-                    changed_handles_omitted = state.DroppedThrough > beforeRevision || changes.Sum(h => h.Length + 3) > 192 * 1024 },
-                transaction = "committed", rollback = "full_trust_code_external_effects_not_atomic", document_state = DrawingReview.DocumentState(doc) }, documents.SessionId, state.Id, state.Revision);
-            return journal.Complete(id, response);
+            // No script assembly is loaded or invoked in this process. Only the native snapshot runs here.
+            object checkpoint;
+            control.Phase(id, "checkpoint");
+            using (documents.ReadScope(doc))
+            using (doc.LockDocument())
+                checkpoint = WorkSafety.Checkpoint(doc, documents.SessionId, state.Id, id, state);
+            WorkSafety.Start(documents.SessionId, request, checkpoint);
+            var cp = Wire.Element(checkpoint);
+            long revision = state.Revision;
+            string originalName = doc.Name, projectKey = documents.ProjectKey(doc);
+            string? originalPath = Path.IsPathFullyQualified(originalName) ? Path.GetFullPath(originalName) : null;
+            string? originalDiskHash = originalPath is not null && File.Exists(originalPath) ? IsolatedCSharpJob.HashFile(originalPath) : null;
+            var job = IsolatedCSharpJob.Create(Wire.DataDirectory("isolated-csharp"), cp.Text("path")!, cp.Text("sha256")!, bytes, hash, id, TimeSpan.FromMinutes(5));
+            using var parent = System.Diagnostics.Process.GetCurrentProcess();
+            string executable = parent.MainModule?.FileName ?? throw new CadFault("CSHARP_ISOLATION_UNAVAILABLE", "Cannot locate this AutoCAD executable");
+            var start = job.AutoCADStart(executable, typeof(Dispatcher).Assembly.Location, Environment.GetCommandLineArgs());
+            journal.Running(id); journal.Phase(id, "isolated_running"); control.Phase(id, "isolated_running");
+            string session = documents.SessionId, document = state.Id;
+            // Process startup/waiting and file verification never block the CAD UI thread.
+            var task = Task.Run(async () =>
+            {
+                bool releaseIsolationSlot = true;
+                try
+                {
+                    var outcome = await job.RunAsync(start, ct).ConfigureAwait(false);
+                    releaseIsolationSlot = !outcome.ProcessStillRunning;
+                    CSharpApplication applied = new(false);
+                    if (outcome.Success)
+                    {
+                        control.Phase(id, "waiting_to_replace_drawing"); journal.Phase(id, "isolated_waiting_to_replace");
+                        var work = new DeferredCadAction<CSharpApplication>(() => ApplyIsolatedCSharp(request, job, outcome, permission, revision, originalName, originalPath, originalDiskHash, projectKey, cp.Text("path")!));
+                        using var applyTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct); applyTimeout.CancelAfter(TimeSpan.FromSeconds(45));
+                        using var cancelPending = applyTimeout.Token.Register(work.CancelPending);
+                        csharpApplications.Enqueue((request with { Deadline = null }, work)); Wake();
+                        try { applied = await work.Task.ConfigureAwait(false); }
+                        catch (OperationCanceledException) { applied = new(false, Error: new("CSHARP_RESULT_NOT_APPLIED", "Replacement was cancelled or the drawing stayed busy. Verified output is retained; do not rerun the script.")); }
+                    }
+                    bool succeeded = outcome.Success && applied.Applied;
+                    var response = new Response(request.RequestId, succeeded ? "completed" : "failed", new
+                    {
+                        operation_id = id, execution_mode = "isolated_acad", checkpoint, source_sha256 = hash,
+                        snapshot_revision = revision, script_executed_in_original = false,
+                        output_file = outcome.Success ? new { path = job.FilePath("result.dwg"), sha256 = outcome.Receipt!.OutputSha256, bytes = outcome.Receipt.OutputBytes, reopened_in_child = true } : null,
+                        result = new { value = outcome.Receipt?.Value, transaction = applied.Applied ? "saved_DWG_replaced_original_without_replay" : outcome.Success ? "committed_in_child_only" : "child_outcome_unconfirmed",
+                            changed_handles = applied.Applied ? outcome.Receipt?.ChangedHandles : null, changed_entity_count = applied.Applied ? outcome.Receipt?.ChangedEntityCount : null,
+                            changed_handles_omitted = outcome.Receipt?.ChangedHandlesOmitted ?? false },
+                        process_id = outcome.ProcessId, parent_process_id = Environment.ProcessId, exit_code = outcome.ExitCode, exit_code_hex = outcome.ExitCodeHex,
+                        last_phase = outcome.LastPhase, artifacts_directory = outcome.Directory, child_outcome_unknown = outcome.ChildOutcomeUnknown,
+                        process_still_running = outcome.ProcessStillRunning, automatic_retry = false, applied_to_original = applied.Applied,
+                        replacement = applied, document_state = applied.DocumentState,
+                        note = "The script ran once in the child. On success the saved DWG replaced the original without replay. On replacement refusal output remains separate; do not rerun. External effects are not sandboxed."
+                    }, session, document, applied.Revision, Error: outcome.Error ?? applied.Error);
+                    journal.Complete(id, response);
+                    WorkSafety.Phase(session, id, succeeded ? "isolated_applied" : "isolated_failed", final: true);
+                }
+                catch (System.Exception error)
+                {
+                    journal.Complete(id, new Response(request.RequestId, "failed", new { operation_id = id, execution_mode = "isolated_acad", script_executed_in_original = false,
+                        artifacts_directory = job.Directory, child_outcome_unknown = true, automatic_retry = false }, session, document, Error: new("CSHARP_ISOLATION_FAILED", error.Message)));
+                }
+                finally { mutationOwners.TryRemove(id, out _); control.Complete(id); if (releaseIsolationSlot) Interlocked.Exchange(ref isolatedCSharpRunning, 0); }
+            });
+            _ = task.ContinueWith(t => System.Diagnostics.Trace.WriteLine(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
+            handedOff = true;
+            return new(request.RequestId, "queued", new { operation_id = id, state = "running", execution_mode = "isolated_acad", checkpoint,
+                snapshot_revision = revision, artifacts_directory = job.Directory, script_executed_in_original = false,
+                requires_poll = "cad_operation_status", automatic_retry = false }, documents.SessionId, state.Id);
+        }
+        finally { if (!handedOff) Interlocked.Exchange(ref isolatedCSharpRunning, 0); }
+    }
+    private CSharpApplication ApplyIsolatedCSharp(Request request, IsolatedCSharpJob job, IsolatedCSharpOutcome outcome,
+        CSharpExecutionPolicy permission, long revision, string originalName, string? originalPath, string? originalDiskHash, string projectKey, string checkpoint)
+    {
+#if CORE_CONSOLE
+        return new(false, Error: new("GUI_REQUIRED", "DWG replacement requires interactive acad.exe, not Core Console"));
+#else
+        Document? original = null, replacement = null;
+        DwgFileReplacement? disk = null;
+        bool closed = false;
+        try
+        {
+            if (CSharpExecutionPolicy.Read() != permission || !permission.Allowed)
+                throw new CadFault("CSHARP_RESULT_NOT_APPLIED", "The user changed C# permission while the child ran; output remains separate");
+            original = documents.Active(request with { ExpectedRevision = revision });
+            LocalWorkPolicy.RequireLocal(original.Name);
+            if (original.Name != originalName || !string.IsNullOrWhiteSpace(original.CommandInProgress) || !original.Editor.IsQuiescent)
+                throw new CadFault("CSHARP_SOURCE_CHANGED", "Original drawing changed or is busy; output remains separate");
+            string target = originalPath ?? job.FilePath("applied.dwg");
+            disk = new DwgFileReplacement(job.FilePath("result.dwg"), outcome.Receipt!.OutputSha256!, target, originalDiskHash);
+            job.Write("replacement.json", new { phase = "before_close", target, disk.Backup, checkpoint, original_revision = revision, request.DocumentId });
+            original.CloseAndDiscard(); closed = true; // Full unsaved state is retained in checkpoint.
+            disk.Apply();
+            replacement = App.DocumentManager.Open(target, false);
+            App.DocumentManager.MdiActiveDocument = replacement;
+            var state = documents.Register(replacement, request.DocumentId, revision + 1, projectKey);
+            var drawingState = DrawingReview.DocumentState(replacement);
+            job.Write("replacement.json", new { phase = "applied", target, disk.Backup, checkpoint, document_id = state.Id, revision = state.Revision });
+            return new(true, state.Revision, drawingState, target, File.Exists(disk.Backup) ? disk.Backup : null, checkpoint);
         }
         catch (System.Exception error)
         {
-            return journal.Complete(id, new Response(request.RequestId, "failed", new { operation_id = id, checkpoint, transaction = committed ? "committed" : "not_committed", partial_changes_possible = started,
-                note = "The host transaction aborts on failure; arbitrary code may have committed or changed external state. Reconcile before retrying." }, documents.SessionId, state.Id, state.Revision,
-                new(error is CadFault fault ? fault.Code : error is OperationCanceledException ? "CANCELLED" : "CSHARP_EXECUTION_FAILED", error.Message)));
+            string? recovery = null;
+            bool manualRecovery = false;
+            string message = error.Message;
+            if (original?.IsDisposed == true) closed = true;
+            if (closed)
+            {
+                try
+                {
+                    replacement?.CloseAndDiscard(); replacement = null;
+                    disk?.Rollback();
+                    // Restore the complete pre-operation state, including unsaved edits, as a retained recovery drawing.
+                    var restored = App.DocumentManager.Open(checkpoint, false); App.DocumentManager.MdiActiveDocument = restored;
+                    documents.Register(restored, request.DocumentId, revision + 1, projectKey); recovery = checkpoint;
+                }
+                catch (System.Exception restoreError) { manualRecovery = true; message += "; recovery requires opening checkpoint manually: " + restoreError.Message; }
+            }
+            try { job.Write("replacement.json", new { phase = "not_applied", error = message, checkpoint, recovery, backup = disk?.Backup }); }
+            catch (System.Exception logError) { System.Diagnostics.Trace.WriteLine(logError); }
+            return new(false, Recovery: recovery ?? checkpoint, Backup: disk is not null && File.Exists(disk.Backup) ? disk.Backup : null,
+                Error: new(error is CadFault fault ? fault.Code : "CSHARP_REPLACEMENT_FAILED", message), ManualRecoveryRequired: manualRecovery);
         }
-        finally { if (state.Author == id) state.Author = null; load?.Unload(); }
+#endif
     }
     private void StartLisp(LispJob job)
     {

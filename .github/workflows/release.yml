@@ -150,7 +150,7 @@ jobs:
             }
             limits = @(
               'AutoCAD Core Console and GUI checks were not run for this release'
-              'C# preflight is conservative static analysis, not a sandbox or isolated AutoCAD trial. The wblockCloneObjects crash root cause is not proven resolved'
+              'C# runs in a separate acad.exe with guarded DWG replacement, but live startup/crash/replacement/recovery validation is pending. External effects are not sandboxed; parent snapshot/file-loading risks remain. The wblockCloneObjects root cause is not proven resolved'
               'AutoCAD 2027 OPM palette reads are temporarily disabled after an RCW cleanup crash; the root cause is not proven resolved. The new archive fixture and progress UI still need native validation'
               'DWG safety changes require native rollback, checkpoint recovery and Undo/Redo validation; see docs/validation.md'
               'The AutoCAD crash fixes require the CADMCPSHEETREGEN probe in AutoCAD 2025 or 2026'

@@ -23,6 +23,7 @@ internal static class Program
     private static void Run()
     {
         var root = Path.GetFullPath(Path.Combine(".runtime", "panel-probe-" + Guid.NewGuid().ToString("N")));
+        Environment.SetEnvironmentVariable("CAD_MCP_CSHARP_POLICY_FILE", Path.Combine(root, "csharp-policy.json"));
         var store = new ChatStateStore(root);
         store.Save(new(0, "codex.exe", "claude.exe", "host.exe", Environment.CurrentDirectory, "kept-session", "", "test-key", "gpt-6-astra", "ultra"));
         var preferences = new ChatPreferencesStore(Path.Combine(root, "preferences.json"));
@@ -35,6 +36,12 @@ internal static class Program
         ComboBox Field(string name) => (ComboBox)typeof(ChatPanel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
         var model = Field("model"); var reasoning = Field("reasoning");
+        var csharp = (System.Windows.Controls.CheckBox)typeof(ChatPanel).GetField("allowCSharp", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
+        Assert(csharp.IsChecked == false && !CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# must start disabled");
+        csharp.IsChecked = true;
+        Assert(CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# checkbox did not save user permission");
+        csharp.IsChecked = false;
+        Assert(!CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# checkbox did not revoke user permission");
         Assert((string)model.SelectedValue == "gpt-6-astra" && (string)reasoning.SelectedValue == "ultra", "Saved model not shown");
         model.SelectedValue = "gpt-6-luna";
         Assert((string)reasoning.SelectedValue == "", "Unsupported effort was retained after changing model");

@@ -14,13 +14,15 @@ internal static class WorkSafety
     internal static bool Required(Request request, JsonElement[]? operations) => request.Operation is "cad_lisp" or "cad_csharp" || operations is { Length: >= 25 }
         || operations?.Any(p => EditPlan.IsNonAtomic(p.Text("op") ?? "") || p.Text("op") is "erase" or "solid_boolean" or "solid_shell" or "assembly_update"
             or "text_replace" or "layer_merge" or "explode" or "trim" or "join" or "block_import" || p.Text("action") == "delete") == true;
-    internal static object Checkpoint(Document doc, string session, string document, string operation)
+    internal static object Checkpoint(Document doc, string session, string document, string operation, DocumentState? state = null)
     {
+        LocalWorkPolicy.RequireLocal(Root);
         string directory = Path.Combine(Root, session, Portable.Hash(System.Text.Encoding.UTF8.GetBytes(document)));
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff") + "-" + Guid.NewGuid().ToString("N") + ".dwg");
         try
         {
+            long? revisionBefore = state?.Revision, ignoredBefore = state?.ReadSideEffectEvents;
             // Wblock() clones the whole database, including layouts. Never SaveAs the live database.
             // Forced copy: a fast wblock could otherwise move objects out of the live drawing, and disposing the copy would free them.
             doc.Database.ForceWblockDatabaseCopy();
@@ -31,7 +33,9 @@ internal static class WorkSafety
             using var checkpointFile = File.OpenRead(path);
             using var hash = SHA256.Create();
             var record = new { path, sha256 = Convert.ToHexString(hash.ComputeHash(checkpointFile)), bytes = info.Length, operation_id = operation,
-                original = doc.Name, created_at = DateTimeOffset.UtcNow, retention = "retained_until_user_cleanup", restore = "Open this copy separately; do not overwrite the working drawing" };
+                original = doc.Name, created_at = DateTimeOffset.UtcNow, source_revision_before = revisionBefore, source_revision_after = state?.Revision,
+                ignored_read_events_during_checkpoint = state is null ? (long?)null : state.ReadSideEffectEvents - ignoredBefore,
+                retention = "retained_until_user_cleanup", restore = "Open this copy separately; do not overwrite the working drawing" };
             File.WriteAllText(path + ".json", JsonSerializer.Serialize(record, Wire.Json));
             // Receipts may still refer to a failed/unknown operation. Never delete its recovery copy
             // merely because newer operations arrived; cleanup is an explicit user action.

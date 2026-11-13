@@ -8,6 +8,32 @@ namespace CadMcp.Tests;
 
 public sealed class CSharpReferenceTests
 {
+    [Fact]
+    public async Task Older_in_process_worker_is_rejected_before_script_submission()
+    {
+        string pipe = "old-csharp-worker-" + Guid.NewGuid().ToString("N"); var calls = new List<string>();
+        using var broker = new PipeServer(pipe, (r, _) =>
+        {
+            calls.Add(r.Operation);
+            if (r.Operation == "cad_operation_status") return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d"));
+            Assert.Equal("csharp_references", r.Operation);
+            return Task.FromResult(new Response(r.RequestId, "completed", new { references = Framework }, "s", "d"));
+        });
+        broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
+        var result = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "old-worker", code = CSharpCadVerifierTests.SafeScript });
+        Assert.True(result.GetProperty("isError").GetBoolean()); Assert.Contains("CSHARP_ISOLATION_UNAVAILABLE", result.GetRawText());
+        Assert.Equal(new[] { "cad_operation_status", "csharp_references" }, calls);
+    }
+    [Fact]
+    public async Task Disabled_Csharp_stops_before_reference_loading_or_mutation()
+    {
+        using var folder = new TempFolder(); string policy = folder.File("csharp.json"); CSharpExecutionPolicy.Store(false, policy);
+        string pipe = "csharp-disabled-" + Guid.NewGuid().ToString("N"); int calls = 0;
+        using var broker = new PipeServer(pipe, (r, _) => { calls++; Assert.Equal("cad_operation_status", r.Operation); return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d")); });
+        broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe, new Dictionary<string, string> { ["CAD_MCP_CSHARP_POLICY_FILE"] = policy });
+        var reply = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "disabled", code = CSharpCadVerifierTests.SafeScript });
+        Assert.True(reply.GetProperty("isError").GetBoolean()); Assert.Contains("CSHARP_DISABLED", reply.GetRawText()); Assert.Equal(1, calls);
+    }
     private static string[] Framework => ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);
     internal static string NativeLibrary(TempFolder folder)
     {
@@ -55,7 +81,7 @@ public sealed class CSharpReferenceTests
         {
             calls.Add(r.Operation);
             if (r.Operation == "cad_operation_status") return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d"));
-            if (r.Operation == "csharp_references") return Task.FromResult(new Response(r.RequestId, "completed", new { references = managedReferences ? new[] { native }.Concat(Framework).ToArray() : new[] { native } }, "s", "d"));
+            if (r.Operation == "csharp_references") return Task.FromResult(new Response(r.RequestId, "completed", new { references = managedReferences ? new[] { native }.Concat(Framework).ToArray() : new[] { native }, csharp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, "s", "d"));
             Assert.Equal("cad_csharp", r.Operation);
             using var pe = new PEReader(new MemoryStream(Convert.FromBase64String(r.Data.Text("assembly_base64")!))); Assert.True(pe.HasMetadata);
             return Task.FromResult(new Response(r.RequestId, "completed", new { operation_id = "reference-test", submitted = true }, "s", "d"));
@@ -79,7 +105,7 @@ public sealed class CSharpReferenceTests
             calls.Add(r.Operation);
             if (r.Operation == "cad_operation_status") return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d"));
             Assert.Equal("csharp_references", r.Operation);
-            return Task.FromResult(new Response(r.RequestId, "completed", new { references = Framework }, "s", "d"));
+            return Task.FromResult(new Response(r.RequestId, "completed", new { references = Framework, csharp_execution_mode = "isolated_acad", csharp_policy = "user_checkbox", dwg_replacement = "guarded" }, "s", "d"));
         });
         broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
         var response = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "blocked-script", code });

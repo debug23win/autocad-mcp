@@ -1,6 +1,6 @@
-CAD MCP — Preview 0.11.12, Windows x64
+CAD MCP — Preview 0.11.13, Windows x64
 
-Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.12 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
+Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.13 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
 
 Official Codex CLI is included. Sign in with your account; subscriptions are separate. Install Claude Code separately. MCP permits edits you request and records operation receipts. AutoLISP may leave partial changes; inspect the result.
 
@@ -9,3 +9,5 @@ Close AutoCAD, Map 3D, Civil 3D and Core Console before installation. The instal
 Run the full native benchmark only in a separate AutoCAD instance with no open DWGs. The reported AutoCAD 2027 fatal crash remains unexplained; managed tests do not replace native validation.
 
 The interface and default assistant language follow your installation-language selection. Repository documentation remains English.
+
+C# is off by default: enable Allow C# in the panel only for the required work. The script runs once in a separate acad.exe on a DWG copy. A verified result replaces the working drawing only if unchanged. Pre-operation copies are retained; reopening resets Undo history. Mutable DWGs and agent workspaces in OneDrive are blocked; reference reading remains available. Isolation and replacement still require live AutoCAD validation.

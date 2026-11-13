@@ -429,5 +429,15 @@
   "Проверки завершены. Сохраняю итоговый отчёт": "Checks completed. Saving the final report",
   "Бенчмарк завершён: {0}/{1}": "Benchmark finished: {0}/{1}",
   "Подготовка": "Preparation",
-  "Запуск": "Starting"
+  "Запуск": "Starting",
+  "Обновите cad_context и проверьте квитанцию исходной операции. Не подменяйте expected_revision и не повторяйте правку автоматически; сначала сверьте план с текущим чертежом.": "Refresh cad_context and inspect the original operation receipt. Do not just replace expected_revision or automatically repeat the edit; review the plan against the current drawing first.",
+  "Разрешить C#": "Allow C#",
+  "C# выполняется один раз на копии DWG в отдельном AutoCAD. Проверенный файл заменит рабочий чертёж, только если он не изменился; исходная копия сохраняется для восстановления.": "C# runs once on a DWG copy in a separate AutoCAD process. The verified file replaces the working drawing only if unchanged; a recovery copy is retained.",
+  "Не удалось сохранить разрешение C#: ": "Could not save C# permission: ",
+  "C# выполнен в отдельном процессе AutoCAD; скрипт в основном процессе повторно не запускается.\n": "C# ran in a separate AutoCAD process; the script is not replayed in the main process.\n",
+  "Рабочий чертёж заменён проверенным DWG; исходная копия сохранена для восстановления.\n": "The working drawing was replaced with the verified DWG; a pre-operation copy is retained for recovery.\n",
+  "Замена рабочего чертежа не подтверждена; проверьте квитанцию и сохранённый результат.\n": "Working drawing replacement is unconfirmed; inspect the receipt and saved output.\n",
+  "Отдельный DWG: ": "Separate DWG: ",
+  "Диагностика дочернего процесса: ": "Child process diagnostics: ",
+  "Доступ Computer Use к приложению не разрешён. В панели CadMcp нет интерфейса выдачи этого разрешения; настройки AutoCAD его не заменяют. Используйте CAD MCP, если операция доступна через него. Этот отказ не является квитанцией CAD; ранее принятые операции проверяются отдельно.": "Computer Use application access was not approved. The CadMcp panel has no UI to grant this permission; AutoCAD settings cannot grant it. Use CAD MCP where supported. This denial is not a CAD receipt; reconcile previously accepted operations separately."
 }

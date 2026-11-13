@@ -22,6 +22,7 @@ public sealed class Plugin : IExtensionApplication
     private static string? descriptorPath;
     public void Initialize()
     {
+        if (IsolatedCSharpWorker.TryStart()) return;
         try
         {
             documents = new(); dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show }; dispatcher.Start();

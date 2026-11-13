@@ -47,6 +47,7 @@ internal sealed class TempFolder : IDisposable
 /// <summary>A CadMcp.Host process speaking MCP over stdio.</summary>
 internal sealed class McpHostProcess : IAsyncDisposable
 {
+    private string? csharpPolicyFile;
     private readonly Process process;
     private readonly Task<string> stderr;
     private readonly CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
@@ -58,7 +59,14 @@ internal sealed class McpHostProcess : IAsyncDisposable
     {
         var info = ProviderProcess.StartInfo(new(TestEnvironment.HostExecutable, "unused", Path.GetTempPath()), ["--broker-pipe", brokerPipe]);
         foreach (var pair in environment ?? new Dictionary<string, string>()) info.Environment[pair.Key] = pair.Value;
+        string? policy = null;
+        if (environment?.ContainsKey("CAD_MCP_CSHARP_POLICY_FILE") != true)
+        {
+            policy = Path.GetTempFileName(); CSharpExecutionPolicy.Store(true, policy);
+            info.Environment["CAD_MCP_CSHARP_POLICY_FILE"] = policy;
+        }
         var host = new McpHostProcess(Process.Start(info)!);
+        host.csharpPolicyFile = policy;
         host.Initialize = await host.RequestAsync("initialize", new { protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "test", version = "1" } });
         await host.process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
         await host.process.StandardInput.FlushAsync();
@@ -86,5 +94,6 @@ internal sealed class McpHostProcess : IAsyncDisposable
         await ProviderProcess.FinishAsync(process, stderr);
         process.Dispose();
         timeout.Dispose();
+        if (csharpPolicyFile is not null) File.Delete(csharpPolicyFile);
     }
 }

@@ -33,7 +33,7 @@ public static class ToolDiagnostics
         foreach (var candidate in candidates)
         {
             if (candidate.ValueKind != JsonValueKind.Object) continue;
-            if (Text(candidate, "status") == "failed" && Child(candidate, "error").ValueKind == JsonValueKind.Object)
+            if (Child(candidate, "error").ValueKind == JsonValueKind.Object && Text(Child(candidate, "error"), "code") is not null)
             { failed = true; payload = candidate; error = Child(candidate, "error"); break; }
             if (Text(candidate, "code") is not null && Text(candidate, "message") is not null)
             { failed = true; payload = error = candidate; break; }
@@ -49,10 +49,15 @@ public static class ToolDiagnostics
         string? request = Text(payload, "request_id");
         string code = Text(error, "code") ?? (Child(error, "code").ValueKind == JsonValueKind.Number ? Child(error, "code").GetRawText() : "TOOL_ERROR");
         string normalized = tool.Contains("mcp__", StringComparison.Ordinal) ? tool[(tool.LastIndexOf("__", StringComparison.Ordinal) + 2)..] : tool;
-        string state = !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
+        bool computerDenied = normalized == "js" && message.StartsWith("Computer Use was not approved", StringComparison.Ordinal);
+        if (computerDenied) code = "COMPUTER_USE_NOT_APPROVED";
+        string state = computerDenied
+            ? UiText.T("Доступ Computer Use к приложению не разрешён. В панели CadMcp нет интерфейса выдачи этого разрешения; настройки AutoCAD его не заменяют. Используйте CAD MCP, если операция доступна через него. Этот отказ не является квитанцией CAD; ранее принятые операции проверяются отдельно.")
+            : !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
             ? UiText.T("Инструмент чтения; состояние DWG этим сообщением не подтверждается.")
             : started.ValueKind == JsonValueKind.False ? UiText.T("Этот вызов не начал запись в DWG.")
             : UiText.T("Исход записи не подтверждён. Проверить квитанцию и DWG; автоматически повторять правку нельзя.");
+        if (code == "REVISION_CONFLICT") state += "\n" + UiText.T("Обновите cad_context и проверьте квитанцию исходной операции. Не подменяйте expected_revision и не повторяйте правку автоматически; сначала сверьте план с текущим чертежом.");
         // Password-like arguments are never shown, even if an error echoed their value.
         if (arguments.ValueKind == JsonValueKind.Object)
             foreach (var field in arguments.EnumerateObject().Where(p => p.Name.Contains("password", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("secret", StringComparison.OrdinalIgnoreCase)))
