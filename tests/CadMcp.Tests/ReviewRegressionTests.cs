@@ -126,7 +126,7 @@ public sealed class ReviewRegressionTests
             return Task.FromResult(journal.Complete("original-op", new Response(r.RequestId, "completed", new { operation_id = "original-op", accepted }, "s", "d", 2)));
         });
         broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
-        var arguments = new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "original-op", code = "public static class Script { public static object Run() => 1; }" };
+        var arguments = new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "original-op", code = CSharpCadVerifierTests.SafeScript };
         foreach (int _ in Enumerable.Range(0, 2))
         {
             var reply = await host.CallAsync("cad_csharp", arguments);

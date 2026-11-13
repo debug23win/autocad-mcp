@@ -19,6 +19,9 @@ public sealed class CSharpCadVerifierTests
             public static object Run(Db database, Transaction transaction, CancellationToken cancellationToken) {
         """;
 
+    internal const string SafeScript = Prefix + "return new { ok = true }; } }";
+    internal const string CloneScript = Prefix + "database.WblockCloneObjects(); return null; } }";
+
     private static byte[] Compile(string body) => CSharpReferenceCompiler.Compile(Prefix + body + "} }",
         ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator), verifyCad: true);
 

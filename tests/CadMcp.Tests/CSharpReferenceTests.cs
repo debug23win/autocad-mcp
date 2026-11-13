@@ -61,9 +61,33 @@ public sealed class CSharpReferenceTests
             return Task.FromResult(new Response(r.RequestId, "completed", new { operation_id = "reference-test", submitted = true }, "s", "d"));
         });
         broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
-        var response = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "reference-test", code = "public static class CadMcpScript { public static int Value => 7; }" });
+        var response = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "reference-test", code = CSharpCadVerifierTests.SafeScript });
         using var json = JsonDocument.Parse(response.GetProperty("content")[0].GetProperty("text").GetString()!);
         if (managedReferences) { Assert.False(response.TryGetProperty("isError", out var failed) && failed.GetBoolean()); Assert.Equal(new[] { "cad_operation_status", "csharp_references", "cad_csharp" }, calls); }
         else { Assert.Equal(new[] { "cad_operation_status", "csharp_references" }, calls); Assert.Equal("CSHARP_REFERENCES_UNAVAILABLE", json.RootElement.Text("code")); Assert.False(json.RootElement.GetProperty("changes_started").GetBoolean()); Assert.False(json.RootElement.GetProperty("requires_reconciliation").GetBoolean()); }
+    }
+
+    [Theory]
+    [InlineData(CSharpCadVerifierTests.CloneScript, "CSHARP_PREFLIGHT_FAILED")]
+    [InlineData("public static class Script {}", "CSHARP_ENTRYPOINT")]
+    public async Task Actual_MCP_preflight_failure_never_submits_a_CAD_mutation(string code, string expectedCode)
+    {
+        string pipe = "csharp-preflight-" + Guid.NewGuid().ToString("N");
+        var calls = new List<string>();
+        using var broker = new PipeServer(pipe, (r, _) =>
+        {
+            calls.Add(r.Operation);
+            if (r.Operation == "cad_operation_status") return Task.FromResult(new Response(r.RequestId, "completed", new { state = "not_found" }, "s", "d"));
+            Assert.Equal("csharp_references", r.Operation);
+            return Task.FromResult(new Response(r.RequestId, "completed", new { references = Framework }, "s", "d"));
+        });
+        broker.Start(); await using var host = await McpHostProcess.StartAsync(pipe);
+        var response = await host.CallAsync("cad_csharp", new { session_id = "s", document_id = "d", expected_revision = 1, operation_id = "blocked-script", code });
+        Assert.True(response.GetProperty("isError").GetBoolean());
+        using var json = JsonDocument.Parse(response.GetProperty("content")[0].GetProperty("text").GetString()!);
+        Assert.Equal(expectedCode, json.RootElement.Text("code"));
+        Assert.False(json.RootElement.GetProperty("changes_started").GetBoolean());
+        Assert.False(json.RootElement.GetProperty("requires_reconciliation").GetBoolean());
+        Assert.Equal(new[] { "cad_operation_status", "csharp_references" }, calls);
     }
 }
