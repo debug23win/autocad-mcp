@@ -24,13 +24,39 @@ public sealed class Plugin : IExtensionApplication
         if (IsolatedCSharpWorker.TryStart()) return;
         try
         {
-        documents = new(); dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show }; dispatcher.Start();
-        int pid = Environment.ProcessId; string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
-        server = new(pipe, dispatcher.Enqueue); server.Start();
-        descriptor = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, pid, Wire.Version));
         App.Idle += AddRibbon;
         }
         catch (System.Exception error) { Terminate(); App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP initialization: " + error.Message); }
+    }
+    // The shared 2025/2026 .NET 10 adapter also uses this entry point.
+    private static void EnsureWorker()
+    {
+        if (server is not null) return;
+        try
+        {
+            documents = new();
+            dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show };
+            dispatcher.Start();
+            int pid = Environment.ProcessId;
+            string pipe = "cadmcp-worker-" + pid + "-" + documents.SessionId;
+            server = new(pipe, dispatcher.Enqueue);
+            server.Start();
+            descriptor = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, pid, Wire.Version));
+        }
+        catch
+        {
+            StopWorker();
+            throw;
+        }
+    }
+    private static void StopWorker()
+    {
+        void Step(Action action) { try { action(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP worker shutdown: " + error.Message); } }
+        Step(() => server?.Dispose()); server = null;
+        Step(() => dispatcher?.Dispose()); dispatcher = null;
+        Step(() => documents?.Dispose()); documents = null;
+        if (descriptor is { } path) Step(() => File.Delete(path));
+        descriptor = null;
     }
     private static void AddRibbon(object? sender, EventArgs e)
     {
@@ -50,9 +76,9 @@ public sealed class Plugin : IExtensionApplication
     [CommandMethod("CADMCPCHAT", CommandFlags.Session)]
     public static void ShowChat()
     {
-        if (documents is null) { App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP worker did not initialize"); return; }
         try
         {
+        EnsureWorker();
         if(chatClient is not null && !chatClient.HasExited){chatClient.Refresh();ShowWindow(chatClient.MainWindowHandle,9);SetForegroundWindow(chatClient.MainWindowHandle);return;}
         chatClient?.Dispose();
         string root = Path.GetDirectoryName(typeof(Plugin).Assembly.Location)!;
@@ -69,8 +95,7 @@ public sealed class Plugin : IExtensionApplication
     public static int Finish(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     public void Terminate()
     {
-        App.Idle -= AddRibbon; server?.Dispose(); dispatcher?.Dispose(); documents?.Dispose();
-        if (descriptor is not null) try { File.Delete(descriptor); } catch (IOException) { }
+        App.Idle -= AddRibbon; StopWorker();
         try { dynamic? control = Type.GetType("Autodesk.Windows.ComponentManager, AdWindows")?.GetProperty("Ribbon")?.GetValue(null); if (ribbon is not null) control?.Tabs.Remove((dynamic)ribbon); } catch (System.Exception) { }
     }
     private sealed class OpenChat : ICommand
