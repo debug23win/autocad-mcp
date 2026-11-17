@@ -2,14 +2,14 @@
 
 [English](README.md) | **Русский**
 
-Версия 0.11.14-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
+Версия 0.11.15-preview. Открытый MCP-сервер и чат для работающего AutoCAD. Новый код — Apache-2.0; лицензии заимствований и зависимостей приведены в NOTICE, docs/provenance.md и licenses/.
 
 Изменения каждой версии и результаты проверки релизов — в [CHANGELOG.md](CHANGELOG.md); порядок проверки — в [docs/validation.md](docs/validation.md).
 
-В ветке разработки в список провайдеров добавлены **Perplexity API**, **Qwen Code**
+В 0.11.15 в список провайдеров добавлены **Perplexity API**, **Qwen Code**
 и **Kimi Code**. Perplexity использует отдельно оплачиваемый API; Qwen и Kimi —
 вход по подписке через официальный CLI. Подключение и ограничения:
-[Perplexity](docs/perplexity.md) · [Qwen/Kimi и запрос DeepSeek по подписке](docs/subscription-providers.md).
+[Perplexity](docs/perplexity.md) · [Qwen/Kimi и запрос DeepSeek по подписке](docs/subscription-providers.md) · [Изменения и проверки](CHANGELOG.md#01115-preview).
 
 В 0.11.14 добавлен диалог **«Computer Use: доступ…»** для подключённого подписанного AutoCAD: разрешение со следующего хода и отзыв доступа в активных чатах CadMcp. Глобальные настройки Codex не меняются. Изоляция C# и защищённая замена DWG из 0.11.13 сохранены. [Изменения и проверки](CHANGELOG.md#01114-preview).
 

@@ -2,14 +2,14 @@
 
 **English** | [Русский](README.ru.md)
 
-Version 0.11.14-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
+Version 0.11.15-preview. An open-source MCP server and chat interface for a running AutoCAD instance. New code is licensed under Apache-2.0; licenses for adapted code and dependencies are listed in [NOTICE](NOTICE), [docs/provenance.md](docs/provenance.md) and [licenses/](licenses/).
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is in English.
 
-The development branch also adds **Perplexity API**, **Qwen Code** and **Kimi Code**
+Version 0.11.15 adds **Perplexity API**, **Qwen Code** and **Kimi Code**
 to the chat provider selector. Perplexity uses a separately billed API key;
 Qwen and Kimi use official subscription CLI sign-in. Setup and limitations:
-[Perplexity](docs/perplexity.md) · [Qwen/Kimi and the DeepSeek subscription request](docs/subscription-providers.md).
+[Perplexity](docs/perplexity.md) · [Qwen/Kimi and the DeepSeek subscription request](docs/subscription-providers.md) · [Changes and validation](CHANGELOG.md#01115-preview).
 
 Version 0.11.14 adds the **Computer Use: access** dialog for the connected signed AutoCAD, next-turn app grants and revocation of active CadMcp access. Global Codex settings remain unchanged. C# isolation and guarded DWG replacement from 0.11.13 remain available. [Changes and validation](CHANGELOG.md#01114-preview).
 

@@ -1,8 +1,8 @@
-CAD MCP — Preview 0.11.14, Windows x64
+CAD MCP — Preview 0.11.15, Windows x64
 
-Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.14 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
+Products: AutoCAD, Map 3D and Civil 3D 2025–2027. AutoCAD LT and releases before 2025 are unsupported. The installer detects the AutoCAD 2025/2026 runtime: original releases use .NET 8; updates 2025.1.4+/2026.1.2+ use .NET 10. Reinstall CAD MCP after updating Autodesk. AutoCAD 2027 has a separate .NET 10 adapter. Earlier live checks used AutoCAD 2025/.NET 8. Changes in 0.11.8–0.11.15 and crash fixes from 0.11.2 have not yet been validated in AutoCAD; updated and other products also need separate validation.
 
-Official Codex CLI is included. Sign in with your account; subscriptions are separate. Install Claude Code separately. MCP permits edits you request and records operation receipts. AutoLISP may leave partial changes; inspect the result.
+Official Codex CLI is included. Sign in with your account; subscriptions are separate. Install Claude Code, Qwen Code and Kimi Code with their dependencies separately. Qwen/Kimi use official CLI subscription sign-in. Perplexity API requires a key and a separately funded API balance; Pro/Max subscriptions do not cover these charges. Automated tests cover the new providers, but authenticated model turns and native AutoCAD edits have not been validated. MCP permits edits you request and records operation receipts. AutoLISP may leave partial changes; inspect the result.
 
 Close AutoCAD, Map 3D, Civil 3D and Core Console before installation. The installer stops the broker, standalone CAD MCP window and bundled Codex processes from the plugin directory. Active standalone tasks are interrupted; save any needed text first. The installer never closes your drawings automatically.
 

@@ -11,6 +11,8 @@ Run `scripts/build.ps1`, then `scripts/test.ps1` (or `dotnet test tests/CadMcp.T
 - edit/acceptance parsing, geometry checks, image calibration, AutoLISP wrappers;
 - chat history/attachments, Markdown, Word export;
 - Codex/Claude protocols with fake processes in `tests/CadMcp.TestCli`: streaming, follow-ups, cancellation, model selection, refusal of interactive requests, command-line length;
+- Perplexity HTTP/SSE and local MCP execution: continuation, tool schemas, sources, token accounting, cancellation and incomplete responses;
+- Qwen/Kimi ACP fixtures: subscription-only model selection, session restoration, exact CAD permissions, denied shell/filesystem RPCs and operation IDs for durable duplicate suppression;
 - real MCP SDK over built `CadMcp.Host` stdio: tool listing/read-only annotations, drawing pinning, assistant restrictions.
 
 These tests do not run AutoCAD, real CLIs, or models. Tests run serially because they launch processes/brokers and measure time.
@@ -38,6 +40,7 @@ On Windows with installed AutoCAD, use a separate test DWG only:
 2. Restores packages in locked mode.
 3. Builds every `.github/ci-projects.txt` project, including .NET 10 adapters/native probes, with warnings as errors.
 4. Runs tests and retains TRX results.
+5. Runs the native WPF theme probe, including saved provider/model settings and connection controls for Perplexity, Qwen and Kimi. This exercises the UI without authenticated model requests or AutoCAD geometry changes.
 
 ## Releases
 

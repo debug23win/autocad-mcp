@@ -6,7 +6,9 @@ the existing local CAD MCP host executing CAD tools.
 
 ## Connect
 
-1. Create an API key in the [Perplexity API console](https://console.perplexity.ai).
+1. Create an API key and add API credits in the
+   [Perplexity API console](https://console.perplexity.ai). Sign-up credits alone
+   do not unlock the Agent API.
 2. Enter the key in the password field under connection settings, or set the
    `PERPLEXITY_API_KEY` environment variable before launching AutoCAD.
 3. Select a model and, if needed, a reasoning level. The default model is shown

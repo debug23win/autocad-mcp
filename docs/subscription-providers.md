@@ -8,7 +8,7 @@ usage limits.
 
 These CLIs are installed separately from CAD MCP. Use the current official
 installation instructions for [Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/overview/)
-or [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/). The Kimi adapter
+or [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html). The Kimi adapter
 requires the current Node.js package `@moonshot-ai/kimi-code`; the older Python
 `kimi-cli` protocol is not supported by this adapter.
 
@@ -28,8 +28,9 @@ drawing. Account credentials remain managed by Qwen Code. See the official
 
 ## Kimi Code
 
-1. Install the current official `@moonshot-ai/kimi-code` CLI and its required
-   Node.js runtime.
+1. Install the current official `@moonshot-ai/kimi-code` CLI. Installation through
+   npm requires Node.js 22.19.0 or later. Install Git for Windows before the first
+   launch, as described in the official installation guide above.
 2. Select **Kimi Code** in CAD MCP. The executable defaults to `kimi`; choose the
    installed executable or npm command if needed.
 3. Use **Sign in** in CAD MCP and complete the official `kimi login` flow for the
