@@ -147,6 +147,49 @@ public sealed class ChatStateTests
     }
 
     [Fact]
+    public void Perplexity_state_keeps_model_effort_and_local_session_without_changing_CLI_paths()
+    {
+        using var root = new TempFolder();
+        var store = new ChatStateStore(root.Path);
+        var selected = State("pplx-test-session") with
+        {
+            Provider = 2, PerplexityModel = "vendor/api-model", PerplexityReasoningEffort = "high",
+            CodexModel = "codex-model", ClaudeModel = "claude-model",
+            AdapterKey = "2|perplexity-api|host.exe|CAD"
+        };
+        Assert.True(ChatStateStore.Valid(selected));
+        store.Save(selected);
+        Assert.Equal(selected, store.Load());
+        var migrated = ChatStateStore.UseBundledCodex(selected, "bundled.exe", "codex.exe");
+        Assert.Equal(selected.AdapterKey, migrated.AdapterKey);
+        Assert.Equal(selected.SessionId, migrated.SessionId);
+        Assert.Equal(selected.PerplexityModel, migrated.PerplexityModel);
+        Assert.Equal(selected.ClaudeExecutable, migrated.ClaudeExecutable);
+        Assert.False(ChatStateStore.Valid(selected with { Provider = 99 }));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void Subscription_CLI_state_keeps_separate_executables_models_and_session(int provider)
+    {
+        using var root = new TempFolder();
+        var store = new ChatStateStore(root.Path);
+        var selected = State("account-cli-session") with
+        {
+            Provider = provider, QwenExecutable = @"C:\CAD tools\qwen.cmd", KimiExecutable = @"C:\CAD tools\kimi.cmd",
+            QwenModel = "qwen-account-model", KimiModel = "kimi-account-model"
+        };
+        Assert.True(ChatStateStore.Valid(selected));
+        store.Save(selected);
+        Assert.Equal(selected, store.Load());
+        var legacy = JsonSerializer.Deserialize<ChatState>("""{"Provider":1,"CodexExecutable":"codex.exe","ClaudeExecutable":"claude.exe","Host":"host.exe","Directory":"CAD","SessionId":"legacy","Transcript":"old"}""")!;
+        Assert.True(ChatStateStore.Valid(legacy));
+        Assert.Null(legacy.QwenExecutable); Assert.Null(legacy.KimiExecutable);
+        Assert.Null(legacy.QwenModel); Assert.Null(legacy.KimiModel);
+    }
+
+    [Fact]
     public void A_chat_of_another_running_process_is_shown_without_resuming_its_session()
     {
         using var root = new TempFolder();

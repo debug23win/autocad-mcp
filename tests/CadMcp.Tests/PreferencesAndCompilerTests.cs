@@ -27,6 +27,41 @@ public sealed class PreferencesAndCompilerTests
         File.WriteAllText(path, "{\"provider\":99}"); Assert.Null(new ChatPreferencesStore(path).Load());
     }
     [Fact]
+    public void Perplexity_preferences_preserve_all_provider_choices_and_read_legacy_files()
+    {
+        using var folder = new TempFolder(); string path = folder.File("preferences.json");
+        var selected = new ChatPreferences(2, "codex-model", "high", "claude-model", "max", false,
+            "vendor/api-model", "medium");
+        var store = new ChatPreferencesStore(path);
+        store.Save(selected);
+        Assert.Equal(selected, store.Load());
+        store.Save(selected with { Provider = 1 });
+        Assert.Equal("vendor/api-model", store.Load()!.PerplexityModel);
+        Assert.Equal("medium", store.Load()!.PerplexityEffort);
+        Assert.Equal("codex-model", store.Load()!.CodexModel);
+        File.WriteAllText(path, """{"provider":1,"codex_model":"old-codex","codex_effort":"high","claude_model":"opus","claude_effort":"max","show_progress":true}""");
+        var legacy = store.Load()!;
+        Assert.Equal("opus", legacy.ClaudeModel);
+        Assert.Null(legacy.PerplexityModel);
+        Assert.Null(legacy.PerplexityEffort);
+        Assert.Throws<InvalidDataException>(() => store.Save(selected with { Provider = 99 }));
+    }
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void Subscription_CLI_preferences_keep_each_providers_selection(int provider)
+    {
+        using var folder = new TempFolder();
+        var store = new ChatPreferencesStore(folder.File("preferences.json"));
+        var selected = new ChatPreferences(provider, "codex", "high", "claude", "max",
+            PerplexityModel: "vendor/api", QwenModel: "qwen-account-model", KimiModel: "kimi-account-model");
+        store.Save(selected);
+        Assert.Equal(selected, store.Load());
+        store.Save(selected with { Provider = 0 });
+        Assert.Equal(selected.QwenModel, store.Load()!.QwenModel);
+        Assert.Equal(selected.KimiModel, store.Load()!.KimiModel);
+    }
+    [Fact]
     public void Real_compiler_emits_and_executes_ordinary_csharp_without_an_installed_sdk()
     {
         var paths = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);

@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 //   They are excluded from the automated tests and run from the repository root.
 Console.InputEncoding = new System.Text.UTF8Encoding(false);
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Contains("--acp") || args.FirstOrDefault() == "acp") return await CadMcp.TestCli.FakeSubscriptionAcp.RunAsync(args);
 if (args.Contains("--isolated-csharp-test")) return await CadMcp.TestCli.IsolatedCSharpFixture.Run(args[^1]);
 if (args.Contains("--isolation-bystander")) { await Task.Delay(Timeout.Infinite); return 0; }
 if (args.Contains("--live-subagent-test"))

@@ -6,6 +6,11 @@ Version 0.11.14-preview. An open-source MCP server and chat interface for a runn
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is in English.
 
+The development branch also adds **Perplexity API**, **Qwen Code** and **Kimi Code**
+to the chat provider selector. Perplexity uses a separately billed API key;
+Qwen and Kimi use official subscription CLI sign-in. Setup and limitations:
+[Perplexity](docs/perplexity.md) · [Qwen/Kimi and the DeepSeek subscription request](docs/subscription-providers.md).
+
 Version 0.11.14 adds the **Computer Use: access** dialog for the connected signed AutoCAD, next-turn app grants and revocation of active CadMcp access. Global Codex settings remain unchanged. C# isolation and guarded DWG replacement from 0.11.13 remain available. [Changes and validation](CHANGELOG.md#01114-preview).
 
 Version 0.11.7 restricts the native benchmark to an AutoCAD process with no open DWGs, stops after the first unexpected failure and records durable native-call traces. The reported native crash is not yet proven resolved. [Safety and limits](docs/in-app-benchmark.md).
@@ -50,7 +55,7 @@ Since 0.3.1, files can be dragged into the chat or selected with a button. Attac
 
 Version 0.4.0 adds C# creation of block definitions from existing objects, layouts, points and ellipses. PDF/DXF output returns the file size and SHA-256 hash. These operations passed Core Console checks on a blank test DWG in AutoCAD 2025. PDF creation was checked for a nonempty output file; visual sheet correctness requires separate review. For Civil 3D/Map 3D and SPDS, special-object reading includes a limited set of named properties when the corresponding managed assemblies are available; complete geometry and editing still require dedicated API adapters. [Capability diagram and implementation comparison](docs/capabilities.md).
 
-The installer includes Codex 0.159.0. Subscription access uses the official CLI and your own account sign-in. Models are loaded from its catalog, and switching models preserves the conversation. The application's MCP tools are approved automatically within its process, without changing the user's `.codex/config.toml`. Claude Code must be installed and authenticated separately.
+The installer includes Codex 0.159.0. Subscription access uses the official CLI and your own account sign-in. Models are loaded from its catalog, and switching models preserves the conversation. The application's MCP tools are approved automatically within its process, without changing the user's `.codex/config.toml`. Claude Code, Qwen Code and Kimi Code must be installed and authenticated separately. Perplexity uses the key entered in the panel or `PERPLEXITY_API_KEY`, without installing a CLI.
 
 Version 0.5.0 adds layouts with viewports at a specified scale, plot settings, layout copying, and batch publication of separate PDFs with JSON/CSV file manifests. PNG/JPEG/TIFF/BMP rasters can be registered to WCS using 3–20 control points and inserted into a DWG; both regular and skewed placements have been checked. View snapshots receive an `image_id`; control points can calibrate their pixels for conversion to WCS and back. Civil 3D support includes catalogs of surfaces, alignments, profiles and networks, elevation sampling, and TIN creation/point insertion. Map 3D support includes coordinate-system, object-data-table and object-data reads when its API is available. Special Civil/Map operations have not yet been tested in running vertical products. See [georeferencing](docs/georeferencing.md), [sheet publishing](docs/publishing.md) and [vertical APIs](docs/verticals.md).
 
@@ -75,7 +80,7 @@ AutoCAD 2025.1.4 and 2026.1.2 move from .NET 8 to .NET 10. The installer reads `
 1. Close AutoCAD, Map 3D, Civil 3D and Core Console. The installer stops the broker, standalone CAD MCP window and bundled Codex processes running from the add-in folder. An active task in the standalone window will be interrupted; save any text you need first. The installer does not close user drawings.
 2. Install for the current user. The update destination is `%APPDATA%/Autodesk/ApplicationPlugins/CadMcp.AutoCAD2025.bundle`.
 3. Start a supported product. If prompted for trust, approve the specific assembly. There is no need to change `SECURELOAD` globally.
-4. Open **CAD MCP → Открыть чат** (*Open chat*) or run `CADMCPCHAT`. For Codex, click **Войти** (*Sign in*); authenticate Claude through its CLI.
+4. Open **CAD MCP → Открыть чат** (*Open chat*) or run `CADMCPCHAT`. For Codex, Qwen or Kimi, use the provider's **Войти** (*Sign in*) button; authenticate Claude through its CLI. For Perplexity, enter the API key under connection settings.
 
 An external MCP client starts `Contents/Host/CadMcp.Host.exe` without arguments. The broker starts automatically. The panel is bound to the CAD session that launched it and supplies the active DWG to the agent; tools also validate the document and revision.
 
@@ -85,7 +90,7 @@ User data is stored under `%LOCALAPPDATA%/CadMcp/`: `chat`, `logs/panel.log`, `o
 
 Windows x64 is required, with a .NET SDK for net8 and a separate SDK for net10. AutoCAD 2025 references can come from an installed AutoCAD instance or, without one, from NuGet: run `scripts/autocad-references.ps1 -Destination <folder>`, then `scripts/build.ps1 -AutoCADDir <folder>`. Lock files and CLI checksums are included. Autodesk DLLs are used for compilation only.
 
-From the repository root, run `scripts/build.ps1`, then `scripts/test.ps1` to execute the xUnit tests in `tests/CadMcp.Tests`; results are written to `artifacts/test-results`. Tests start the built `CadMcp.Host` and fake Codex/Claude processes from `tests/CadMcp.TestCli`; they do not use AutoCAD or real models. GitHub Actions (`.github/workflows/ci.yml`) builds all projects, including adapters and diagnostic programs, with warnings treated as errors and runs the tests for each pull request.
+From the repository root, run `scripts/build.ps1`, then `scripts/test.ps1` to execute the xUnit tests in `tests/CadMcp.Tests`; results are written to `artifacts/test-results`. Tests start the built `CadMcp.Host` and fake provider CLI processes from `tests/CadMcp.TestCli`, or simulated Perplexity HTTP responses; they do not use AutoCAD or real models. GitHub Actions (`.github/workflows/ci.yml`) builds all projects, including adapters and diagnostic programs, with warnings treated as errors and runs the tests for each pull request.
 
 Optional checks with real CLIs, run from the repository root, use `CadMcp.TestCli.exe --live-subagent-test codex|claude <cli>`, `--live-codex-model-test <cli>` and `--live-codex-approval-test <cli>`. For native checks, build `tests/CadMcp.CoreProbe` and run `scripts/test-autocad-core.ps1`; build `tests/CadMcp.NativeProbe` and run `scripts/test-autocad-gui.ps1` (use `-Product MAP` for an installed Map 3D 2025). Core Console uses `/isolate` and a dedicated profile. GUI checks create their own blank DWGs and copy a registered profile beforehand so `/p` does not trigger a modal dialog. The launcher terminates only its own process, restores the previous profile selection if it still points to the test profile, and removes its test profile. Working DWGs are not opened.
 

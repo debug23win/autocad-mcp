@@ -21,11 +21,14 @@ namespace CadMcp.AutoCAD;
 
 internal sealed class ChatPanel : UserControl
 {
-    private readonly ComboBox provider = new() { ItemsSource = new[] { "Codex", "Claude Code" }, SelectedIndex = 0 };
+    private const int Codex = 0, Claude = 1, Perplexity = 2, Qwen = 3, Kimi = 4;
+    private readonly ComboBox provider = new() { ItemsSource = new[] { "Codex", "Claude Code", "Perplexity API", "Qwen Code", "Kimi Code" }, SelectedIndex = Codex };
     private sealed record Choice(string Id, string Label);
     private readonly ComboBox model = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     private readonly ComboBox reasoning = new() { DisplayMemberPath = "Label", SelectedValuePath = "Id" };
+    private readonly TextBlock reasoningLabel = new() { Text = UiText.T("Глубина рассуждений") };
     private readonly ComboBox agentCount = new() { ItemsSource = new[] { UiText.T("Выключены"), UiText.T("До 2 помощников"), UiText.T("До 3 помощников"), UiText.T("До 4 помощников") }, SelectedIndex = 2 };
+    private readonly TextBlock agentCountLabel = new() { Text = UiText.T("Помощники") };
     // One user-wide AutoLISP policy (same order as LispPolicyMode); agents cannot change it.
     private readonly ComboBox lispPolicy = new() { ItemsSource = new[] { UiText.T("Спрашивать перед каждым запуском"), UiText.T("Без вопросов, если нет опасных функций"), UiText.T("Разрешать без вопросов"), UiText.T("Запретить") } };
     private bool loadingLispPolicy;
@@ -40,6 +43,12 @@ internal sealed class ChatPanel : UserControl
     private ComputerUseTarget? inspectedComputerTarget;
     private bool readingComputerTarget;
     private readonly TextBox executable = new() { Text = "codex.exe" };
+    private readonly TextBlock executableLabel = new() { Text = UiText.T("Официальный CLI (.exe)") };
+    private readonly PasswordBox perplexityApiKey = new() { MaxLength = 4096, Padding = new Thickness(5, 4, 5, 4) };
+    private readonly StackPanel perplexityConnection = new();
+    private readonly TextBlock accountCliHint = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) };
+    private readonly Button login = new() { Content = UiText.T("Войти") };
+    private readonly Button diagnose = new() { Content = UiText.T("Диагностика") };
     private readonly TextBox host = new() { Text = UiText.T("Полный путь к CadMcp.Host.exe") };
     private readonly TextBox directory = new() { Text = LocalWorkPolicy.DefaultWorkspace };
     private readonly TextBox input = new() { AcceptsReturn = true, Height = 80, TextWrapping = TextWrapping.Wrap };
@@ -76,6 +85,7 @@ internal sealed class ChatPanel : UserControl
     private readonly StringBuilder streamedText = new();
     private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private string codexExecutable = "codex.exe", claudeExecutable = "claude.exe";
+    private string qwenExecutable = "qwen.cmd", kimiExecutable = "kimi.cmd";
     private ChatState? restored;
     private CancellationTokenSource? running;
     private IChatProvider? adapter;
@@ -84,11 +94,15 @@ internal sealed class ChatPanel : UserControl
     private bool acceptingInput;
     private string? adapterKey;
     private string? adapterSelection;
-    private string? chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort;
+    private string? chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort, chosenPerplexityModel, chosenPerplexityEffort;
+    private string? chosenQwenModel, chosenKimiModel;
+    private int perplexityKeyRevision;
     private int maxSubagents = 3;
     private IReadOnlyList<CodexModel> catalog = Array.Empty<CodexModel>();
     // Models of the installed Claude Code for this account; empty until the CLI answered, then the aliases are offered.
     private IReadOnlyList<ClaudeModel> claudeCatalog = Array.Empty<ClaudeModel>();
+    private IReadOnlyList<PerplexityModel> perplexityCatalog = Array.Empty<PerplexityModel>();
+    private IReadOnlyList<SubscriptionModel> qwenCatalog = Array.Empty<SubscriptionModel>(), kimiCatalog = Array.Empty<SubscriptionModel>();
     private bool settingChoices, firstLoad, restoring;
     private readonly string brokerPipe;
     public ChatPanel() : this(null) { }
@@ -107,6 +121,7 @@ internal sealed class ChatPanel : UserControl
         if (File.Exists(codexPath)) codexExecutable = codexPath;
         if (File.Exists(bundledCodex)) codexExecutable = bundledCodex;
         if (File.Exists(claudePath)) claudeExecutable = claudePath;
+        qwenExecutable = FindAccountCli("qwen"); kimiExecutable = FindAccountCli("kimi");
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
         catch (System.Exception e) { activity.Text = UiText.T("История не восстановлена: ") + e.Message; }
@@ -116,7 +131,9 @@ internal sealed class ChatPanel : UserControl
             showProgress.IsChecked = choices.ShowProgress;
             var state = State();
             Restore(state with { Provider = choices.Provider, CodexModel = choices.CodexModel, CodexReasoningEffort = choices.CodexEffort,
-                ClaudeModel = choices.ClaudeModel, ClaudeReasoningEffort = choices.ClaudeEffort }, imported: false);
+                ClaudeModel = choices.ClaudeModel, ClaudeReasoningEffort = choices.ClaudeEffort,
+                PerplexityModel = choices.PerplexityModel, PerplexityReasoningEffort = choices.PerplexityEffort,
+                QwenModel = choices.QwenModel, KimiModel = choices.KimiModel }, imported: false);
         }
         lastPreferences = Preferences();
         if(!hadProjectHistory && projectDirectory is not null && Directory.Exists(projectDirectory))directory.Text=projectDirectory;
@@ -142,19 +159,34 @@ internal sealed class ChatPanel : UserControl
             if (cadContext?.Data is JsonElement data && data.TryGetProperty("selection", out var selected))
                 input.AppendText(UiText.T("\nИспользуй текущее выделение в чертеже «") + data.Text("name") + "»: " + selected.GetRawText() + UiText.T(". Перед работой перечитай актуальный контекст."));
         }; cadButtons.Children.Add(selection);
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Провайдер"), provider), (UiText.T("Модель"), model), (UiText.T("Глубина рассуждений"), reasoning), (UiText.T("Помощники"), agentCount), (UiText.T("AutoLISP по запросу агента"), lispPolicy) })
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Провайдер"), provider), (UiText.T("Модель"), model) })
         { settings.Children.Add(new TextBlock { Text = pair.Label }); settings.Children.Add(pair.Control); }
+        settings.Children.Add(reasoningLabel); settings.Children.Add(reasoning);
+        settings.Children.Add(agentCountLabel); settings.Children.Add(agentCount);
+        settings.Children.Add(new TextBlock { Text = UiText.T("AutoLISP по запросу агента") }); settings.Children.Add(lispPolicy);
         settings.Children.Add(refreshModels);
         settings.Children.Add(allowCSharp);
         var connection = new StackPanel();
-        foreach (var pair in new (string Label, FrameworkElement Control)[] { (UiText.T("Официальный CLI (.exe)"), executable), ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
+        connection.Children.Add(executableLabel); connection.Children.Add(executable);
+        connection.Children.Add(accountCliHint);
+        perplexityConnection.Children.Add(new TextBlock { Text = "Perplexity API key" });
+        perplexityConnection.Children.Add(perplexityApiKey);
+        perplexityConnection.Children.Add(new TextBlock { Text = UiText.T("Ключ хранится только в этом окне. Пустое поле использует PERPLEXITY_API_KEY. API оплачивается отдельно от подписки Perplexity."), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
+        connection.Children.Add(perplexityConnection);
+        perplexityApiKey.PasswordChanged += (_, _) =>
+        {
+            perplexityKeyRevision++;
+            perplexityCatalog = Array.Empty<PerplexityModel>();
+            if (provider.SelectedIndex == Perplexity) ApplyProviderChoices();
+        };
+        foreach (var pair in new (string Label, FrameworkElement Control)[] { ("MCP host (.exe)", host), (UiText.T("Рабочая папка"), directory) })
         { connection.Children.Add(new TextBlock { Text = pair.Label }); connection.Children.Add(pair.Control); }
         settings.Children.Add(new Expander { Header = UiText.T("Настройки подключения"), Content = connection, Margin = new Thickness(0, 4, 0, 4) });
         var accountButtons = new WrapPanel { Orientation = Orientation.Horizontal };
         computerUseAccess.Click += async (_, _) => await ConfigureComputerUse(); accountButtons.Children.Add(computerUseAccess);
         computerUseRevoke.Click += (_, _) => RevokeComputerUse(); accountButtons.Children.Add(computerUseRevoke);
-        var login = new Button { Content = UiText.T("Войти") }; login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
-        var diagnose = new Button { Content = UiText.T("Диагностика") }; diagnose.Click += async (_, _) => await RunAccount(true); accountButtons.Children.Add(diagnose);
+        login.Click += async (_, _) => await RunAccount(false); accountButtons.Children.Add(login);
+        diagnose.Click += async (_, _) => await RunAccount(true); accountButtons.Children.Add(diagnose);
         var log = new Button { Content = UiText.T("Журнал ошибок") }; log.Click += (_, _) =>
         {
             var path = LogPath(); if (!File.Exists(path)) { activity.Text = UiText.T("Журнал ошибок пуст"); return; }
@@ -165,8 +197,8 @@ internal sealed class ChatPanel : UserControl
         int previousProvider = provider.SelectedIndex;
         provider.SelectionChanged += (_, _) =>
         {
-            if (previousProvider == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
-            executable.Text = provider.SelectedIndex == 0 ? codexExecutable : claudeExecutable;
+            RememberExecutable(previousProvider);
+            ShowExecutable();
             previousProvider = provider.SelectedIndex; adapter = null;
             ApplyProviderChoices();
             SetBusy(false);
@@ -176,25 +208,35 @@ internal sealed class ChatPanel : UserControl
         model.SelectionChanged += (_, _) =>
         {
             if (settingChoices) return;
-            if (provider.SelectedIndex == 0)
+            if (provider.SelectedIndex == Codex)
             {
                 chosenModel = model.SelectedValue as string;
                 var selected = SelectedCatalogModel();
                 if (selected is not null && !string.IsNullOrEmpty(chosenEffort) && !selected.Efforts.Contains(chosenEffort)) chosenEffort = null;
             }
-            else
+            else if (provider.SelectedIndex == Claude)
             {
                 chosenClaudeModel = model.SelectedValue as string;
                 var selected = SelectedClaudeModel();
                 if (selected is not null && !string.IsNullOrEmpty(chosenClaudeEffort) && !selected.Efforts.Contains(chosenClaudeEffort)) chosenClaudeEffort = null;
+            }
+            else switch (provider.SelectedIndex)
+            {
+                case Perplexity: chosenPerplexityModel = model.SelectedValue as string; break;
+                case Qwen: chosenQwenModel = model.SelectedValue as string; break;
+                case Kimi: chosenKimiModel = model.SelectedValue as string; break;
             }
             PopulateEfforts(); Persist();
         };
         reasoning.SelectionChanged += (_, _) =>
         {
             if (settingChoices) return;
-            if (provider.SelectedIndex == 0) chosenEffort = reasoning.SelectedValue as string;
-            else chosenClaudeEffort = reasoning.SelectedValue as string;
+            switch (provider.SelectedIndex)
+            {
+                case Codex: chosenEffort = reasoning.SelectedValue as string; break;
+                case Claude: chosenClaudeEffort = reasoning.SelectedValue as string; break;
+                case Perplexity: chosenPerplexityEffort = reasoning.SelectedValue as string; break;
+            }
             Persist();
         };
         agentCount.SelectionChanged += (_, _) =>
@@ -444,12 +486,36 @@ internal sealed class ChatPanel : UserControl
     private async Task RunAccount(bool diagnostic)
     {
         if (running is not null) return;
+        if (AccountCliSelected)
+        {
+            if (diagnostic) { await RefreshModels(); return; }
+            try
+            {
+                LocalWorkPolicy.RequireLocal(directory.Text);
+                var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
+                using var process = Process.Start(provider.SelectedIndex == Qwen
+                    ? QwenProvider.CreateLoginStartInfo(options) : KimiProvider.CreateLoginStartInfo(options))
+                    ?? throw new IOException(UiText.T("Не удалось запустить окно входа CLI."));
+                activity.Text = provider.SelectedIndex == Qwen
+                    ? UiText.T("В терминале выполните /auth → Qwen Account with Subscription. Затем нажмите «Диагностика».")
+                    : UiText.T("Завершите вход Kimi Code в открывшемся терминале. Затем нажмите «Диагностика».");
+            }
+            catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Подключение: ") + error.Message; }
+            return;
+        }
+        if (provider.SelectedIndex == Perplexity)
+        {
+            if (diagnostic) { await RefreshModels(); return; }
+            try { Process.Start(new ProcessStartInfo("https://console.perplexity.ai") { UseShellExecute = true }); }
+            catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Не удалось открыть консоль Perplexity"); }
+            return;
+        }
         running = new(); SetBusy(true);
         try
         {
             running.CancelAfter(TimeSpan.FromMinutes(diagnostic ? 1 : 5));
             var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
-            bool codex = provider.SelectedIndex == 0;
+            bool codex = provider.SelectedIndex == Codex;
             var command = codex ? diagnostic ? new[] { "login", "status" } : new[] { "login" }
                 : diagnostic ? new[] { "auth", "status" } : new[] { "auth", "login" };
             using var process = System.Diagnostics.Process.Start(ProviderProcess.StartInfo(options, command))!;
@@ -473,6 +539,64 @@ internal sealed class ChatPanel : UserControl
         "medium" => UiText.T("Средняя"), "high" => UiText.T("Высокая"), "xhigh" => UiText.T("Очень высокая"), "max" => UiText.T("Максимальная"),
         "ultra" => UiText.T("Ultra — с делегированием задач"), _ => effort
     };
+    private void RememberExecutable(int providerIndex)
+    {
+        switch (providerIndex)
+        {
+            case Codex: codexExecutable = executable.Text; break;
+            case Claude: claudeExecutable = executable.Text; break;
+            case Qwen: qwenExecutable = executable.Text; break;
+            case Kimi: kimiExecutable = executable.Text; break;
+        }
+    }
+    private void ShowExecutable() => executable.Text = provider.SelectedIndex switch
+    {
+        Codex => codexExecutable, Claude => claudeExecutable, Qwen => qwenExecutable, Kimi => kimiExecutable, _ => ""
+    };
+    private static string FindAccountCli(string name)
+    {
+        var folders = new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin") }
+            .Concat((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+        foreach (string folder in folders)
+            foreach (string extension in new[] { ".exe", ".cmd", "" })
+            {
+                try { string candidate = Path.Combine(folder.Trim('"'), name + extension); if (File.Exists(candidate)) return candidate; }
+                catch (ArgumentException) { }
+            }
+        return name + ".cmd";
+    }
+    private bool AccountCliSelected => provider.SelectedIndex is Qwen or Kimi;
+    // The key stays outside saved/exported state, adapter identity and diagnostics.
+    private string PerplexityKey() => !string.IsNullOrWhiteSpace(perplexityApiKey.Password)
+        ? perplexityApiKey.Password.Trim() : Environment.GetEnvironmentVariable("PERPLEXITY_API_KEY")?.Trim() ?? "";
+    private string? SelectedModel => provider.SelectedIndex switch
+    {
+        Codex => chosenModel, Claude => chosenClaudeModel, Perplexity => chosenPerplexityModel,
+        Qwen => chosenQwenModel, Kimi => chosenKimiModel, _ => null
+    };
+    private string? SelectedEffort => provider.SelectedIndex switch
+    {
+        Codex => chosenEffort, Claude => chosenClaudeEffort, Perplexity => chosenPerplexityEffort, _ => null
+    };
+    private void UpdateProviderControls()
+    {
+        bool api = provider.SelectedIndex == Perplexity;
+        bool account = AccountCliSelected;
+        executable.Visibility = executableLabel.Visibility = api ? Visibility.Collapsed : Visibility.Visible;
+        executableLabel.Text = account ? UiText.T("Официальный CLI (.exe или .cmd)") : UiText.T("Официальный CLI (.exe)");
+        agentCount.Visibility = agentCountLabel.Visibility = provider.SelectedIndex is Codex or Claude ? Visibility.Visible : Visibility.Collapsed;
+        reasoning.Visibility = reasoningLabel.Visibility = account ? Visibility.Collapsed : Visibility.Visible;
+        perplexityConnection.Visibility = api ? Visibility.Visible : Visibility.Collapsed;
+        accountCliHint.Visibility = account ? Visibility.Visible : Visibility.Collapsed;
+        accountCliHint.Text = provider.SelectedIndex == Kimi
+            ? UiText.T("Подписка Kimi Code. Для CAD MCP нужен отдельный вход через «Войти». Модель берётся из настроек CLI.")
+            : UiText.T("Подписка Qwen Account. Вход выполняется в официальном CLI через /auth. Модель берётся из настроек CLI.");
+        computerUseAccess.Visibility = computerUseRevoke.Visibility = computerUseStatus.Visibility = api || account ? Visibility.Collapsed : Visibility.Visible;
+        login.Content = api ? UiText.T("Консоль Perplexity") : UiText.T("Войти");
+        refreshModels.Content = account ? UiText.T("Проверить вход и подключение") : UiText.T("Обновить список моделей");
+        quota.Visibility = provider.SelectedIndex == Codex ? Visibility.Visible : Visibility.Collapsed;
+    }
     private CodexModel? SelectedCatalogModel() => string.IsNullOrEmpty(chosenModel)
         ? catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault()
         : catalog.FirstOrDefault(m => m.Id == chosenModel);
@@ -492,6 +616,18 @@ internal sealed class ChatPanel : UserControl
         claudeCatalog = models;
         if (provider.SelectedIndex == 1) ApplyProviderChoices();
     }
+    internal void ApplyPerplexityModels(IReadOnlyList<PerplexityModel> models)
+    {
+        perplexityCatalog = models;
+        if (provider.SelectedIndex == Perplexity) ApplyProviderChoices();
+    }
+    internal void ApplySubscriptionModels(int providerIndex, IReadOnlyList<SubscriptionModel> models)
+    {
+        if (providerIndex == Qwen) qwenCatalog = models;
+        else if (providerIndex == Kimi) kimiCatalog = models;
+        else throw new ArgumentOutOfRangeException(nameof(providerIndex));
+        if (provider.SelectedIndex == providerIndex) ApplyProviderChoices();
+    }
     private ClaudeModel? SelectedClaudeModel()
     {
         var listed = claudeCatalog.Count > 0 ? claudeCatalog : ClaudeCatalog.Fallback;
@@ -499,7 +635,32 @@ internal sealed class ChatPanel : UserControl
     }
     private void ApplyProviderChoices()
     {
-        if (provider.SelectedIndex == 0) { ApplyModels(catalog); return; }
+        UpdateProviderControls();
+        if (provider.SelectedIndex == Codex) { ApplyModels(catalog); return; }
+        if (AccountCliSelected)
+        {
+            settingChoices = true;
+            var accountCatalog = provider.SelectedIndex == Qwen ? qwenCatalog : kimiCatalog;
+            var current = accountCatalog.FirstOrDefault(m => m.IsDefault);
+            var accountModels = new List<Choice> { new("", UiText.T("Из настроек CLI") + (current is null ? "" : " — " + current.DisplayName)) };
+            accountModels.AddRange(accountCatalog.Select(m => new Choice(m.Id, m.DisplayName)));
+            string? chosen = SelectedModel;
+            if (!string.IsNullOrEmpty(chosen) && !accountModels.Any(m => m.Id == chosen))
+                accountModels.Add(new(chosen, chosen + (accountCatalog.Count > 0 ? UiText.T(" — отсутствует в каталоге") : "")));
+            model.ItemsSource = accountModels; model.SelectedValue = chosen ?? "";
+            settingChoices = false; PopulateEfforts(); return;
+        }
+        if (provider.SelectedIndex == Perplexity)
+        {
+            settingChoices = true;
+            var apiModels = new List<Choice> { new("", UiText.T("По умолчанию") + " — " + PerplexityCatalog.DefaultModel) };
+            apiModels.AddRange(perplexityCatalog.Select(m => new Choice(m.Id, m.DisplayName)));
+            if (!string.IsNullOrEmpty(chosenPerplexityModel) && !apiModels.Any(c => c.Id == chosenPerplexityModel))
+                apiModels.Add(new(chosenPerplexityModel, chosenPerplexityModel + (perplexityCatalog.Count > 0 ? UiText.T(" — отсутствует в каталоге") : "")));
+            model.ItemsSource = apiModels; model.SelectedValue = chosenPerplexityModel ?? "";
+            settingChoices = false; PopulateEfforts(); return;
+        }
+        if (provider.SelectedIndex != Claude) return;
         settingChoices = true;
         // "Автоматически" passes no --model: Claude Code then uses its default entry, named here with its current version.
         var automatic = claudeCatalog.FirstOrDefault(m => m.IsDefault);
@@ -514,7 +675,21 @@ internal sealed class ChatPanel : UserControl
     private void PopulateEfforts()
     {
         settingChoices = true;
-        if (provider.SelectedIndex != 0)
+        if (AccountCliSelected)
+        {
+            reasoning.ItemsSource = new[] { new Choice("", UiText.T("Из настроек CLI")) };
+            reasoning.SelectedValue = ""; settingChoices = false; return;
+        }
+        if (provider.SelectedIndex == Perplexity)
+        {
+            var apiChoices = new List<Choice> { new("", UiText.T("По умолчанию")) };
+            apiChoices.AddRange(PerplexityCatalog.Efforts.Select(e => new Choice(e, EffortLabel(e))));
+            if (!string.IsNullOrEmpty(chosenPerplexityEffort) && !apiChoices.Any(c => c.Id == chosenPerplexityEffort))
+                apiChoices.Add(new(chosenPerplexityEffort, EffortLabel(chosenPerplexityEffort) + UiText.T(" — недоступна")));
+            reasoning.ItemsSource = apiChoices; reasoning.SelectedValue = chosenPerplexityEffort ?? "";
+            settingChoices = false; return;
+        }
+        if (provider.SelectedIndex == Claude)
         {
             // The levels the selected model accepts; every --effort level while the CLI has not listed its models.
             var levels = SelectedClaudeModel()?.Efforts ?? (claudeCatalog.Count == 0 ? ClaudeCatalog.AllEfforts : Array.Empty<string>());
@@ -538,10 +713,12 @@ internal sealed class ChatPanel : UserControl
         send.IsEnabled = attach.IsEnabled = !documentClosed && !benchmarkBusy && (!busy || acceptingInput);
         send.Content = acceptingInput ? UiText.T("Дополнить") : UiText.T("Отправить");
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
+        perplexityApiKey.IsEnabled = login.IsEnabled = diagnose.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy;
         computerUseAccess.IsEnabled = provider.SelectedIndex == 0 && !readingComputerTarget;
-        agentCount.IsEnabled = !busy;
+        agentCount.IsEnabled = !busy && (provider.SelectedIndex is Codex or Claude);
+        UpdateProviderControls();
     }
     private void ProviderCompleted()
     {
@@ -556,10 +733,37 @@ internal sealed class ChatPanel : UserControl
     private async Task RefreshModels()
     {
         if (running is not null) return;
-        bool codex = provider.SelectedIndex == 0;
+        bool codex = provider.SelectedIndex == Codex;
         running = new(); SetBusy(true); activity.Text = UiText.T("Загрузка доступных моделей…");
         try
         {
+            if (AccountCliSelected)
+            {
+                LocalWorkPolicy.RequireLocal(directory.Text);
+                running.CancelAfter(TimeSpan.FromSeconds(90));
+                var accountOptions = new ProviderOptions(executable.Text, host.Text, directory.Text,
+                    McpArguments: ["--broker-pipe", brokerPipe], MaxSubagents: 0, OwnerId: operationOwner,
+                    CadSessionId: CadSessionId, CadDocumentId: CadDocumentId);
+                var accountModels = provider.SelectedIndex == Qwen
+                    ? await QwenProvider.ReadModelsAsync(accountOptions, running.Token)
+                    : await KimiProvider.ReadModelsAsync(accountOptions, running.Token);
+                ApplySubscriptionModels(provider.SelectedIndex, accountModels);
+                activity.Text = UiText.Format($"Официальный CLI подключён. Доступно моделей: {accountModels.Count}; запрос к модели не отправлялся.");
+                Persist(); return;
+            }
+            if (provider.SelectedIndex == Perplexity)
+            {
+                var key = PerplexityKey();
+                if (string.IsNullOrEmpty(key))
+                {
+                    ApplyProviderChoices();
+                    activity.Text = UiText.T("Укажите Perplexity API key в настройках подключения или PERPLEXITY_API_KEY.");
+                    return;
+                }
+                ApplyPerplexityModels(await PerplexityCatalog.LoadAsync(key, running.Token));
+                activity.Text = UiText.T("Каталог Perplexity загружен; платный запрос модели не отправлялся.");
+                Persist(); return;
+            }
             if (!Directory.Exists(directory.Text)) throw new IOException(UiText.T("Укажите существующую рабочую папку в настройках подключения"));
             var options = new ProviderOptions(executable.Text, host.Text, directory.Text);
             if (codex)
@@ -592,16 +796,25 @@ internal sealed class ChatPanel : UserControl
         if (!File.Exists(host.Text) || !Directory.Exists(directory.Text))
         { activity.Text = UiText.T("Укажите существующие MCP host и рабочую папку."); return; }
         // A saved Claude model or level the CLI no longer offers is reported before the message is sent.
-        if (provider.SelectedIndex == 1)
+        if (provider.SelectedIndex == Claude)
             try { ClaudeCatalog.Select(claudeCatalog, chosenClaudeModel, chosenClaudeEffort); }
             catch (IOException error) { activity.Text = error.Message; return; }
-        running = new(); acceptingInput = true; SetBusy(true);
+        string? apiKeyForTurn = null;
+        if (provider.SelectedIndex == Perplexity)
+        {
+            apiKeyForTurn = PerplexityKey();
+            if (string.IsNullOrEmpty(apiKeyForTurn))
+            { activity.Text = UiText.T("Укажите Perplexity API key в настройках подключения или PERPLEXITY_API_KEY."); return; }
+            try { PerplexityCatalog.ValidateSelection(chosenPerplexityModel, chosenPerplexityEffort); }
+            catch (System.Exception error) when (error is IOException or ArgumentException) { activity.Text = error.Message; return; }
+        }
+        running = new(); acceptingInput = !AccountCliSelected; SetBusy(true);
         reportedProblems.Clear();
         string completionStatus = UiText.T("Готово");
         var answerClock = Stopwatch.StartNew();
         ProviderTokenUsage? tokenUsage = null;
         CodexRateLimits? rateLimits = null;
-        bool codexTurn = provider.SelectedIndex == 0;
+        bool codexTurn = provider.SelectedIndex == Codex;
         quota.Visibility = codexTurn ? Visibility.Visible : Visibility.Collapsed;
         if (codexTurn) quota.Text = UiText.T("Лимиты Codex: обновляю…");
         bool answerCompleted = false;
@@ -623,16 +836,29 @@ internal sealed class ChatPanel : UserControl
             initialDocumentId = CadDocumentId ?? cadContext?.DocumentId; initialSessionId = CadSessionId ?? cadContext?.SessionId;
             var computerTarget = await GrantedComputerTarget();
             string? computerPermissionRevision = computerTarget is null ? null : computerUseStore.Permission(computerTarget)?.Revision;
-            var key = provider.SelectedIndex + "|" + executable.Text + "|" + host.Text + "|" + directory.Text;
-            var selectedModel = provider.SelectedIndex == 0 ? chosenModel : chosenClaudeModel;
-            var selectedEffort = provider.SelectedIndex == 0 ? chosenEffort : chosenClaudeEffort;
-            var selection = (selectedModel ?? "") + "|" + (selectedEffort ?? "") + "|" + maxSubagents + "|" + (computerTarget is null ? "computer_use_denied" : computerUseStore.Permission(computerTarget)?.Revision);
+            bool api = provider.SelectedIndex == Perplexity;
+            var key = provider.SelectedIndex + "|" + (api ? "perplexity-api" : executable.Text) + "|" + host.Text + "|" + directory.Text;
+            var selectedModel = SelectedModel;
+            var selectedEffort = SelectedEffort;
+            var helpers = api || AccountCliSelected ? 0 : maxSubagents;
+            var selection = (selectedModel ?? "") + "|" + (selectedEffort ?? "") + "|" + helpers + "|" + (computerTarget is null ? "computer_use_denied" : computerUseStore.Permission(computerTarget)?.Revision)
+                + (api ? "|key-revision:" + perplexityKeyRevision : "");
             if (adapter is null || adapterKey != key || adapterSelection != selection)
             {
                 var previousSession = adapterKey == key ? adapter?.SessionId : null;
                 var options = new ProviderOptions(executable.Text, host.Text, directory.Text, selectedModel, selectedEffort,
-                    MaxSubagents: maxSubagents, OwnerId: operationOwner, CadSessionId: CadSessionId, CadDocumentId: CadDocumentId ?? cadContext?.DocumentId, ComputerUseTarget: computerTarget, ComputerUseAccessStillValid: computerTarget is null ? null : () => computerUseStore.Permission(computerTarget) is { Allowed: true } permission && permission.Revision == computerPermissionRevision);
-                adapter = provider.SelectedIndex == 0 ? new CodexProvider(options) : new ClaudeProvider(options); adapterKey = key;
+                    McpArguments: api || AccountCliSelected ? ["--broker-pipe", brokerPipe] : null,
+                    MaxSubagents: helpers, OwnerId: operationOwner, CadSessionId: CadSessionId, CadDocumentId: CadDocumentId ?? cadContext?.DocumentId, ComputerUseTarget: computerTarget, ComputerUseAccessStillValid: computerTarget is null ? null : () => computerUseStore.Permission(computerTarget) is { Allowed: true } permission && permission.Revision == computerPermissionRevision);
+                adapter = provider.SelectedIndex switch
+                {
+                    Codex => new CodexProvider(options),
+                    Claude => new ClaudeProvider(options),
+                    Perplexity => new PerplexityProvider(options, apiKeyForTurn!),
+                    Qwen => new QwenProvider(options),
+                    Kimi => new KimiProvider(options),
+                    _ => throw new InvalidOperationException("Unknown chat provider")
+                };
+                adapterKey = key;
                 adapterSelection = selection;
                 adapter.SessionId = previousSession ?? (restored?.AdapterKey == key ? restored.SessionId : null);
                 restored = null;
@@ -833,11 +1059,12 @@ internal sealed class ChatPanel : UserControl
     }
     private ChatState State()
     {
-        if (provider.SelectedIndex == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
+        RememberExecutable(provider.SelectedIndex);
         return new(provider.SelectedIndex, codexExecutable, claudeExecutable, host.Text, directory.Text,
             adapter?.SessionId ?? restored?.SessionId, ChatMarkup.PlainTranscript(messages),
             adapterKey ?? restored?.AdapterKey, chosenModel, chosenEffort, messages.ToArray(), maxSubagents,
-            chosenClaudeModel, chosenClaudeEffort, CadSessionId, CadDocumentId);
+            chosenClaudeModel, chosenClaudeEffort, CadSessionId, CadDocumentId, chosenPerplexityModel, chosenPerplexityEffort,
+            qwenExecutable, kimiExecutable, chosenQwenModel, chosenKimiModel);
     }
     private void Persist()
     {
@@ -849,7 +1076,8 @@ internal sealed class ChatPanel : UserControl
         }
         catch (System.Exception e) { activity.Text = UiText.T("История или выбор модели не сохранены: ") + e.Message; }
     }
-    private ChatPreferences Preferences() => new(provider.SelectedIndex, chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort, showProgress.IsChecked == true);
+    private ChatPreferences Preferences() => new(provider.SelectedIndex, chosenModel, chosenEffort, chosenClaudeModel, chosenClaudeEffort,
+        showProgress.IsChecked == true, chosenPerplexityModel, chosenPerplexityEffort, chosenQwenModel, chosenKimiModel);
     private void RecordProblem(string diagnostic)
     {
         if (string.IsNullOrWhiteSpace(diagnostic) || !reportedProblems.Add(diagnostic)) return;
@@ -878,11 +1106,14 @@ internal sealed class ChatPanel : UserControl
         provider.SelectedIndex = state.Provider;
         if (imported)
         {
-            if (provider.SelectedIndex == 0) codexExecutable = executable.Text; else claudeExecutable = executable.Text;
-            state = state with { CodexExecutable = codexExecutable, ClaudeExecutable = claudeExecutable, Host = host.Text, Directory = directory.Text };
+            RememberExecutable(provider.SelectedIndex);
+            state = state with { CodexExecutable = codexExecutable, ClaudeExecutable = claudeExecutable,
+                QwenExecutable = qwenExecutable, KimiExecutable = kimiExecutable, Host = host.Text, Directory = directory.Text };
         }
         codexExecutable = state.CodexExecutable; claudeExecutable = state.ClaudeExecutable;
-        executable.Text = state.Provider == 0 ? codexExecutable : claudeExecutable;
+        if (!string.IsNullOrWhiteSpace(state.QwenExecutable)) qwenExecutable = state.QwenExecutable;
+        if (!string.IsNullOrWhiteSpace(state.KimiExecutable)) kimiExecutable = state.KimiExecutable;
+        ShowExecutable();
         if (File.Exists(state.Host)) host.Text = state.Host;
         if (Directory.Exists(state.Directory)) directory.Text = state.Directory;
         messages.Clear();
@@ -891,6 +1122,8 @@ internal sealed class ChatPanel : UserControl
         selectedAnswer = -1; RenderChat(); restored = state; adapter = null; adapterKey = null; attachments.Clear(); RefreshAttachments();
         chosenModel = state.CodexModel; chosenEffort = state.CodexReasoningEffort;
         chosenClaudeModel = state.ClaudeModel; chosenClaudeEffort = state.ClaudeReasoningEffort;
+        chosenPerplexityModel = state.PerplexityModel; chosenPerplexityEffort = state.PerplexityReasoningEffort;
+        chosenQwenModel = state.QwenModel; chosenKimiModel = state.KimiModel;
         maxSubagents = state.MaxSubagents;
         agentCount.SelectedIndex = maxSubagents switch { 2 => 1, 3 => 2, 4 => 3, _ => 0 };
         ApplyProviderChoices();
@@ -914,7 +1147,7 @@ internal sealed class ChatPanel : UserControl
         {
             if (new FileInfo(dialog.FileName).Length > 4 * 1024 * 1024) throw new InvalidDataException(UiText.T("Файл истории слишком велик"));
             Restore(JsonSerializer.Deserialize<ChatState>(File.ReadAllText(dialog.FileName)) ?? throw new InvalidDataException(UiText.T("Пустой файл истории")), imported: true); Persist();
-            if (provider.SelectedIndex == 0) _ = RefreshModels();
+            if (provider.SelectedIndex is Codex or Perplexity or Qwen or Kimi) _ = RefreshModels();
         }
         catch (System.Exception e) { activity.Text = UiText.T("История не открыта: ") + e.Message; }
     }
