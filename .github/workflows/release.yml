@@ -150,6 +150,7 @@ jobs:
             }
             limits = @(
               'AutoCAD Core Console and GUI checks were not run for this release'
+              'Perplexity API and Qwen/Kimi ACP providers have managed/MCP/WPF coverage; authenticated model turns, account entitlement and native AutoCAD edits through these providers have not been validated'
               'Computer Use access UI, protocol and revocation have managed/WPF coverage; real Windows AutoCAD interaction and publisher identity matching still need live validation. Tool availability and OS/organization restrictions remain enforced'
               'C# runs in a separate acad.exe with guarded DWG replacement, but live startup/crash/replacement/recovery validation is pending. External effects are not sandboxed; parent snapshot/file-loading risks remain. The wblockCloneObjects root cause is not proven resolved'
               'AutoCAD 2027 OPM palette reads are temporarily disabled after an RCW cleanup crash; the root cause is not proven resolved. The new archive fixture and progress UI still need native validation'

@@ -18,6 +18,25 @@ Claude Code supplies the installed CLI's model list. The panel runs `claude -p` 
 
 Protocol: [official app-server reference](https://learn.chatgpt.com/docs/app-server). Distribution: [official 0.159.0 release](https://github.com/openai/codex/releases/tag/rust-v0.159.0).
 
+## Perplexity API
+
+Perplexity has a separate model and reasoning selection, independent of Codex and
+Claude. The catalog comes from `GET https://api.perplexity.ai/v1/models`; the
+default selection names the actual default model. API keys remain outside saved
+preferences and exported history. Changing model or effort preserves the local
+Perplexity conversation for the same drawing. See [setup, billing and supported
+behavior](perplexity.md).
+
+## Qwen Code and Kimi Code
+
+Each subscription provider has its own saved executable and model. Refresh reads
+the official CLI's authenticated ACP metadata without sending a model prompt.
+The default selection uses the CLI's current model; an explicit selection must
+appear in that session's catalog. Changing models resumes the existing CLI
+session. Kimi's catalog is limited to its `kimi-code/` subscription models.
+Neither provider substitutes an API key or a paid API endpoint for a missing
+subscription. See [installation and account login](subscription-providers.md).
+
 ## Validation
 
 - 25 offline tests: catalog/pagination/hidden models, effort validation, actual start/resume/turn arguments, old histories, and migration of only the standard CLI path.

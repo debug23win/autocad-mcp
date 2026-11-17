@@ -8,11 +8,13 @@ public sealed record ChatState(int Provider, string CodexExecutable, string Clau
     string? CodexModel = null, string? CodexReasoningEffort = null,
     IReadOnlyList<ChatLine>? Messages = null, int MaxSubagents = 3,
     string? ClaudeModel = null, string? ClaudeReasoningEffort = null,
-    string? CadSessionId = null, string? CadDocumentId = null);
+    string? CadSessionId = null, string? CadDocumentId = null,
+    string? PerplexityModel = null, string? PerplexityReasoningEffort = null,
+    string? QwenExecutable = null, string? KimiExecutable = null, string? QwenModel = null, string? KimiModel = null);
 
 // Atomic-save approach adapted from debug23win/ClaudeRevit HistoryStore.cs (MIT).
 // Copyright (c) 2026 Alexandre Roubaud. See licenses/ClaudeRevit-MIT.txt.
-// Changes: official CLI session ids instead of API history, per-process files, bounded transcript, no credentials.
+// Changes: provider session ids, per-process files, bounded transcript, no credentials.
 public sealed class ChatStateStore(string root)
 {
     private const long MaximumBytes = 3 * 1024 * 1024;
@@ -50,7 +52,7 @@ public sealed class ChatStateStore(string root)
         catch (ArgumentException) { return false; }
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return true; }
     }
-    public static bool Valid(ChatState state) => state.Provider is 0 or 1 && state.CodexExecutable is not null && state.ClaudeExecutable is not null
+    public static bool Valid(ChatState state) => state.Provider is 0 or 1 or 2 or 3 or 4 && state.CodexExecutable is not null && state.ClaudeExecutable is not null
         && state.Host is not null && state.Directory is not null && state.Transcript is not null
         && state.MaxSubagents is >= 0 and <= 4;
     public static ChatState UseBundledCodex(ChatState state, string bundled, string desktop)
