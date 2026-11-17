@@ -166,8 +166,8 @@ public abstract class SubscriptionAcpProvider : IChatProvider
         if (string.IsNullOrWhiteSpace(selected))
         {
             string? current = SubscriptionAcpProtocol.CurrentModel(session);
-            if (cli == SubscriptionCli.Kimi && (current is null || !models.Any(m => m.Id == current)))
-                throw new IOException(UiText.T("В отдельном профиле Kimi не выбрана модель подписки. Выполните вход Kimi Code из CAD MCP."));
+            if (current is null || !models.Any(m => m.Id == current))
+                throw new IOException(Name + UiText.T(" не подтвердил, что текущая модель использует подписку. Выберите модель подписки; запрос к модели не отправлен."));
             return session;
         }
         if (!models.Any(model => model.Id == selected))
@@ -214,8 +214,10 @@ public abstract class SubscriptionAcpProvider : IChatProvider
     {
         var models = await ReadModelsCoreAsync(ct);
         var current = models.FirstOrDefault(m => m.IsDefault);
+        if (current is null)
+            throw new IOException(Name + UiText.T(" не подтвердил, что текущая модель использует подписку. Выберите модель подписки; запрос к модели не отправлен."));
         return Name + UiText.T(": вход подтверждён; моделей доступно: ") + models.Count +
-            (current is null ? "" : UiText.T(". Текущая модель: ") + current.DisplayName) + UiText.T(". Запрос к модели не выполнялся.");
+            UiText.T(". Текущая модель: ") + current.DisplayName + UiText.T(". Запрос к модели не выполнялся.");
     }
 
     internal static IReadOnlyList<object> PromptBlocks(string prompt, IReadOnlyList<ChatAttachment> attachments)
@@ -253,16 +255,26 @@ internal static class SubscriptionAcpProtocol
     {
         string? current = CurrentModel(session);
         var option = FindOption(session, "model");
+        var available = ProviderJson.Child(ProviderJson.Child(session, "models"), "availableModels");
+        // Qwen advertises ALL configured providers even when started with --auth-type
+        // qwen-subscription; choosing an API-key route switches authentication. Its model picker
+        // options carry opaque IDs, while the accompanying models table supplies trusted authType.
+        // Join by that exact ID, failing closed when the route has no subscription metadata.
+        var qwenSubscriptions = new HashSet<string>(StringComparer.Ordinal);
+        if (cli == SubscriptionCli.Qwen && available.ValueKind == JsonValueKind.Array)
+            foreach (var group in available.EnumerateArray().Where(m => ProviderJson.Text(m, "modelId") is { Length: > 0 })
+                .GroupBy(m => ProviderJson.Text(m, "modelId")!, StringComparer.Ordinal))
+                if (group.All(m => ProviderJson.Text(ProviderJson.Child(m, "_meta"), "authType") == "qwen-subscription"))
+                    qwenSubscriptions.Add(group.Key);
         IEnumerable<SubscriptionModel> models;
         if (option is not null) models = OptionValues(option.Value);
         else
         {
-            var available = ProviderJson.Child(ProviderJson.Child(session, "models"), "availableModels");
             models = available.ValueKind == JsonValueKind.Array ? available.EnumerateArray()
                 .Where(m => ProviderJson.Text(m, "modelId") is { Length: > 0 })
                 .Select(m => new SubscriptionModel(ProviderJson.Text(m, "modelId")!, ProviderJson.Text(m, "name") ?? ProviderJson.Text(m, "modelId")!, false)) : [];
         }
-        return models.Where(m => cli != SubscriptionCli.Kimi || m.Id.StartsWith("kimi-code/", StringComparison.Ordinal))
+        return models.Where(m => cli == SubscriptionCli.Qwen ? qwenSubscriptions.Contains(m.Id) : m.Id.StartsWith("kimi-code/", StringComparison.Ordinal))
             .DistinctBy(m => m.Id).Select(m => m with { IsDefault = m.Id == current }).ToArray();
     }
 

@@ -10,7 +10,8 @@ internal static class FakeSubscriptionAcp
         bool kimi = args.FirstOrDefault() == "acp";
         string prefix = kimi ? "kimi-code/" : "";
         string session = "acp-fixture-session";
-        string selectedModel = prefix + "fixture-default";
+        string selectedModel = !kimi && Environment.CurrentDirectory.Contains("acp-paid-current", StringComparison.Ordinal)
+            ? "paid-openai" : prefix + "fixture-default";
         string trace = Path.Combine(Environment.CurrentDirectory, "acp-fixture.jsonl");
         void Record(string direction, JsonElement value) => File.AppendAllText(trace,
             JsonSerializer.Serialize(new { direction, value }) + Environment.NewLine);
@@ -37,8 +38,9 @@ internal static class FakeSubscriptionAcp
             currentModelId = selectedModel,
             availableModels = new[]
             {
-                new { modelId = prefix + "fixture-default", name = "Fixture default" },
-                new { modelId = prefix + "fixture-alt", name = "Fixture alternative" }
+                new { modelId = prefix + "fixture-default", name = "Fixture default", _meta = new { authType = kimi ? "kimi-code" : "qwen-subscription" } },
+                new { modelId = prefix + "fixture-alt", name = "Fixture alternative", _meta = new { authType = kimi ? "kimi-code" : "qwen-subscription" } },
+                new { modelId = "paid-openai", name = "Configured API provider", _meta = new { authType = "openai" } }
             }
         };
         object Modes() => new

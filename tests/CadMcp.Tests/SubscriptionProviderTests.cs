@@ -147,7 +147,49 @@ public sealed class SubscriptionProviderTests
         } } });
         var model = Assert.Single(SubscriptionAcpProtocol.Models(session, SubscriptionCli.Kimi));
         Assert.Equal(new SubscriptionModel("kimi-code/new-model", "New model", true), model);
-        Assert.Equal(2, SubscriptionAcpProtocol.Models(session, SubscriptionCli.Qwen).Count);
+        Assert.Empty(SubscriptionAcpProtocol.Models(session, SubscriptionCli.Qwen)); // No verified Qwen auth metadata.
+    }
+
+    [Fact]
+    public void Qwen_picker_joins_opaque_ids_to_subscription_auth_and_rejects_missing_or_conflicting_metadata()
+    {
+        var session = JsonSerializer.SerializeToElement(new
+        {
+            configOptions = new[] { new
+            {
+                id = "model", category = "model", type = "select", currentValue = "opaque-subscription-route",
+                options = new[] { new { value = "opaque-subscription-route", name = "Subscription" },
+                    new { value = "paid-route(qwen-subscription)", name = "Misleading API label" },
+                    new { value = "no-metadata(qwen-subscription)", name = "Unverified" },
+                    new { value = "conflicting-route", name = "Conflicting metadata" } }
+            } },
+            models = new { availableModels = new object[]
+            {
+                new { modelId = "opaque-subscription-route", _meta = new { authType = "qwen-subscription" } },
+                new { modelId = "paid-route(qwen-subscription)", _meta = new { authType = "openai" } },
+                new { modelId = "no-metadata(qwen-subscription)" },
+                new { modelId = "conflicting-route", _meta = new { authType = "qwen-subscription" } },
+                new { modelId = "conflicting-route", _meta = new { authType = "openai" } }
+            } }
+        });
+        Assert.Equal(new SubscriptionModel("opaque-subscription-route", "Subscription", true),
+            Assert.Single(SubscriptionAcpProtocol.Models(session, SubscriptionCli.Qwen)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Qwen_cannot_send_with_a_selected_or_restored_API_key_model(bool paidCurrent)
+    {
+        using var root = new TempFolder();
+        string cwd = paidCurrent ? root.File("acp-paid-current") : root.Path;
+        Directory.CreateDirectory(cwd);
+        var provider = new QwenProvider(TestEnvironment.ProviderOptions with { WorkingDirectory = cwd, Model = paidCurrent ? null : "paid-openai" })
+            { SessionId = paidCurrent ? "acp-fixture-session" : null };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await Assert.ThrowsAsync<IOException>(() => TestEnvironment.Collect(provider.SendAsync("must never reach a paid model", timeout.Token)));
+        Assert.Contains(Trace(provider), e => Method(e) == (paidCurrent ? "session/load" : "session/new"));
+        Assert.DoesNotContain(Trace(provider), e => Method(e) is "session/prompt" or "session/set_model" or "session/set_config_option");
     }
 
     [Fact]

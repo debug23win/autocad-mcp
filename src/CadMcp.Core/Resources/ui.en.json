@@ -555,5 +555,6 @@
   "Точка входа CLI находится вне установленного npm-пакета или отсутствует.": "The CLI entry point is outside the installed npm package or is missing.",
   "Ход этого провайдера уже выполняется.": "A turn for this provider is already running.",
   " закрыл соединение ACP.": " closed the ACP connection.",
-  "Конфигурация Kimi изменилась во время подключения. Повторите подключение после завершения входа.": "The Kimi configuration changed while connecting. Retry the connection after sign-in finishes."
+  "Конфигурация Kimi изменилась во время подключения. Повторите подключение после завершения входа.": "The Kimi configuration changed while connecting. Retry the connection after sign-in finishes.",
+  " не подтвердил, что текущая модель использует подписку. Выберите модель подписки; запрос к модели не отправлен.": " did not confirm that the current model uses the subscription. Select a subscription model; no model prompt was sent."
 }
