@@ -4,7 +4,7 @@ namespace CadMcp.Providers;
 
 public sealed record ChatPreferences(int Provider, string? CodexModel, string? CodexEffort, string? ClaudeModel, string? ClaudeEffort,
     bool ShowProgress = true, string? PerplexityModel = null, string? PerplexityEffort = null,
-    string? QwenModel = null, string? KimiModel = null);
+    string? QwenModel = null, string? KimiModel = null, bool CodexApiKeyMode = false, bool ClaudeApiKeyMode = false);
 public sealed class ChatPreferencesStore(string? path = null)
 {
     private readonly string path = path ?? Wire.DataDirectory("chat", "preferences.json");

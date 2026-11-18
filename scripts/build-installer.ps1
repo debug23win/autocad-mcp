@@ -33,7 +33,7 @@ try {
         if ((Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash -ne $file.sha256) { throw "Codex package checksum mismatch: $($file.path)" }
     }
     $cliVersion = & $codexExe --version
-    if ($LASTEXITCODE -ne 0 -or $cliVersion -ne 'codex-cli 0.159.0') { throw 'Expected verified official Codex 0.159.0' }
+    if ($LASTEXITCODE -ne 0 -or $cliVersion -ne "codex-cli $($codexAssets.version)") { throw "Expected verified official Codex $($codexAssets.version)" }
     New-Item -ItemType Directory -Force -Path "$payload/Contents/Win64","$payload/Contents/Host","$payload/Contents/Net10","$payload/Contents/Net10R250","$payload/Contents/Net10R251","$payload/Contents/Client" | Out-Null
     dotnet build CadMcp.sln -c Release -m:1 /nodeReuse:false "-p:AutoCADDir=$AutoCADDir" --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }

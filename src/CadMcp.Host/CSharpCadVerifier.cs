@@ -48,9 +48,11 @@ internal static class CSharpCadVerifier
                     }
                     if (type.StartsWith("System.Threading.Tasks.", StringComparison.Ordinal) ||
                         type is "System.Threading.Thread" or "System.Threading.ThreadPool" or "System.Threading.Timer" ||
-                        type.StartsWith("System.Reflection.", StringComparison.Ordinal) ||
                         type.StartsWith("System.Runtime.InteropServices.", StringComparison.Ordinal))
                         reason = "Background execution, reflection and native interop cannot be verified for CAD execution";
+                    bool runtimeTypeLabel = type == "System.Type" && symbol is IPropertySymbol { Name: "Name" or "FullName" };
+                    if ((type.StartsWith("System.Reflection.", StringComparison.Ordinal) || runtimeTypeLabel) && !IsRuntimeTypeLabel(identifier, symbol, model))
+                        reason = "Reflection cannot be verified for CAD execution. For a type label read value.GetType().Name or value.GetType().FullName directly; for AutoCAD objects use value.GetRXClass().DxfName";
                 }
                 if (reason is not null)
                 {
@@ -60,5 +62,22 @@ internal static class CSharpCadVerifier
             }
         }
         if (errors.Count > 0) throw new CadFault("CSHARP_PREFLIGHT_FAILED", string.Join("\n", errors.Take(20)));
+    }
+
+    private static bool IsRuntimeTypeLabel(SimpleNameSyntax identifier, ISymbol? symbol, SemanticModel model)
+    {
+        // Type.Name is declared on System.Reflection.MemberInfo. Reading its string directly
+        // does not expose a reflection handle or authorize invoking any other member.
+        if (symbol is not IPropertySymbol { Name: "Name" or "FullName", Type.SpecialType: SpecialType.System_String } ||
+            identifier.Parent is not MemberAccessExpressionSyntax access || access.Name != identifier)
+            return false;
+        ExpressionSyntax receiver = access.Expression;
+        while (receiver is ParenthesizedExpressionSyntax parentheses) receiver = parentheses.Expression;
+        return receiver is InvocationExpressionSyntax { ArgumentList.Arguments.Count: 0 } invocation &&
+            model.GetSymbolInfo(invocation).Symbol is IMethodSymbol
+            {
+                Name: "GetType", IsStatic: false, IsGenericMethod: false,
+                ContainingType.SpecialType: SpecialType.System_Object, Parameters.Length: 0
+            };
     }
 }

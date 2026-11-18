@@ -10,7 +10,7 @@ namespace CadMcp.Providers;
 public sealed record ProviderOptions(string Executable, string McpExecutable, string WorkingDirectory,
     string? Model = null, string? ReasoningEffort = null, IReadOnlyList<string>? McpArguments = null,
     int MaxSubagents = 3, string? OwnerId = null, string? CadSessionId = null, string? CadDocumentId = null, ComputerUseTarget? ComputerUseTarget = null,
-    Func<bool>? ComputerUseAccessStillValid = null)
+    Func<bool>? ComputerUseAccessStillValid = null, ProviderAuthentication? Authentication = null)
 {
     public Dictionary<string,string> CadEnvironment => new() { ["CAD_MCP_OWNER_ID"] = OwnerId ?? "", ["CAD_MCP_SESSION_ID"] = CadSessionId ?? "", ["CAD_MCP_DOCUMENT_ID"] = CadDocumentId ?? "" };
 }
@@ -60,11 +60,14 @@ public static class ProviderProcess
         try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (TimeoutException) { }
     }
-    public static async Task<string> DrainErrors(Process p)
+    public static async Task<string> DrainErrors(Process p, Func<string, string>? redactor = null)
     {
         var text = new StringBuilder();
         while (await p.StandardError.ReadLineAsync() is { } line)
-            if (text.Length < 8192) text.AppendLine(line[..Math.Min(line.Length, 1024)]);
+        {
+            string safe = redactor?.Invoke(line) ?? line;
+            if (text.Length < 8192) text.AppendLine(safe[..Math.Min(safe.Length, 1024)]);
+        }
         return text.ToString();
     }
     /// <summary>Observe a read that is abandoned when the process is stopped, so its fault is not reported as unobserved.</summary>
@@ -73,6 +76,31 @@ public static class ProviderProcess
 
 internal static class ProviderJson
 {
+    internal static JsonElement Redact(JsonElement value, ProviderAuthentication? authentication)
+    {
+        if (authentication is null) return value;
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            void Write(JsonElement item)
+            {
+                switch (item.ValueKind)
+                {
+                    case JsonValueKind.Object:
+                        writer.WriteStartObject();
+                        foreach (var property in item.EnumerateObject()) { writer.WritePropertyName(authentication.Redact(property.Name)); Write(property.Value); }
+                        writer.WriteEndObject(); break;
+                    case JsonValueKind.Array:
+                        writer.WriteStartArray(); foreach (var entry in item.EnumerateArray()) Write(entry); writer.WriteEndArray(); break;
+                    case JsonValueKind.String: writer.WriteStringValue(authentication.Redact(item.GetString()!)); break;
+                    default: item.WriteTo(writer); break;
+                }
+            }
+            Write(value);
+        }
+        using var sanitized = JsonDocument.Parse(buffer.ToArray());
+        return sanitized.RootElement.Clone();
+    }
     public static string? Text(JsonElement e, string key) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     public static int? Id(JsonElement e) =>
@@ -90,7 +118,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(90);
     internal TimeSpan EventSilenceTimeout { get; set; } = TimeSpan.FromMinutes(5);
     internal TimeSpan AcknowledgementTimeout { get => live.AcknowledgementTimeout; set => live.AcknowledgementTimeout = value; }
-    public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
+    public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input with { Attachments = ChatAttachments.Capture(input.Attachments) }, ct);
     // Read-only built-in tools: the working folder and the files the user attached, never anything else.
     private static readonly string[] ReadTools = ["Read", "Glob", "Grep"];
     private static readonly JsonSerializerOptions SettingsJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -108,7 +136,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
         args.Add("WebSearch");
         // Attached files live anywhere; reading outside the working folder needs a rule per file. The rules go in
         // settings JSON: --allowedTools splits its list at spaces next to parentheses, as in "План (ред. 2).pdf".
-        var readable = attachments.Select(file => ReadRule(file.Path)).OfType<string>().Distinct(StringComparer.Ordinal).ToArray();
+        var readable = attachments.Where(file => file.Text is null).Select(file => ReadRule(file.Path)).OfType<string>().Distinct(StringComparer.Ordinal).ToArray();
         if (readable.Length > 0) args.AddRange(["--settings", JsonSerializer.Serialize(new { permissions = new { allow = readable } }, SettingsJson)]);
         if (!string.IsNullOrWhiteSpace(options.Model)) args.AddRange(["--model", options.Model]);
         if (!string.IsNullOrWhiteSpace(options.ReasoningEffort)) args.AddRange(["--effort", options.ReasoningEffort]);
@@ -164,7 +192,8 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
 
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
     {
-        attachments ??= Array.Empty<ChatAttachment>();
+        attachments = ChatAttachments.Capture(attachments ?? Array.Empty<ChatAttachment>());
+        if (options.Authentication is { } authentication) await authentication.EnsureClaudeCompatibilityAsync(options, ct);
         var attempt = new Attempt();
         await foreach (var item in RunAsync(prompt, attachments, attempt, ct)) yield return item;
         if (!attempt.SessionMissing) yield break;
@@ -180,12 +209,16 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
     private async IAsyncEnumerable<ChatEvent> RunAsync(string prompt, IReadOnlyList<ChatAttachment> attachments, Attempt attempt, [EnumeratorCancellation] CancellationToken ct)
     {
         var start = ProviderProcess.StartInfo(options, Arguments(attachments));
+        options.Authentication?.ConfigureClaude(start);
         if (options.MaxSubagents > 0) start.Environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = options.MaxSubagents.ToString();
         string? resumed = SessionId;
         using var p = Process.Start(start) ?? throw new IOException("Cannot start Claude Code");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
-        var stderr = ProviderProcess.DrainErrors(p);
-        var lines = new ProviderLines(p.StandardOutput.BaseStream);
+        Func<string, string>? redactor = options.Authentication is { } authentication ? authentication.Redact : null;
+        var stderr = ProviderProcess.DrainErrors(p, redactor);
+        var lines = new ProviderLines(p.StandardOutput.BaseStream, diagnosticRedactor: redactor);
+        var textRedactor = options.Authentication?.CreateStreamRedactor();
+        var summaryRedactor = options.Authentication?.CreateStreamRedactor();
         Task<JsonDocument?>? reading = null;
         bool completed = false, streamed = false, initialized = false, thinking = false, started = false;
         string? limitWarning = null;
@@ -254,7 +287,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                 {
                     if (startupClock.Elapsed - lastHeartbeat >= TimeSpan.FromSeconds(1))
                     { lastHeartbeat = startupClock.Elapsed; yield return new("heartbeat", ""); }
-                    var e = json.RootElement;
+                    var e = ProviderJson.Redact(json.RootElement, options.Authentication);
                     string? type = ProviderJson.Text(e, "type");
                     string? subtype = ProviderJson.Text(e, "subtype");
                     started |= type is "stream_event" or "assistant" or "user" or "result" || type == "system" && subtype == "init";
@@ -272,7 +305,7 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                     }
                     if (type == "system" && subtype == "thinking_tokens" && ProviderJson.Child(e, "estimated_tokens") is { ValueKind: JsonValueKind.Number } estimate && estimate.TryGetInt32(out int tokens))
                         yield return new("status", UiText.T("Claude рассуждает: около ") + tokens + UiText.T(" токенов"));
-                    if (type == "rate_limit_event" && ProviderJson.Child(e, "rate_limit_info") is { ValueKind: JsonValueKind.Object } limit
+                    if (options.Authentication is null && type == "rate_limit_event" && ProviderJson.Child(e, "rate_limit_info") is { ValueKind: JsonValueKind.Object } limit
                         && ProviderJson.Text(limit, "status") == "allowed_warning" && LimitWarning(limit) is { } warning && warning != limitWarning)
                     { limitWarning = warning; yield return new("status", warning); }
                     if (type == "user" && ProviderJson.Text(e, "uuid") is {} uuid && acknowledgements.TryRemove(uuid,out int receiptId))
@@ -291,8 +324,16 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             thinking = startsThinking;
                         }
                         // Claude Code shows a summary of the reasoning when it has one, never the reasoning itself.
-                        if (ProviderJson.Text(delta, "thinking") is { Length: > 0 } summary) yield return new("reasoning_summary", summary);
-                        if (ProviderJson.Text(delta, "text") is { } text) { streamed = true; yield return new("text", text); }
+                        if (ProviderJson.Text(delta, "thinking") is { Length: > 0 } summary)
+                        {
+                            string safe = summaryRedactor?.Push(summary) ?? summary;
+                            if (safe.Length > 0) yield return new("reasoning_summary", safe);
+                        }
+                        if (ProviderJson.Text(delta, "text") is { } text)
+                        {
+                            streamed = true; string safe = textRedactor?.Push(text) ?? text;
+                            if (safe.Length > 0) yield return new("text", safe);
+                        }
                     }
                     if (type == "assistant" && ProviderJson.Child(ProviderJson.Child(e, "message"), "content") is { ValueKind: JsonValueKind.Array } blocks)
                         foreach (var block in blocks.EnumerateArray())
@@ -325,9 +366,16 @@ public sealed class ClaudeProvider(ProviderOptions options) : IChatProvider
                             string message = ResultError(e);
                             if (resumed is not null && !initialized && message.Contains("No conversation found", StringComparison.OrdinalIgnoreCase))
                             { attempt.SessionMissing = true; yield break; }
-                            throw new IOException("Claude Code: " + FriendlyError(message));
+                            message = redactor?.Invoke(message) ?? message;
+                            string friendly = options.Authentication is not null &&
+                                (message.Contains("Invalid API key", StringComparison.OrdinalIgnoreCase) || message.Contains("/login", StringComparison.OrdinalIgnoreCase) || message.Contains("OAuth token", StringComparison.OrdinalIgnoreCase))
+                                ? UiText.T("Проверьте API-ключ Claude и доступ к оплачиваемому API; вход по подписке не заменяет выбранный API-ключ. (") + message + ")"
+                                : FriendlyError(message);
+                            throw new IOException("Claude Code: " + friendly);
                         }
                         if (!streamed && ProviderJson.Text(e, "result") is { } result) yield return new("text", result);
+                        if (textRedactor?.Flush() is { Length: > 0 } remainingText) yield return new("text", remainingText);
+                        if (summaryRedactor?.Flush() is { Length: > 0 } remainingSummary) yield return new("reasoning_summary", remainingSummary);
                         var answered = ProviderJson.Child(e, "user_message_uuids") is { ValueKind: JsonValueKind.Array } listed
                             ? listed.EnumerateArray().Select(u => u.ValueKind == JsonValueKind.String ? u.GetString() : null).OfType<string>().ToArray() : null;
                         turns.Result(answered);
@@ -383,7 +431,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
     internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(90);
     internal TimeSpan EventSilenceTimeout { get; set; } = TimeSpan.FromMinutes(5);
     private readonly LiveInput live = new();
-    public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input, ct);
+    public Task<InputReceipt> SteerAsync(ChatInput input, CancellationToken ct) => live.SendAsync(input with { Attachments = ChatAttachments.Capture(input.Attachments) }, ct);
     public string[] Arguments() => Arguments(null);
     internal string[] Arguments(ICollection<string>? warnings)
     {
@@ -406,11 +454,12 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         "-c", "mcp_servers.cad.tools.cad_export.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_publish.approval_mode=\"approve\"",
         "-c", "mcp_servers.cad.tools.cad_lisp.approval_mode=\"approve\"",
-        "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"", "app-server"];
+        "-c", "mcp_servers.cad.tools.cad_focus.approval_mode=\"approve\"",
+        .. (options.Authentication?.CodexArguments ?? Array.Empty<string>()), "app-server"];
     }
     public async IAsyncEnumerable<ChatEvent> SendAsync(string prompt, [EnumeratorCancellation] CancellationToken ct, IReadOnlyList<ChatAttachment>? attachments = null)
     {
-        attachments ??= Array.Empty<ChatAttachment>();
+        attachments = ChatAttachments.Capture(attachments ?? Array.Empty<ChatAttachment>());
         using var accessLifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var monitorStop = new CancellationTokenSource();
         ct = accessLifetime.Token;
@@ -418,14 +467,18 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         if (options.ComputerUseTarget is not null && options.ComputerUseAccessStillValid?.Invoke() == false)
             throw new IOException(UiText.T("Разрешение Computer Use отозвано; начните новый ход без доступа к интерфейсу."));
         var warnings = new List<string>();
-        using var p = Process.Start(ProviderProcess.StartInfo(options, Arguments(warnings))) ?? throw new IOException("Cannot start Codex");
+        var start = ProviderProcess.StartInfo(options, Arguments(warnings));
+        options.Authentication?.ConfigureCodex(start);
+        using var p = Process.Start(start) ?? throw new IOException("Cannot start Codex");
         using var registration = ct.Register(() => ProviderProcess.Stop(p));
-        var stderr = ProviderProcess.DrainErrors(p);
-        var lines = new ProviderLines(p.StandardOutput.BaseStream);
+        Func<string, string>? redactor = options.Authentication is { } authentication ? authentication.Redact : null;
+        var stderr = ProviderProcess.DrainErrors(p, redactor);
+        var lines = new ProviderLines(p.StandardOutput.BaseStream, diagnosticRedactor: redactor);
+        var summaryRedactor = options.Authentication?.CreateStreamRedactor();
         foreach (var warning in warnings) yield return new("status", warning);
         var models = new List<JsonElement>();
         string? model = null, effort = null;
-        bool computerPolicyReady = false, modelReady = false, threadStarting = false;
+        bool computerPolicyReady = false, modelReady = false, authenticationReady = options.Authentication is null, loginRequested = false, threadStarting = false;
         IReadOnlyDictionary<string, string>? deniedAumids = null;
         string? activeTurnId = null;
         var usageTracker = new CodexUsageTracker(SessionId is not null);
@@ -448,7 +501,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
         async Task Resume() => await Send(new { id = 2, method = "thread/resume", @params = new { model, threadId = SessionId, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write", config = ComputerUseConfiguration.ThreadOverrides(options.ComputerUseTarget, deniedAumids) } });
         async Task BeginWhenReady()
         {
-            if (!computerPolicyReady || !modelReady || threadStarting) return;
+            if (!computerPolicyReady || !modelReady || !authenticationReady || threadStarting) return;
             threadStarting = true;
             if (SessionId is null)
                 await Send(new { id = 2, method = "thread/start", @params = new { model, cwd = options.WorkingDirectory, developerInstructions = CadAgent.Instructions, approvalPolicy = "never", sandbox = "workspace-write", config = ComputerUseConfiguration.ThreadOverrides(options.ComputerUseTarget, deniedAumids) } });
@@ -490,7 +543,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
             {
                 using (doc)
                 {
-                    var e = doc.RootElement;
+                    var e = ProviderJson.Redact(doc.RootElement, options.Authentication);
                     if (e.ValueKind != JsonValueKind.Object) continue;
                     // Protocol activity includes messages intentionally hidden from the transcript.
                     // It must still keep the liveness indicator and silence deadline accurate.
@@ -507,7 +560,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (!isRequestOrEvent && e.TryGetProperty("error", out var error))
                     {
                         if (replyId == 5) { yield return new("rate_limits", UiText.T("нет данных")); continue; }
-                        string message = ErrorMessage(error);
+                        string message = ErrorMessage(error); message = redactor?.Invoke(message) ?? message;
                         if (replyId == 2 && SessionId is not null && message.Contains("already has an active writer", StringComparison.OrdinalIgnoreCase) && resumeRetries < 3)
                         {
                             resumeRetries++;
@@ -523,13 +576,17 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         if (id == 1)
                         {
                             await Send(new { method = "initialized", @params = new { } });
-                            await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
-                            await Send(new { id = 5, method = "account/rateLimits/read", @params = new { } });
+                            if (options.Authentication is null)
+                            {
+                                await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
+                                await Send(new { id = 5, method = "account/rateLimits/read", @params = new { } });
+                            }
                             await Send(new { id = 6, method = "config/read", @params = new { includeLayers = false, cwd = options.WorkingDirectory } });
                         }
                         else if (id == 5) yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(result));
                         else if (id == 6)
                         {
+                            options.Authentication?.VerifyCodexConfiguration(result);
                             var config = ProviderJson.Child(ProviderJson.Child(result, "config"), "computer_use");
                             if (!ComputerUseConfiguration.Matches(config, options.ComputerUseTarget))
                                 throw new IOException(UiText.T("Codex не подтвердил настройки Computer Use; доступ не применяется. Проверьте версию CLI и ограничения организации."));
@@ -537,10 +594,23 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                             if (options.MaxSubagents > 0) _ = CadSubagentPolicy.Arguments(options, deniedAumids: deniedAumids);
                             computerPolicyReady = true;
                             yield return new("computer_use_status", options.ComputerUseTarget is null ? UiText.T("Computer Use: отключён для этого чата") : UiText.T("Computer Use: правило доступа передано Codex для ") + options.ComputerUseTarget.DisplayName);
+                            if (options.Authentication is { } apiAuthentication)
+                            {
+                                loginRequested = true;
+                                await Send(apiAuthentication.CodexLoginRequest(7));
+                            }
                             await BeginWhenReady();
+                        }
+                        else if (id == 7 && options.Authentication is { } apiAuthentication)
+                        {
+                            if (!computerPolicyReady || !loginRequested || authenticationReady) throw new IOException("Codex returned an unexpected API authentication response; no turn was started");
+                            apiAuthentication.VerifyCodexLogin(result);
+                            authenticationReady = true;
+                            await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
                         }
                         else if (id == 4)
                         {
+                            if (!authenticationReady) throw new IOException("Codex returned models before confirming API authentication; no turn was started");
                             if (ProviderJson.Child(result, "data") is not { ValueKind: JsonValueKind.Array } data)
                                 throw new IOException(UiText.T("Codex вернул каталог моделей в неизвестном формате"));
                             models.AddRange(data.EnumerateArray().Select(m => m.Clone()));
@@ -559,6 +629,8 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                         }
                         else if (id == 2)
                         {
+                            if (!computerPolicyReady || !modelReady || !authenticationReady || !threadStarting)
+                                throw new IOException("Codex returned a thread before the configuration, model and authentication checks completed; no turn was started");
                             SessionId = ProviderJson.Text(ProviderJson.Child(result, "thread"), "id") ?? throw new IOException("Codex did not return a thread id");
                             CadSubagentPolicy.BindPrimary(options,SessionId);
                             yield return new("session", SessionId);
@@ -573,7 +645,7 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (!isRequestOrEvent) continue;
                     string? name = method.ValueKind == JsonValueKind.String ? method.GetString() : null;
                     var parameters = ProviderJson.Child(e, "params");
-                    if (name == "account/rateLimits/updated") yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(parameters));
+                    if (name == "account/rateLimits/updated" && options.Authentication is null) yield return new("rate_limits", "", RateLimits: CodexRateLimits.Parse(parameters));
                     string? eventThread = ProviderJson.Text(parameters, "threadId");
                     bool rootEvent = eventThread is null || eventThread == SessionId;
                     if (name == "thread/tokenUsage/updated" && usageTracker.Observe(parameters, SessionId, activeTurnId) is { } usage)
@@ -591,7 +663,11 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (name == "item/agentMessage/delta" && rootEvent) answer.Delta(parameters);
                     // Codex exposes a summary of reasoning, never the private reasoning text.
                     if (name == "item/reasoning/summaryTextDelta" && rootEvent)
-                        yield return new("reasoning_summary", ProviderJson.Text(parameters, "delta") ?? "");
+                    {
+                        string summary = ProviderJson.Text(parameters, "delta") ?? "";
+                        string safe = summaryRedactor?.Push(summary) ?? summary;
+                        if (safe.Length > 0) yield return new("reasoning_summary", safe);
+                    }
                     var item = ProviderJson.Child(parameters, "item");
                     if (rootEvent && name is "item/started" or "item/completed") answer.Item(item, name == "item/completed");
                     string? itemType = ProviderJson.Text(item, "type");
@@ -616,14 +692,16 @@ public sealed class CodexProvider(ProviderOptions options) : IChatProvider
                     if (name == "error")
                     {
                         if (ProviderJson.Child(parameters, "willRetry").ValueKind == JsonValueKind.True) yield return new("status", UiText.T("Codex восстанавливает соединение"));
-                        else throw new IOException("Codex: " + FriendlyError(ErrorMessage(parameters)));
+                        else { string message = ErrorMessage(parameters); throw new IOException("Codex: " + FriendlyError(redactor?.Invoke(message) ?? message)); }
                     }
                     if (name == "turn/completed" && rootEvent)
                     {
                         live.Close();
                         var turn = ProviderJson.Child(parameters, "turn");
                         if (ProviderJson.Text(turn, "status") != "completed") throw new IOException("Codex turn did not complete: " + turn);
-                        yield return new("text", answer.Finish(turn));
+                        if (summaryRedactor?.Flush() is { Length: > 0 } remainingSummary) yield return new("reasoning_summary", remainingSummary);
+                        string finalAnswer = answer.Finish(turn);
+                        yield return new("text", redactor?.Invoke(finalAnswer) ?? finalAnswer);
                         yield return new("completed", "completed"); yield break;
                     }
                 }

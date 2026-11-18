@@ -40,14 +40,14 @@ On Windows with installed AutoCAD, use a separate test DWG only:
 2. Restores packages in locked mode.
 3. Builds every `.github/ci-projects.txt` project, including .NET 10 adapters/native probes, with warnings as errors.
 4. Runs tests and retains TRX results.
-5. Runs the native WPF theme probe, including saved provider/model settings and connection controls for Perplexity, Qwen and Kimi. This exercises the UI without authenticated model requests or AutoCAD geometry changes.
+5. Runs the native WPF theme probe, including saved provider/model settings, API key controls for Codex/Claude/Perplexity, and subscription controls for Qwen/Kimi. This exercises the UI without authenticated model requests or AutoCAD geometry changes.
 
 ## Releases
 
 `.github/workflows/release.yml` builds Windows installers through `scripts/build-installer.ps1`:
 
 1. Repeats CI checks on the release commit.
-2. Downloads/checks official Codex 0.159.0 (`scripts/prepare-codex.ps1`).
+2. Downloads/checks official Codex 0.169.1 (`scripts/prepare-codex.ps1`).
 3. Compiles with Inno Setup 6.3 or newer.
 4. Verifies every payload file against its manifest.
 5. Writes `validation.json` and `SHA256SUMS.txt`.

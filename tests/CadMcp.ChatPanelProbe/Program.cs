@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -25,6 +26,7 @@ internal static class Program
         var root = Path.GetFullPath(Path.Combine(".runtime", "panel-probe-" + Guid.NewGuid().ToString("N")));
         Environment.SetEnvironmentVariable("CAD_MCP_CSHARP_POLICY_FILE", Path.Combine(root, "csharp-policy.json"));
         Environment.SetEnvironmentVariable("CAD_MCP_COMPUTER_USE_ACCESS_FILE", Path.Combine(root, "computer-use-access.json"));
+        ProbeAuthentication(Path.Combine(root, "authentication"));
         var store = new ChatStateStore(root);
         store.Save(new(0, "codex.exe", "claude.exe", "host.exe", Environment.CurrentDirectory, "kept-session", "", "test-key", "gpt-6-astra", "ultra"));
         var preferences = new ChatPreferencesStore(Path.Combine(root, "preferences.json"));
@@ -287,5 +289,194 @@ internal static class Program
         };
         app.Run(window);
         if (browserError is not null) throw browserError;
+    }
+
+    private static void ProbeAuthentication(string root)
+    {
+        // No loaded WPF surface or provider process: catalogs are fixtures, and the only Send calls
+        // exercise the blank-key validation that must return before starting the host/CLI.
+        const string codexKey = "cad-probe-openai-not-a-real-key";
+        const string claudeKey = "cad-probe-anthropic-not-a-real-key";
+        const string environmentKey = "cad-probe-environment-key-one";
+        const string changedEnvironmentKey = "cad-probe-environment-key-two";
+        string? oldOpenAi = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        string? oldAnthropic = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            object? Value(ChatPanel panel, string name) => typeof(ChatPanel).GetField(name, flags)!.GetValue(panel);
+            T Control<T>(ChatPanel panel, string name) where T : class => (T)Value(panel, name)!;
+            void Set(ChatPanel panel, string name, object? value) => typeof(ChatPanel).GetField(name, flags)!.SetValue(panel, value);
+            object? Call(ChatPanel panel, string name, params object[] args) => typeof(ChatPanel).GetMethod(name, flags)!.Invoke(panel, args);
+            void Check(bool condition, string message) { if (!condition) throw new Exception("Authentication probe: " + message); }
+            var store = new ChatStateStore(root);
+            var preferences = new ChatPreferencesStore(Path.Combine(root, "preferences.json"));
+            store.Save(new(0, "trusted-codex.exe", "trusted-claude.exe", typeof(Program).Assembly.Location, root,
+                "subscription-session", "", Messages: new[] { new ChatLine("user", "Сохранённая задача"), new ChatLine("assistant", "Сохранённый ответ") }));
+            var panel = new ChatPanel(store, preferences: preferences);
+            var provider = Control<ComboBox>(panel, "provider");
+            var mode = Control<ComboBox>(panel, "authenticationMode");
+            var codexPassword = Control<PasswordBox>(panel, "codexApiKey");
+            var claudePassword = Control<PasswordBox>(panel, "claudeApiKey");
+            var model = Control<ComboBox>(panel, "model");
+            var executable = Control<System.Windows.Controls.TextBox>(panel, "executable");
+            var messages = Control<List<ChatLine>>(panel, "messages");
+            int originalCount = messages.Count;
+            Check(mode.SelectedIndex == 0 && Call(panel, "SelectedAuthentication") is null, "Legacy settings unexpectedly enabled API billing");
+            Check(Control<StackPanel>(panel, "authenticationConnection").Visibility == Visibility.Visible &&
+                Control<StackPanel>(panel, "codexApiConnection").Visibility == Visibility.Collapsed, "Default CLI authentication controls are incorrect");
+            Check(Control<StackPanel>(panel, "codexApiConnection").Children.OfType<TextBlock>().Any(text => text.Text.Contains("OPENAI_API_KEY") && text.Text.Contains("ChatGPT")) &&
+                Control<StackPanel>(panel, "claudeApiConnection").Children.OfType<TextBlock>().Any(text => text.Text.Contains("ANTHROPIC_API_KEY") && text.Text.Contains("Claude")),
+                "API setup/billing guidance is missing");
+            var codexModels = new[] { new CodexModel("probe-codex", "Probe Codex", "medium", new[] { "low", "medium", "high" }, true) };
+            panel.ApplyModels(codexModels);
+            model.SelectedValue = "probe-codex";
+            Control<ComboBox>(panel, "reasoning").SelectedValue = "high";
+            executable.Text = "trusted-codex-fixture.exe";
+            Set(panel, "adapter", new CodexProvider(new ProviderOptions("unused.exe", "unused-host.exe", root)) { SessionId = "old-account-session" });
+            mode.SelectedIndex = 1;
+            Check(Value(panel, "adapter") is null && Value(panel, "restored") is null && Control<IReadOnlyList<CodexModel>>(panel, "catalog").Count == 0,
+                "Changing billing mode retained the account session or catalog");
+            Check(messages.Count == originalCount && messages[0].Text == "Сохранённая задача", "Changing billing mode erased visible history");
+            Check(Control<StackPanel>(panel, "codexApiConnection").Visibility == Visibility.Visible &&
+                Control<StackPanel>(panel, "claudeApiConnection").Visibility == Visibility.Collapsed && Control<TextBlock>(panel, "quota").Visibility == Visibility.Collapsed,
+                "Codex API controls show the wrong key or subscription quota");
+            Control<System.Windows.Controls.TextBox>(panel, "host").Text = typeof(Program).Assembly.Location;
+            Control<System.Windows.Controls.TextBox>(panel, "directory").Text = root;
+            Control<System.Windows.Controls.TextBox>(panel, "input").Text = "Проверка пустого ключа";
+            ((Task)Call(panel, "Send")!).GetAwaiter().GetResult();
+            Check(Control<TextBlock>(panel, "activity").Text.Contains("OPENAI_API_KEY") && Value(panel, "running") is null && messages.Count == originalCount,
+                "Blank OpenAI API key was not rejected before startup");
+            codexPassword.Password = codexKey;
+            var entered = (ProviderAuthentication)Call(panel, "SelectedAuthentication")!;
+            Check(entered.Matches(new ProviderAuthentication(codexKey)), "Entered OpenAI key was not selected");
+            panel.ApplyModels(codexModels);
+            var connectionExpander = ((DockPanel)panel.Content).Children.OfType<StackPanel>()
+                .SelectMany(stack => stack.Children.OfType<Expander>()).Single();
+            connectionExpander.IsExpanded = true;
+            Control<TextBlock>(panel, "activity").Text = "Готово";
+            panel.Measure(new Size(560, 1250)); panel.Arrange(new Rect(0, 0, 560, 1250)); panel.UpdateLayout();
+            var authenticationImage = new RenderTargetBitmap(560, 1250, 96, 96, PixelFormats.Pbgra32);
+            authenticationImage.Render(panel);
+            var authenticationEncoder = new PngBitmapEncoder(); authenticationEncoder.Frames.Add(BitmapFrame.Create(authenticationImage));
+            string authenticationImagePath = Path.Combine(Path.GetDirectoryName(root)!, "panel-api-auth.png");
+            using (var imageFile = File.Create(authenticationImagePath)) authenticationEncoder.Save(imageFile);
+            Console.WriteLine("API authentication UI image: " + authenticationImagePath);
+            string invalidDocument = Path.Combine(root, "unreadable.docx");
+            File.WriteAllText(invalidDocument, "not a DOCX ZIP package");
+            Call(panel, "AddAttachments", (object)new[] { invalidDocument });
+            Control<System.Windows.Controls.TextBox>(panel, "input").Text = "Изучи приложенный документ";
+            ((Task)Call(panel, "Send")!).GetAwaiter().GetResult();
+            Check(Control<TextBlock>(panel, "activity").Text.Contains("unreadable.docx") &&
+                Control<System.Windows.Controls.TextBox>(panel, "input").Text == "Изучи приложенный документ" &&
+                Control<List<ChatAttachment>>(panel, "attachments").Count == 1 && messages.Count == originalCount && Value(panel, "running") is null,
+                "Invalid DOCX failed silently, started a provider, or discarded the unsent input/attachment");
+            Control<List<ChatAttachment>>(panel, "attachments").Clear();
+            Call(panel, "RefreshAttachments");
+
+            provider.SelectedIndex = 1;
+            Check(mode.SelectedIndex == 0 && Call(panel, "SelectedAuthentication") is null, "Codex API mode changed Claude billing mode");
+            executable.Text = "trusted-claude-fixture.exe";
+            panel.ApplyClaudeModels(new[] {
+                new ClaudeModel("default", "Default", "Probe Claude default", "probe-claude", new[] { "low", "medium", "high" }, true),
+                new ClaudeModel("probe-claude", "Probe Claude", "Probe Claude", "probe-claude", new[] { "low", "medium", "high" }, false) });
+            model.SelectedValue = "probe-claude";
+            Control<ComboBox>(panel, "reasoning").SelectedValue = "medium";
+            mode.SelectedIndex = 1;
+            ((Task)Call(panel, "Send")!).GetAwaiter().GetResult();
+            Check(Control<TextBlock>(panel, "activity").Text.Contains("ANTHROPIC_API_KEY") && Value(panel, "running") is null && messages.Count == originalCount,
+                "Blank Anthropic API key was not rejected before startup");
+            claudePassword.Password = claudeKey;
+            Check(((ProviderAuthentication)Call(panel, "SelectedAuthentication")!).Matches(new ProviderAuthentication(claudeKey)), "Entered Anthropic key was not selected");
+            claudePassword.Password = "";
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", " " + claudeKey + " ");
+            Check(((ProviderAuthentication)Call(panel, "SelectedAuthentication")!).Matches(new ProviderAuthentication(claudeKey)), "Empty Anthropic password did not use the environment key");
+            claudePassword.Password = claudeKey;
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+            Check(Control<StackPanel>(panel, "claudeApiConnection").Visibility == Visibility.Visible && Control<StackPanel>(panel, "codexApiConnection").Visibility == Visibility.Collapsed,
+                "Claude API mode exposes the wrong provider key");
+            for (int i = 2; i < 5; i++)
+            {
+                provider.SelectedIndex = i;
+                Check(Control<StackPanel>(panel, "authenticationConnection").Visibility == Visibility.Collapsed,
+                    "OpenAI/Anthropic authentication controls are shown for another provider");
+            }
+            provider.SelectedIndex = 0;
+            Check(mode.SelectedIndex == 1 && executable.Text == "trusted-codex-fixture.exe" && (string)model.SelectedValue == "probe-codex" &&
+                (string)Control<ComboBox>(panel, "reasoning").SelectedValue == "high", "Provider switching lost Codex mode/path/model/effort");
+            provider.SelectedIndex = 1;
+            Check(mode.SelectedIndex == 1 && executable.Text == "trusted-claude-fixture.exe" && (string)model.SelectedValue == "probe-claude" &&
+                (string)Control<ComboBox>(panel, "reasoning").SelectedValue == "medium", "Provider switching lost Claude mode/path/model/effort");
+            provider.SelectedIndex = 0;
+            Call(panel, "SetBusy", true);
+            Check(!mode.IsEnabled && !codexPassword.IsEnabled && !claudePassword.IsEnabled && !provider.IsEnabled && Control<TextBlock>(panel, "quota").Visibility == Visibility.Collapsed,
+                "Active API task permits credentials/billing changes or shows subscription quota");
+            Call(panel, "SetBusy", false);
+            mode.SelectedIndex = 0;
+            Check(Control<TextBlock>(panel, "quota").Visibility == Visibility.Visible && Call(panel, "SelectedAuthentication") is null,
+                "Returning to CLI settings retained API authentication");
+            mode.SelectedIndex = 1;
+
+            // A changed environment key must invalidate an existing adapter just like editing the password box.
+            codexPassword.Password = "";
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", environmentKey);
+            Check(((ProviderAuthentication)Call(panel, "SelectedAuthentication")!).Matches(new ProviderAuthentication(environmentKey)), "Empty password did not use the environment key");
+            Set(panel, "adapter", new CodexProvider(new ProviderOptions("unused.exe", "unused-host.exe", root)) { SessionId = "old-environment-session" });
+            Set(panel, "restored", store.Load());
+            panel.ApplyModels(codexModels);
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", changedEnvironmentKey);
+            var changed = (ProviderAuthentication)Call(panel, "SelectedAuthentication")!;
+            Check(changed.Matches(new ProviderAuthentication(changedEnvironmentKey)) && Value(panel, "adapter") is null && Value(panel, "restored") is null &&
+                Control<IReadOnlyList<CodexModel>>(panel, "catalog").Count == 0 && messages.Count == originalCount,
+                "Environment credential change reused an account session/catalog or erased the transcript");
+            codexPassword.Password = codexKey;
+            Call(panel, "SelectedAuthentication");
+            string diagnostic = "Probe failure: " + codexKey + " / " + claudeKey + " / " + changedEnvironmentKey;
+            string safe = (string)Call(panel, "SafeDiagnostic", diagnostic)!;
+            Check(!safe.Contains(codexKey) && !safe.Contains(claudeKey) && !safe.Contains(changedEnvironmentKey) && safe.Contains("[REDACTED]"), "Diagnostic redaction exposed a key");
+            Set(panel, "currentAssistantIndex", messages.Count - 1);
+            Call(panel, "RecordProblem", diagnostic);
+            Call(panel, "LogError", new IOException(diagnostic));
+            Call(panel, "Persist");
+            string exported = JsonSerializer.Serialize(Call(panel, "State"));
+            string savedPreferences = File.ReadAllText(Path.Combine(root, "preferences.json"));
+            string savedState = File.ReadAllText(Directory.EnumerateFiles(root, "chat-*.json").Single());
+            string logPath = (string)typeof(ChatPanel).GetMethod("LogPath", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
+            string log = File.ReadAllText(logPath);
+            foreach (string secret in new[] { codexKey, claudeKey, changedEnvironmentKey })
+                Check(!exported.Contains(secret) && !savedPreferences.Contains(secret) && !savedState.Contains(secret) && !log.Contains(secret),
+                    "An API key leaked into exported state, preferences, saved history or the error log");
+            Check(preferences.Load() is { CodexApiKeyMode: true, ClaudeApiKeyMode: true }, "Billing choices were not persisted independently");
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
+            var reopened = new ChatPanel(store, preferences: preferences);
+            Check(Control<ComboBox>(reopened, "authenticationMode").SelectedIndex == 1 && Control<PasswordBox>(reopened, "codexApiKey").Password.Length == 0 &&
+                Control<PasswordBox>(reopened, "claudeApiKey").Password.Length == 0, "Reopening restored a credential or lost the explicit billing choice");
+
+            // Imported fields cannot authorize API billing or restore keys; API session ids are also historical.
+            var importedJson = JsonNode.Parse(exported)!.AsObject();
+            importedJson["CodexApiKeyMode"] = true;
+            importedJson["ClaudeApiKeyMode"] = true;
+            importedJson["CodexApiKey"] = codexKey;
+            importedJson["ClaudeApiKey"] = claudeKey;
+            importedJson["SessionId"] = "untrusted-api-session";
+            importedJson["AdapterKey"] = "0|trusted-codex-fixture.exe|host|directory|auth:api";
+            var imported = JsonSerializer.Deserialize<ChatState>(importedJson.ToJsonString())!;
+            var importPanel = new ChatPanel(new ChatStateStore(Path.Combine(root, "imported")), preferences: new ChatPreferencesStore(Path.Combine(root, "imported-preferences.json")));
+            Call(importPanel, "Restore", imported, true);
+            var afterImport = (ChatState)Call(importPanel, "State")!;
+            Check(Control<ComboBox>(importPanel, "authenticationMode").SelectedIndex == 0 && Call(importPanel, "SelectedAuthentication") is null &&
+                Control<PasswordBox>(importPanel, "codexApiKey").Password.Length == 0 && Control<PasswordBox>(importPanel, "claudeApiKey").Password.Length == 0 &&
+                afterImport.SessionId is null && afterImport.AdapterKey is null && afterImport.Messages?.Count == messages.Count,
+                "Imported history enabled API billing, restored a credential/API session, or discarded visible messages");
+            Console.WriteLine("PASS WPF API authentication: independent modes, blank-key validation, scoped session invalidation, secret redaction and safe history import");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", oldOpenAi);
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", oldAnthropic);
+        }
     }
 }

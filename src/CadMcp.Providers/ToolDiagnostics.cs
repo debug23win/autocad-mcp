@@ -7,6 +7,7 @@ public static class ToolDiagnostics
 {
     private static JsonElement Child(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var child) ? child : default;
     private static string? Text(JsonElement value, string name) => Child(value, name).ValueKind == JsonValueKind.String ? Child(value, name).GetString() : null;
+    private static long? Number(JsonElement value, string name) => Child(value, name) is { ValueKind: JsonValueKind.Number } number && number.TryGetInt64(out long result) ? result : null;
     private static bool True(JsonElement value, string name) => Child(value, name).ValueKind == JsonValueKind.True;
     public static string? Describe(string tool, JsonElement result, bool failed, JsonElement arguments = default, JsonElement transportError = default)
     {
@@ -49,15 +50,26 @@ public static class ToolDiagnostics
         string? request = Text(payload, "request_id");
         string code = Text(error, "code") ?? (Child(error, "code").ValueKind == JsonValueKind.Number ? Child(error, "code").GetRawText() : "TOOL_ERROR");
         string normalized = tool.Contains("mcp__", StringComparison.Ordinal) ? tool[(tool.LastIndexOf("__", StringComparison.Ordinal) + 2)..] : tool;
+        // Claude's built-in file readers do not submit CAD writes. Match their exact names:
+        // an arbitrary MCP server can also advertise a tool named Read or Glob.
+        bool readOnlyBuiltin = tool is "Read" or "Glob" or "Grep";
         bool computerDenied = normalized == "js" && message.StartsWith("Computer Use was not approved", StringComparison.Ordinal);
         if (computerDenied) code = "COMPUTER_USE_NOT_APPROVED";
         string state = computerDenied
             ? UiText.T("Доступ Computer Use к приложению не разрешён. Откройте «Computer Use: доступ…» в панели CadMcp и проверьте разрешение для AutoCAD. Оно применяется со следующего хода Codex; ограничения организации и доступность инструмента остаются в силе. Этот отказ не является квитанцией CAD; ранее принятые операции проверяются отдельно.")
-            : !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
+            : readOnlyBuiltin || !CadOperations.IsMutation(normalized) && (CadOperations.ReadOnly.Contains(normalized) || CadOperations.HostTools.Contains(normalized))
             ? UiText.T("Инструмент чтения; состояние DWG этим сообщением не подтверждается.")
             : started.ValueKind == JsonValueKind.False ? UiText.T("Этот вызов не начал запись в DWG.")
             : UiText.T("Исход записи не подтверждён. Проверить квитанцию и DWG; автоматически повторять правку нельзя.");
-        if (code == "REVISION_CONFLICT") state += "\n" + UiText.T("Обновите cad_context и проверьте квитанцию исходной операции. Не подменяйте expected_revision и не повторяйте правку автоматически; сначала сверьте план с текущим чертежом.");
+        if (code == "REVISION_CONFLICT")
+        {
+            // Preserve the admission guard's evidence without guessing a revision or retrying a write.
+            if ((Number(data, "expected_revision") ?? Number(payload, "expected_revision")) is { } expected)
+                state += UiText.T("\nОжидаемая ревизия: ") + expected.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if ((Number(data, "current_revision") ?? Number(payload, "current_revision")) is { } current)
+                state += UiText.T("\nТекущая ревизия: ") + current.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            state += "\n" + UiText.T("Обновите cad_context и проверьте квитанцию исходной операции. Не подменяйте expected_revision и не повторяйте правку автоматически; сначала сверьте план с текущим чертежом.");
+        }
         // Password-like arguments are never shown, even if an error echoed their value.
         if (arguments.ValueKind == JsonValueKind.Object)
             foreach (var field in arguments.EnumerateObject().Where(p => p.Name.Contains("password", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("secret", StringComparison.OrdinalIgnoreCase)))

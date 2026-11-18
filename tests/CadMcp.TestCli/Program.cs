@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 //   They are excluded from the automated tests and run from the repository root.
 Console.InputEncoding = new System.Text.UTF8Encoding(false);
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Contains("--version")) return FakeProviderAuthentication.ClaudeVersion();
 if (args.Contains("--acp") || args.FirstOrDefault() == "acp") return await CadMcp.TestCli.FakeSubscriptionAcp.RunAsync(args);
 if (args.Contains("--isolated-csharp-test")) return await CadMcp.TestCli.IsolatedCSharpFixture.Run(args[^1]);
 if (args.Contains("--isolation-bystander")) { await Task.Delay(Timeout.Infinite); return 0; }
@@ -39,7 +40,12 @@ if (args.Contains("--cli-config-check"))
     Console.WriteLine("Official CLI parsed pinned MCP and custom read-only reviewer config; model count: " + models.Count);
     return 0;
 }
-if (args.Contains("app-server")) { await FakeCodex.RunAsync(args); return 0; }
+if (args.Contains("app-server"))
+{
+    if (args.Contains("cli_auth_credentials_store=\"ephemeral\"")) await FakeProviderAuthentication.CodexAsync(args);
+    else await FakeCodex.RunAsync(args);
+    return 0;
+}
 if (args.Contains("-p")) { return await FakeClaude.RunAsync(args); }
 Console.Error.WriteLine("Usage: CadMcp.TestCli app-server | -p | --live-subagent-test <codex|claude> <cli> | --live-codex-model-test <cli> [--resume-conversation <id>] | --live-codex-approval-test <cli> | --cli-config-check <cli>");
 return 2;
@@ -47,7 +53,7 @@ return 2;
 /// <summary>Codex app-server protocol, as far as the CAD MCP chat uses it.</summary>
 internal static class FakeCodex
 {
-    private static System.Text.Json.Nodes.JsonObject ComputerConfig(string[] args)
+    internal static System.Text.Json.Nodes.JsonObject ComputerConfig(string[] args)
     {
         string exes = args.FirstOrDefault(a => a.StartsWith("computer_use.windows.exes=", StringComparison.Ordinal))?["computer_use.windows.exes=".Length..] ?? "[]";
         ComputerUseTarget? target = null;
@@ -122,6 +128,7 @@ internal static class FakeCodex
             if (method != "turn/start") continue;
             var inputs = e.GetProperty("params").GetProperty("input");
             var prompt = inputs[0].GetProperty("text").GetString()!;
+            if (prompt.StartsWith("DOCX_CAPTURE", StringComparison.Ordinal)) FakeProviderAuthentication.ValidateDocx(prompt, args);
             if (prompt.StartsWith("ATTACHMENT"))
             {
                 if (!prompt.Contains("Чертёж ✓") || !inputs.EnumerateArray().Any(x => x.GetProperty("type").GetString() == "localImage" && File.Exists(x.GetProperty("path").GetString())))
@@ -135,7 +142,8 @@ internal static class FakeCodex
             {
                 Console.WriteLine("{\"id\":3,\"result\":{\"turn\":{\"id\":\"live-turn\"}}}");
                 var next = JsonDocument.Parse(Console.ReadLine()!).RootElement;
-                if (next.GetProperty("method").GetString() != "turn/steer" || next.GetProperty("params").GetProperty("expectedTurnId").GetString() != "live-turn" || next.GetProperty("params").GetProperty("input")[0].GetProperty("text").GetString() != "Уточнение ✓") throw new Exception("Invalid same-turn steering contract");
+                if (next.GetProperty("method").GetString() != "turn/steer" || next.GetProperty("params").GetProperty("expectedTurnId").GetString() != "live-turn") throw new Exception("Invalid same-turn steering contract");
+                FakeProviderAuthentication.ValidateFollowup(next.GetProperty("params").GetProperty("input")[0].GetProperty("text").GetString()!, args);
                 int inputId = next.GetProperty("id").GetInt32();
                 Console.WriteLine(prompt == "STEER" ? JsonSerializer.Serialize(new { id = inputId, result = new { turnId = "live-turn" } }) : JsonSerializer.Serialize(new { id = inputId, error = new { code = -32600, message = "turn already completed" } }));
                 Console.WriteLine("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"Учёл уточнение\"}}");
@@ -213,9 +221,11 @@ internal static class FakeClaude
 {
     public static async Task<int> RunAsync(string[] args)
     {
+        string? apiKey = FakeProviderAuthentication.ClaudeKey(args);
         var input = JsonDocument.Parse(Console.ReadLine()!).RootElement;
         if (input.GetProperty("type").GetString() == "control_request")
         {
+            if (FakeProviderAuthentication.ClaudeCatalogError(input, apiKey)) return 1;
             // The model list: answered to initialize without any model call, as the real CLI does.
             if (input.GetProperty("request").GetProperty("subtype").GetString() != "initialize" || !args.Contains("--strict-mcp-config"))
                 throw new Exception("Unexpected Claude control request");
@@ -239,6 +249,8 @@ internal static class FakeClaude
         }
         var blocks = input.GetProperty("message").GetProperty("content");
         string prompt = blocks[0].GetProperty("text").GetString()!;
+        if (prompt.StartsWith("DOCX_CAPTURE", StringComparison.Ordinal)) FakeProviderAuthentication.ValidateDocx(prompt, args);
+        if (apiKey is not null && FakeProviderAuthentication.ClaudeRuntime(prompt, apiKey)) return 0;
         if (prompt is "SILENT" or "SILENT_ACTIVE" or "SILENT_ACTIVE_NO_INIT")
         {
             if (prompt == "SILENT_ACTIVE") Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-claude\",\"model\":\"claude-opus-5-5\"}");
@@ -259,7 +271,7 @@ internal static class FakeClaude
         JsonElement ReadFollowup()
         {
             var next = JsonDocument.Parse(Console.ReadLine()!).RootElement;
-            if (next.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString() != "Уточнение ✓") throw new Exception("Claude live input lost Unicode");
+            FakeProviderAuthentication.ValidateFollowup(next.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()!, args);
             return next;
         }
         switch (prompt)

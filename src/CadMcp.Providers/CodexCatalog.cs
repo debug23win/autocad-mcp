@@ -27,7 +27,7 @@ public static class CodexCatalog
             if (!efforts.Contains(effort)) effort = efforts[0];
             result.Add(new(id, name, effort, efforts, Flag(entry, "isDefault")));
         }
-        if (result.Count == 0) throw new IOException(UiText.T("Codex не вернул доступных моделей. Проверьте вход в официальный Codex."));
+        if (result.Count == 0) throw new IOException(UiText.T("Codex не вернул доступных моделей. Проверьте вход или API-ключ и обновите выбранный Codex CLI."));
         return result;
     }
     private static string? Text(JsonElement e, string key) =>
@@ -39,7 +39,7 @@ public static class CodexCatalog
         var model = string.IsNullOrEmpty(requestedModel)
             ? models.FirstOrDefault(m => m.IsDefault) ?? models.FirstOrDefault()
             : models.FirstOrDefault(m => m.Id == requestedModel);
-        if (model is null) throw new IOException(UiText.T("Выбранная модель «") + requestedModel + UiText.T("» недоступна. Обновите список моделей и выберите другую."));
+        if (model is null) throw new IOException(UiText.T("Выбранная модель «") + requestedModel + UiText.T("» недоступна. Обновите Codex CLI и список моделей; проверьте доступ для выбранного аккаунта или API-ключа."));
         string effort = string.IsNullOrEmpty(requestedEffort) ? model.DefaultEffort : requestedEffort;
         if (!model.Efforts.Contains(effort)) throw new IOException(UiText.T("Модель «") + model.DisplayName + UiText.T("» не поддерживает уровень «") + effort + UiText.T("». Выберите другой уровень рассуждений."));
         return new(model, effort);
@@ -49,12 +49,17 @@ public static class CodexCatalog
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         var token = timeout.Token;
-        using var process = Process.Start(ProviderProcess.StartInfo(options, new CodexProvider(options).Arguments())) ?? throw new IOException(UiText.T("Не удалось запустить Codex"));
+        var authentication = options.Authentication;
+        Func<string, string>? redactor = authentication is null ? null : authentication.Redact;
+        var startInfo = ProviderProcess.StartInfo(options, new CodexProvider(options).Arguments());
+        authentication?.ConfigureCodex(startInfo);
+        using var process = Process.Start(startInfo) ?? throw new IOException(UiText.T("Не удалось запустить Codex"));
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
-        var stderr = ProviderProcess.DrainErrors(process);
-        var lines = new ProviderLines(process.StandardOutput.BaseStream);
+        var stderr = ProviderProcess.DrainErrors(process, redactor);
+        var lines = new ProviderLines(process.StandardOutput.BaseStream, diagnosticRedactor: redactor);
         var entries = new List<JsonElement>();
         var cursors = new HashSet<string>();
+        int stage = 0;
         async Task Send(object data)
         {
             await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(data).AsMemory(), token);
@@ -67,16 +72,41 @@ public static class CodexCatalog
             {
                 using (json)
                 {
-                    var reply = json.RootElement;
+                    var reply = ProviderJson.Redact(json.RootElement, authentication);
                     if (reply.ValueKind != JsonValueKind.Object) continue;
-                    if (reply.TryGetProperty("error", out _)) throw new IOException("Codex: " + CodexProvider.ErrorMessage(reply));
+                    if (reply.TryGetProperty("error", out _))
+                    {
+                        string message = CodexProvider.ErrorMessage(reply);
+                        throw new IOException("Codex: " + (authentication?.Redact(message) ?? message));
+                    }
                     if (!reply.TryGetProperty("id", out var id) || reply.TryGetProperty("method", out _) || id.ValueKind != JsonValueKind.Number || !id.TryGetInt32(out int replyId)) continue;
-                    if (replyId == 1)
+                    if (replyId == 1 && stage == 0)
                     {
                         await Send(new { method = "initialized", @params = new { } });
+                        if (authentication is null)
+                        {
+                            stage = 3;
+                            await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
+                        }
+                        else
+                        {
+                            stage = 1;
+                            await Send(new { id = 6, method = "config/read", @params = new { cwd = options.WorkingDirectory, includeLayers = false } });
+                        }
+                    }
+                    else if (replyId == 6 && stage == 1 && authentication is not null)
+                    {
+                        authentication.VerifyCodexConfiguration(ProviderJson.Child(reply, "result"));
+                        stage = 2;
+                        await Send(authentication.CodexLoginRequest(7));
+                    }
+                    else if (replyId == 7 && stage == 2 && authentication is not null)
+                    {
+                        authentication.VerifyCodexLogin(ProviderJson.Child(reply, "result"));
+                        stage = 3;
                         await Send(new { id = 4, method = "model/list", @params = new { limit = 100, includeHidden = false } });
                     }
-                    else if (replyId == 4)
+                    else if (replyId == 4 && stage == 3)
                     {
                         if (!reply.TryGetProperty("result", out var page) || !page.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
                             throw new IOException(UiText.T("Codex вернул каталог моделей в неизвестном формате"));
