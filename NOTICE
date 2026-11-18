@@ -15,13 +15,13 @@ licenses/dependencies. Resolved versions and hashes are in lock files.
 
 Autodesk assemblies, SPDS binaries and Claude Code remain external
 user-installed components and are not redistributed.
-The 0.4.0 Windows installer bundles the unmodified official OpenAI Codex
-0.159.0 executable. Copyright 2025 OpenAI, Apache-2.0.
+The Windows installer bundles the unmodified official OpenAI Codex
+0.169.1 executable. Copyright 2025 OpenAI, Apache-2.0.
 Its official app-server package and CLI helpers retain their original layout.
 LICENSE, NOTICE and Ratatui MIT license are in Contents/Tools/Codex.
 The package also includes ripgrep 15.2.0, Copyright (c) 2015 Andrew Gallant,
 under the MIT license preserved as Contents/Tools/Codex/ripgrep-MIT.txt.
-Source: https://github.com/openai/codex/tree/rust-v0.159.0.
+Source: https://github.com/openai/codex/tree/rust-v0.169.1.
 Additional adapted components in version 0.2.0:
 - AutoCAD-MCP CadDispatcher.cs native transaction/creation approach, MIT, Copyright (c) 2024 AutoCAD MCP Server Contributors; adapted in Edits.cs. See licenses/beiming-MIT.txt.
 - felixalmesberger/AUTOCAD-MCP AcadExecutor.cs evaluator approach, MIT, Copyright (c) 2026 Felix Almesberger; adapted in LispScript.cs. See licenses/felixalmesberger-MIT.txt.

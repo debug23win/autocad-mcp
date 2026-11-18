@@ -136,7 +136,7 @@ public abstract class SubscriptionAcpProvider : IChatProvider
         if (ProviderJson.Child(result, "protocolVersion") is not { ValueKind: JsonValueKind.Number } version || !version.TryGetInt32(out int n) || n != 1)
             throw new IOException(Name + UiText.T(" использует неподдерживаемую версию ACP. Обновите официальный CLI."));
         if (cli == SubscriptionCli.Kimi && ProviderJson.Text(ProviderJson.Child(result, "agentInfo"), "name") != "Kimi Code CLI")
-            throw new IOException(UiText.T("Нужен новый Kimi Code CLI из npm-пакета @moonshot-ai/kimi-code. Старый Python kimi-cli не поддерживается."));
+            throw new IOException(UiText.T("Нужен современный Kimi Code CLI: официальный standalone kimi.exe или npm-пакет @moonshot-ai/kimi-code. Старый Python kimi-cli не поддерживается."));
         return result;
     }
 

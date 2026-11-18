@@ -1,5 +1,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CadMcp.Core;
 using CadMcp.Host;
 using CadMcp.Providers;
@@ -44,7 +46,58 @@ public sealed class PreferencesAndCompilerTests
         Assert.Equal("opus", legacy.ClaudeModel);
         Assert.Null(legacy.PerplexityModel);
         Assert.Null(legacy.PerplexityEffort);
+        Assert.False(legacy.CodexApiKeyMode);
+        Assert.False(legacy.ClaudeApiKeyMode);
         Assert.Throws<InvalidDataException>(() => store.Save(selected with { Provider = 99 }));
+    }
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void API_billing_modes_persist_independently_with_provider_model_choices(bool codexApi, bool claudeApi)
+    {
+        using var folder = new TempFolder();
+        string path = folder.File("preferences.json");
+        var preferences = new ChatPreferences(0, "chosen-codex", "high", "chosen-claude", "max",
+            PerplexityModel: "chosen-perplexity", QwenModel: "chosen-qwen", KimiModel: "chosen-kimi",
+            CodexApiKeyMode: codexApi, ClaudeApiKeyMode: claudeApi);
+        new ChatPreferencesStore(path).Save(preferences);
+        var reopened = new ChatPreferencesStore(path);
+        Assert.Equal(preferences, reopened.Load());
+        reopened.Save(preferences with { Provider = 1 });
+        var switched = reopened.Load()!;
+        Assert.Equal(codexApi, switched.CodexApiKeyMode);
+        Assert.Equal(claudeApi, switched.ClaudeApiKeyMode);
+        Assert.Equal(preferences.CodexModel, switched.CodexModel);
+        Assert.Equal(preferences.ClaudeModel, switched.ClaudeModel);
+        using var json = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.Equal(codexApi, json.RootElement.GetProperty("codex_api_key_mode").GetBoolean());
+        Assert.Equal(claudeApi, json.RootElement.GetProperty("claude_api_key_mode").GetBoolean());
+        Assert.DoesNotContain(json.RootElement.EnumerateObject(), property =>
+            property.Name is "codex_api_key" or "claude_api_key" or "api_key" or "authentication");
+        Assert.Empty(Directory.GetFiles(folder.Path, "*.tmp"));
+    }
+    [Fact]
+    public void Imported_chat_state_cannot_supply_API_keys_or_billing_preferences()
+    {
+        var state = new ChatState(0, "trusted-codex.exe", "trusted-claude.exe", "host.exe", "workspace", "old-session", "Сохранённый разговор");
+        var untrusted = JsonNode.Parse(JsonSerializer.Serialize(state))!.AsObject();
+        untrusted["CodexApiKeyMode"] = true;
+        untrusted["ClaudeApiKeyMode"] = true;
+        untrusted["CodexApiKey"] = "fake-imported-openai-key";
+        untrusted["ClaudeApiKey"] = "fake-imported-anthropic-key";
+        untrusted["Authentication"] = new JsonObject { ["ApiKey"] = "fake-imported-authentication-key" };
+        var imported = JsonSerializer.Deserialize<ChatState>(untrusted.ToJsonString())!;
+        Assert.Equal(state, imported);
+        string exported = JsonSerializer.Serialize(imported);
+        Assert.DoesNotContain("fake-imported-", exported);
+        Assert.DoesNotContain("ApiKeyMode", exported);
+        Assert.DoesNotContain("Authentication", exported);
+        // Keys and billing preferences are not part of the history format, even as optional properties.
+        Assert.DoesNotContain(typeof(ChatState).GetProperties(), property => property.Name.Contains("ApiKey", StringComparison.Ordinal));
+        Assert.DoesNotContain(typeof(ChatPreferences).GetProperties(), property =>
+            property.Name.Contains("Key", StringComparison.Ordinal) && property.PropertyType != typeof(bool));
     }
     [Theory]
     [InlineData(3)]

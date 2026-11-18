@@ -15,26 +15,30 @@ internal static class CurveSampler
     public static bool IsCurve(Entity entity) => entity is Line or Arc or Circle or Polyline or Polyline2d or Polyline3d or Ellipse or Spline;
 
     /// <summary>Sampled curve, or null for other entities and unreadable geometry.</summary>
-    public static TopologyCurve? Sample(Entity entity, double tolerance)
+    public static TopologyCurve? Sample(Entity entity, double tolerance, int maxSamplePoints = int.MaxValue, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        CadFault Limit() => new("REVIEW_SAMPLING_LIMIT", "Curve exceeds the remaining sampled-point budget");
+        if (maxSamplePoints < 1) throw Limit();
+        TopologyCurve Bounded(TopologyCurve sample) => sample.Points.Count > maxSamplePoints ? throw Limit() : sample;
         try
         {
             string handle = entity.Handle.ToString(), layer = entity.Layer;
             switch (entity)
             {
                 case Line line:
-                    return new(handle, layer, [[line.StartPoint.X, line.StartPoint.Y], [line.EndPoint.X, line.EndPoint.Y]], false);
+                    return Bounded(new(handle, layer, [[line.StartPoint.X, line.StartPoint.Y], [line.EndPoint.X, line.EndPoint.Y]], false));
                 case Arc arc when Planar(arc.Normal):
                 {
                     var points = ArcSampling.Arc(arc.Center.X, arc.Center.Y, arc.Radius, arc.StartAngle, arc.EndAngle, tolerance);
                     // Exact ends, so lines snapped to the arc's ends coincide with it.
                     points[0] = [arc.StartPoint.X, arc.StartPoint.Y]; points[^1] = [arc.EndPoint.X, arc.EndPoint.Y];
-                    return new(handle, layer, points, false, ArcSampling.Sagitta(arc.Radius, arc.TotalAngle, points.Length - 1));
+                    return Bounded(new(handle, layer, points, false, ArcSampling.Sagitta(arc.Radius, arc.TotalAngle, points.Length - 1)));
                 }
                 case Circle circle when Planar(circle.Normal):
                 {
                     var ring = ArcSampling.Arc(circle.Center.X, circle.Center.Y, circle.Radius, 0, 2 * Math.PI, tolerance);
-                    return new(handle, layer, ring[..^1], true, ArcSampling.Sagitta(circle.Radius, 2 * Math.PI, ring.Length - 1));
+                    return Bounded(new(handle, layer, ring[..^1], true, ArcSampling.Sagitta(circle.Radius, 2 * Math.PI, ring.Length - 1)));
                 }
                 case Polyline polyline when Planar(polyline.Normal):
                 {
@@ -43,14 +47,17 @@ internal static class CurveSampler
                     var segmentDeviations = new List<double>();
                     double deviation = 0;
                     int count = polyline.NumberOfVertices;
+                    if (count > maxSamplePoints) throw Limit();
                     for (int i = 0; i < count; i++)
                     {
+                        ct.ThrowIfCancellationRequested();
                         var start = polyline.GetPoint2dAt(i);
                         if (i == 0) points.Add([start.X, start.Y]);
                         if (i == count - 1 && !polyline.Closed) break;
                         var end = polyline.GetPoint2dAt((i + 1) % count);
                         double bulge = polyline.GetBulgeAt(i);
                         var segment = ArcSampling.Bulge(start.X, start.Y, end.X, end.Y, bulge, tolerance);
+                        if ((long)points.Count + segment.Length > maxSamplePoints) throw Limit();
                         points.AddRange(segment);
                         double chord = start.GetDistanceTo(end), theta = 4 * Math.Atan(Math.Abs(bulge)), sagitta = 0;
                         if (theta > 1e-12 && chord > 0) sagitta = ArcSampling.Sagitta(chord / (2 * Math.Sin(theta / 2)), theta, segment.Length);
@@ -59,10 +66,10 @@ internal static class CurveSampler
                     }
                     // The closing segment returns to the first vertex; the curve is marked closed instead.
                     if (polyline.Closed && points.Count > 1) points.RemoveAt(points.Count - 1);
-                    return new(handle, layer, points, polyline.Closed, deviation, segmentDeviations);
+                    return Bounded(new(handle, layer, points, polyline.Closed, deviation, segmentDeviations));
                 }
                 case Arc or Circle or Polyline or Polyline2d or Polyline3d or Ellipse or Spline:
-                    return Adaptive((Curve)entity, tolerance);
+                    return Bounded(Adaptive((Curve)entity, tolerance, ct));
                 default: return null;
             }
         }
@@ -73,7 +80,7 @@ internal static class CurveSampler
     private static bool Planar(Vector3d normal) => normal.Z > 0 && normal.IsParallelTo(Vector3d.ZAxis);
 
     /// <summary>Recursive subdivision in parameter space until the curve stays within tolerance of each chord.</summary>
-    private static TopologyCurve Adaptive(Curve curve, double tolerance)
+    private static TopologyCurve Adaptive(Curve curve, double tolerance, CancellationToken ct)
     {
         double start = curve.StartParam, end = curve.EndParam;
         bool closed = curve.Closed;
@@ -93,6 +100,7 @@ internal static class CurveSampler
         }
         void Split(double a, double b, Point3d pa, Point3d pb, int depth)
         {
+            ct.ThrowIfCancellationRequested();
             var q1 = At(a + (b - a) / 4); var mid = At((a + b) / 2); var q3 = At(a + (b - a) * 3 / 4);
             double off = Math.Max(Off(pa, pb, mid), Math.Max(Off(pa, pb, q1), Off(pa, pb, q3)));
             if (off > tolerance && depth < 12 && points.Count < MaxPoints)
@@ -253,7 +261,7 @@ internal static class DimensionChecks
 
 /// <summary>
 /// cad_review with options_json: the scope (handles, current space, model or a named layout), a layer filter
-/// and the checks to run. "standard" is the selected-scope review (up to 250 entities); "topology" checks the
+/// and the checks to run. "standard" is the selected-scope review (up to 500 entities); "topology" checks the
 /// linework of the scope as a network: dangling ends, near misses, T-junctions, crossings without a node,
 /// overlaps, duplicates and self-intersections.
 /// </summary>
@@ -289,7 +297,7 @@ internal static class ReviewOptions
             ids = ((BlockTableRecord)tr.GetObject(space, OpenMode.ForRead)).Cast<ObjectId>().Where(id => !id.IsErased).ToArray();
         }
         var entities = new List<Entity>();
-        foreach (var id in ids)
+        foreach (var id in ids.Distinct())
         {
             ct.ThrowIfCancellationRequested();
             if (id.IsNull || id.IsErased || tr.GetObject(id, OpenMode.ForRead) is not Entity entity) continue;
@@ -299,7 +307,7 @@ internal static class ReviewOptions
         DrawingQuality.Report? standard = null;
         if (checks.Contains("standard"))
         {
-            if (entities.Count > 250) throw new CadFault("REVIEW_TOO_LARGE", entities.Count + " entities in scope; the standard review takes up to 250, narrow it with handles or layers, or run only the topology check");
+            StandardReviewLimits.CheckScope(entities.Count);
             standard = DrawingQuality.Review(db, tr, entities.Select(e => e.ObjectId), ct);
         }
         var topology = checks.Contains("topology") ? Network(entities, options, ct) : default;
@@ -307,7 +315,8 @@ internal static class ReviewOptions
         return new
         {
             state, checks, scope = new { kind = scope, layout_name = scope == "layout" ? layoutName : null, layers, entities = entities.Count },
-            entities = standard?.Entities, solid_pairs = standard?.SolidPairs, issues = standard?.Issues, limitations = standard?.Limitations, topology = topology.Body
+            entities = standard?.Entities, solid_pairs = standard?.SolidPairs, issues = standard?.Issues, limitations = standard?.Limitations,
+            coverage = standard?.Coverage, counts = standard?.Counts, truncated = standard?.Truncated, topology = topology.Body
         };
     }
 

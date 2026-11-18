@@ -8,15 +8,52 @@ usage limits.
 
 These CLIs are installed separately from CAD MCP. Use the current official
 installation instructions for [Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/overview/)
-or [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html). The Kimi adapter
-requires the current Node.js package `@moonshot-ai/kimi-code`; the older Python
-`kimi-cli` protocol is not supported by this adapter.
+or [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html).
+The recommended official installers provide standalone distributions. Global
+npm installations are also supported. Use the current Kimi Code CLI: the older
+Python `kimi-cli` protocol is not supported by this adapter.
+
+## Install and find the CLI on Windows
+
+1. Select **Qwen Code** or **Kimi Code** and open its connection settings.
+2. If the CLI is not installed, click **Install CLI (Установить CLI)**. The panel
+   opens a visible PowerShell window with that provider's official installer:
+   [Qwen](https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1)
+   or [Kimi](https://code.kimi.com/kimi-code/install.ps1). Complete the installation
+   in that window and check its result.
+3. Return to CAD MCP and click **Find CLI (Найти CLI)**. This searches again,
+   including the current Windows user and machine `PATH` values, so an installer
+   can add its command after AutoCAD has already started. Restarting AutoCAD is
+   not required for this discovery step. You can also select the installed CLI
+   explicitly in the executable field.
+4. Use **Sign in**, complete the provider's account flow, then check the
+   connection and refresh the model list.
+
+The installation button is available for Qwen and Kimi. It does not silently
+sign in or select an account; login remains a separate step. A successful
+installation does not establish subscription access.
+
+Discovery includes these official Windows installation locations as well as
+commands on `PATH`:
+
+| CLI | Official standalone layout |
+| --- | --- |
+| Qwen | The default installation root is `%LOCALAPPDATA%\qwen-code`. The outer launcher is `bin\qwen.cmd`; the packaged launcher is `qwen-code\bin\qwen.cmd` beneath that root. Both locations are recognized. |
+| Kimi | `%USERPROFILE%\.kimi-code\bin\kimi.exe`, or `%KIMI_INSTALL_DIR%\bin\kimi.exe` when the installer root is overridden. |
+
+`KIMI_INSTALL_DIR` controls installation. `KIMI_CODE_HOME` controls the Kimi
+profile and data location; it does not locate the executable. For a custom
+installation elsewhere, select its actual launcher or executable rather than
+renaming a file or copying a wrapper away from its installed package.
 
 ## Qwen Code
 
-1. Install the official `@qwen-code/qwen-code` CLI and its required Node.js runtime.
-2. Select **Qwen Code** in CAD MCP. The executable defaults to `qwen`; choose the
-   installed executable or npm command if it is not on AutoCAD's `PATH`.
+1. Use the official standalone installer above, or install
+   `@qwen-code/qwen-code` through npm. The standalone archive includes its
+   runtime; an npm installation, including an installer fallback to npm,
+   requires Node.js 22 or later and npm on `PATH`.
+2. Select **Qwen Code** in CAD MCP and click **Find CLI**. The command name is
+   `qwen`; a valid npm `qwen.cmd` is also supported.
 3. Use the panel's sign-in button to open the official CLI. Complete `/auth` with
    **Qwen Account with Subscription**, using the account that has the subscription.
 4. Return to CAD MCP, check the connection, refresh the model list, and send a task.
@@ -28,11 +65,12 @@ drawing. Account credentials remain managed by Qwen Code. See the official
 
 ## Kimi Code
 
-1. Install the current official `@moonshot-ai/kimi-code` CLI. Installation through
-   npm requires Node.js 22.19.0 or later. Install Git for Windows before the first
-   launch, as described in the official installation guide above.
-2. Select **Kimi Code** in CAD MCP. The executable defaults to `kimi`; choose the
-   installed executable or npm command if needed.
+1. Use the official standalone installer above, which provides `kimi.exe`
+   without requiring a pre-installed Node.js. Alternatively, install
+   `@moonshot-ai/kimi-code` through npm with Node.js 22.19.0 or later. Install
+   Git for Windows before the first launch, as described in the official guide.
+2. Select **Kimi Code** in CAD MCP and click **Find CLI**. Both the native
+   `kimi.exe` and a valid npm `kimi.cmd` are supported.
 3. Use **Sign in** in CAD MCP and complete the official `kimi login` flow for the
    subscription account. Sign in from this button even if another terminal is
    already signed in: CAD MCP uses its own Kimi profile.
@@ -75,10 +113,25 @@ describes `login`, `acp` and the configurable Kimi home.
   next instruction after completion. Context occupancy reported by ACP is shown
   as context, not billed tokens or remaining subscription quota.
 
-On Windows, standard npm `.cmd`/`.bat` launchers are resolved to their installed
-package entry point and invoked through Node with an argument list. A shell is
-not used. If the launcher does not have the expected installed package layout,
-the adapter reports a configuration error instead of guessing a command.
+### Launchers and installation errors
+
+CAD MCP recognizes the official Qwen standalone wrappers and starts their
+bundled Node or Bun runtime with `lib/cli-entry.js` directly. Native Kimi runs
+as `kimi.exe`. Standard npm `.cmd`/`.bat` launchers are resolved to the installed
+package's declared entry point and invoked through Node with an argument list.
+These CLI launches do not pass task arguments through `cmd.exe`. The separate,
+visible installation window uses PowerShell to run the official installer.
+
+- **CLI not found:** install it, click **Find CLI** after installation, or select
+  the existing executable explicitly. A saved bare command such as `kimi.cmd`
+  can be replaced by the newly detected native `kimi.exe`.
+- **Package, runtime or entry point missing:** the launcher was found, but its
+  installation is incomplete or does not have a supported official layout.
+  Repair or reinstall that CLI and run **Find CLI** again. This is distinct from
+  a missing command; changing subscription credentials will not repair it.
+- **Login or subscription error:** complete the provider's sign-in flow and
+  check the account's entitlement. Reinstalling the executable does not grant
+  account access.
 
 ### Transport retries and drawing changes
 

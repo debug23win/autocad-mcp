@@ -14,6 +14,42 @@ public sealed class ToolDiagnosticsTests
         Assert.Contains("Исход записи не подтверждён", ToolDiagnostics.Describe("cad_edit", uncertain, false));
     }
     [Fact]
+    public void Conflict_reports_only_numeric_revision_evidence_and_preserves_no_retry_guidance()
+    {
+        var arguments = Wire.Element(new { operation_id = "holes-explore-02", expected_revision = 12 });
+        var result = Result(new { status = "conflict", data = new { changes_started = false, expected_revision = 12, current_revision = 19 }, error = new { code = "REVISION_CONFLICT", message = "Refresh document context" } });
+        string text = ToolDiagnostics.Describe("cad_csharp", result, false, arguments)!;
+        Assert.Contains("Ожидаемая ревизия: 12", text); Assert.Contains("Текущая ревизия: 19", text);
+        Assert.Contains("holes-explore-02", text); Assert.Contains("Этот вызов не начал запись", text);
+        Assert.Contains("Не подменяйте expected_revision", text);
+
+        var malformed = Result(new { status = "conflict", data = new { expected_revision = "PRIVATE_SOURCE", current_revision = new { value = "PRIVATE_SOURCE" } }, error = new { code = "REVISION_CONFLICT", message = "Refresh document context" } });
+        string bounded = ToolDiagnostics.Describe("cad_csharp", malformed, false)!;
+        Assert.DoesNotContain("PRIVATE_SOURCE", bounded); Assert.DoesNotContain("Ожидаемая ревизия:", bounded); Assert.DoesNotContain("Текущая ревизия:", bounded);
+        Assert.Contains("Исход записи не подтверждён", bounded);
+    }
+    [Theory]
+    [InlineData("Read", "File does not exist")]
+    [InlineData("Glob", "Search path does not exist")]
+    [InlineData("Grep", "Search failed: permission denied")]
+    public void Claude_builtin_read_failures_do_not_claim_an_unknown_DWG_write(string tool, string message)
+    {
+        string text = ToolDiagnostics.Describe(tool, Wire.Element(new { content = message }), true)!;
+        Assert.Contains("TOOL_ERROR", text); Assert.Contains(message, text); Assert.Contains("Инструмент чтения", text);
+        Assert.DoesNotContain("Исход записи не подтверждён", text); Assert.DoesNotContain("Этот вызов не начал запись", text);
+    }
+    [Theory]
+    [InlineData("mcp__other__Read")]
+    [InlineData("mcp__other__Glob")]
+    [InlineData("Bash")]
+    [InlineData("cad_csharp")]
+    [InlineData("mcp__cad__cad_edit")]
+    public void Read_builtin_names_do_not_relax_unrelated_tool_or_mutation_diagnostics(string tool)
+    {
+        string text = ToolDiagnostics.Describe(tool, Wire.Element(new { content = "Tool failed" }), true)!;
+        Assert.Contains("Исход записи не подтверждён", text); Assert.DoesNotContain("Инструмент чтения", text);
+    }
+    [Fact]
     public void Computer_use_denial_has_a_distinct_code_and_is_not_a_CAD_receipt()
     {
         string text = ToolDiagnostics.Describe("js", Wire.Element(new { content = "Computer Use was not approved to use AutoCAD 2027 — Русский (Russian)" }), true)!;

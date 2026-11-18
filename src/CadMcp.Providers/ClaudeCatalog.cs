@@ -91,10 +91,15 @@ public static class ClaudeCatalog
         var token = timeout.Token;
         // No MCP server and no saved conversation: only the account and its models are needed.
         string[] arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--no-session-persistence"];
-        using var process = Process.Start(ProviderProcess.StartInfo(options, arguments)) ?? throw new IOException(UiText.T("Не удалось запустить Claude Code"));
+        var authentication = options.Authentication;
+        if (authentication is not null) await authentication.EnsureClaudeCompatibilityAsync(options, token);
+        Func<string, string>? redactor = authentication is null ? null : authentication.Redact;
+        var startInfo = ProviderProcess.StartInfo(options, arguments);
+        authentication?.ConfigureClaude(startInfo);
+        using var process = Process.Start(startInfo) ?? throw new IOException(UiText.T("Не удалось запустить Claude Code"));
         using var cancellation = token.Register(() => ProviderProcess.Stop(process));
-        var stderr = ProviderProcess.DrainErrors(process);
-        var lines = new ProviderLines(process.StandardOutput.BaseStream);
+        var stderr = ProviderProcess.DrainErrors(process, redactor);
+        var lines = new ProviderLines(process.StandardOutput.BaseStream, diagnosticRedactor: redactor);
         const string requestId = "cad_mcp_models";
         try
         {
@@ -104,7 +109,7 @@ public static class ClaudeCatalog
             {
                 using (json)
                 {
-                    var line = json.RootElement;
+                    var line = ProviderJson.Redact(json.RootElement, authentication);
                     var response = ProviderJson.Child(line, "response");
                     if (ProviderJson.Text(line, "type") != "control_response" || ProviderJson.Text(response, "request_id") != requestId) continue;
                     if (ProviderJson.Text(response, "subtype") != "success")

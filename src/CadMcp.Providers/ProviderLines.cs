@@ -7,11 +7,11 @@ namespace CadMcp.Providers;
 /// Reads the newline-delimited JSON a provider CLI writes to stdout. One line is never allowed to grow
 /// without bound, and a line that is not JSON (a warning or banner) is skipped instead of ending the turn.
 /// </summary>
-internal sealed class ProviderLines(TextReader reader, int maximumChars = ProviderLines.DefaultMaximumChars)
+internal sealed class ProviderLines(TextReader reader, int maximumChars = ProviderLines.DefaultMaximumChars, Func<string, string>? diagnosticRedactor = null)
 {
     // StreamReader.ReadAsync may fill the requested character buffer after a complete line,
     // blocking on a live pipe whose writer is waiting for our reply. Read available bytes instead.
-    internal ProviderLines(Stream pipe, int maximumChars = DefaultMaximumChars) : this(new PipeTextReader(pipe), maximumChars) { }
+    internal ProviderLines(Stream pipe, int maximumChars = DefaultMaximumChars, Func<string, string>? diagnosticRedactor = null) : this(new PipeTextReader(pipe), maximumChars, diagnosticRedactor) { }
 
     private sealed class PipeTextReader(Stream pipe) : TextReader
     {
@@ -55,7 +55,7 @@ internal sealed class ProviderLines(TextReader reader, int maximumChars = Provid
         {
             if (string.IsNullOrWhiteSpace(text)) continue;
             try { return JsonDocument.Parse(text); }
-            catch (JsonException) { Note(text.Length > 300 ? text[..300] + "…" : text); }
+            catch (JsonException) { Note(text); }
         }
         return null;
     }
@@ -99,6 +99,8 @@ internal sealed class ProviderLines(TextReader reader, int maximumChars = Provid
 
     private void Note(string text)
     {
+        text = diagnosticRedactor?.Invoke(text) ?? text;
+        if (text.Length > 300) text = text[..300] + "…";
         notes.Enqueue(text);
         while (notes.Count > KeptNotes) notes.Dequeue();
     }

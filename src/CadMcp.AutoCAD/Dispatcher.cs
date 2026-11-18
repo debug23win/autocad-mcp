@@ -374,7 +374,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
                 ObjectId[]? reviewIds=null;
                 if(r.Data.Text("handles_json") is {} reviewJson){using var parsed=JsonDocument.Parse(reviewJson);reviewIds=parsed.RootElement.EnumerateArray().Select(h=>NativeTables.Resolve(doc.Database,h.GetString()!)).ToArray();}
                 if(r.Data.Text("options_json") is {} reviewOptionsJson){data=ReviewOptions.Run(doc.Database,tr,reviewOptionsJson,reviewIds,ct);break;}
-                reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(251).ToArray();
+                reviewIds??=((BlockTableRecord)tr.GetObject(doc.Database.CurrentSpaceId,OpenMode.ForRead)).Cast<ObjectId>().Where(id=>!id.IsErased).Take(StandardReviewLimits.MaxEntities+1).ToArray();
                 data=DrawingQuality.Review(doc.Database,tr,reviewIds,ct);break;
             case "cad_takeoff": data = DrawingInsight.Takeoff(doc.Database, tr, r.Data, ct); break;
             case "cad_text_units": data = TextUnits.Read(doc.Database, tr, r.Data, ct); break;
@@ -402,9 +402,7 @@ internal sealed class Dispatcher(Documents documents) : IDisposable
             case "cad_table_get":
                 var tableId = NativeTables.Resolve(doc.Database, r.Data.Text("handle")!);
                 if (tr.GetObject(tableId, OpenMode.ForRead) is not Table table) throw new CadFault("INVALID_TABLE", "Handle must identify a native Table");
-                data = NativeTables.Read(table, tr,
-                    DraftingPlan.Integer(r.Data, "first_row", 0, 499, 0), DraftingPlan.Integer(r.Data, "first_column", 0, 49, 0),
-                    DraftingPlan.Integer(r.Data, "row_count", 1, 100, 20), DraftingPlan.Integer(r.Data, "column_count", 1, 50, 20));
+                data = NativeTables.Read(table, tr, TableReadPage.FromRequest(r.Data, table.Rows.Count, table.Columns.Count));
                 break;
             case "cad_catalog":
                 bool catalogHit = catalogCache.TryGet(state.Id, "catalog", state.Revision, out var catalog);
