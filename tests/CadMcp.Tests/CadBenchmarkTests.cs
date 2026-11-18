@@ -324,6 +324,7 @@ public sealed partial class CadBenchmarkTests
         {
             Requests.Add(r);
             if (Override?.Invoke(r) is { } overridden) return Task.FromResult(overridden);
+            if (r.Operation == "csharp_references") return Task.FromResult(Reply(r, new { lisp_execution_mode = "isolated_acad" }));
             if (r.Operation == "cad_documents") return Task.FromResult(Reply(r, fixtureCreated ? new[] { new { document_id = "fixture" } } : mode == "existing_document" ? new[] { new { document_id = "user-drawing" } } : Array.Empty<object>(), doc: fixtureCreated ? "fixture" : null));
             if (r.Operation == "benchmark_create")
             {

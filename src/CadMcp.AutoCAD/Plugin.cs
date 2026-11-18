@@ -25,16 +25,41 @@ public sealed class Plugin : IExtensionApplication
         if (IsolatedCSharpWorker.TryStart()) return;
         try
         {
-            documents = new(); dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show }; dispatcher.Start();
-            var pipe = "cadmcp-worker-" + Environment.ProcessId + "-" + documents.SessionId;
-            server = new(pipe, dispatcher.Enqueue); server.Start();
-            descriptorPath = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, Wire.Version));
             App.Idle += AddRibbon;
         }
         catch (System.Exception e)
         {
             Terminate(); App.DocumentManager.MdiActiveDocument?.Editor.WriteMessage("\nCAD MCP initialization failed: " + e.Message);
         }
+    }
+    // Called only by the explicit chat command/ribbon action, on AutoCAD's UI thread.
+    private static void EnsureWorker()
+    {
+        if (server is not null) return;
+        try
+        {
+            documents = new();
+            dispatcher = new(documents) { ApprovalPresenter = LispApprovalWindow.Show };
+            dispatcher.Start();
+            string pipe = "cadmcp-worker-" + Environment.ProcessId + "-" + documents.SessionId;
+            server = new(pipe, dispatcher.Enqueue);
+            server.Start();
+            descriptorPath = Wire.PublishWorker(new WorkerDescriptor(documents.SessionId, pipe, Environment.ProcessId, Wire.Version));
+        }
+        catch
+        {
+            StopWorker();
+            throw;
+        }
+    }
+    private static void StopWorker()
+    {
+        void Step(Action action) { try { action(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP worker shutdown: " + error.Message); } }
+        Step(() => server?.Dispose()); server = null;
+        Step(() => dispatcher?.Dispose()); dispatcher = null;
+        Step(() => documents?.Dispose()); documents = null;
+        if (descriptorPath is { } path) Step(() => File.Delete(path));
+        descriptorPath = null;
     }
     private static void AddRibbon(object? sender, EventArgs e)
     {
@@ -56,6 +81,7 @@ public sealed class Plugin : IExtensionApplication
         // Also runs from the ribbon button's handler, where an exception would reach AutoCAD's UI.
         try
         {
+            EnsureWorker();
             if (palette is null)
             {
                 palette = new PaletteSet(UiText.T("CAD MCP — ассистент чертежей"));
@@ -84,10 +110,10 @@ public sealed class Plugin : IExtensionApplication
         App.Idle -= AddRibbon;
         // Runs while AutoCAD shuts down: each step is independent, and none may end the process.
         void Step(Action action) { try { action(); } catch (System.Exception error) { System.Diagnostics.Trace.WriteLine("CAD MCP shutdown: " + error.Message); } }
-        Step(() => panel?.Stop()); Step(() => server?.Dispose()); Step(() => dispatcher?.Dispose()); Step(() => documents?.Dispose());
+        Step(() => panel?.Stop()); StopWorker();
         Step(() => { if (ribbon is not null) ComponentManager.Ribbon?.Tabs.Remove(ribbon); });
         Step(() => palette?.Dispose()); palette = null;
-        if (descriptorPath is not null) try { File.Delete(descriptorPath); } catch (IOException) { }
+        panel = null; ribbon = null;
     }
     private sealed class OpenChat : ICommand
     {

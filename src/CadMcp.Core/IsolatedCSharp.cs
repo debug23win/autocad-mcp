@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace CadMcp.Core;
 
 public sealed record IsolatedCSharpRequest(string RunId, string Nonce, string OperationId, int ParentProcessId,
-    string SourceSha256, string AssemblySha256, string InputSha256, DateTimeOffset Deadline);
+    string SourceSha256, string AssemblySha256, string InputSha256, DateTimeOffset Deadline, string Kind = "csharp");
 public sealed record IsolatedCSharpReceipt(string RunId, string Nonce, string OperationId, int ProcessId,
     string State, string SourceSha256, string InputSha256, string? OutputSha256 = null, long? OutputBytes = null,
     JsonElement? Value = null, Fault? Error = null, string[]? ChangedHandles = null, int? ChangedEntityCount = null, bool ChangedHandlesOmitted = false);
@@ -33,7 +33,7 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
     }
     public void Phase(string phase) => Write("phase.json", new { Request.RunId, Request.OperationId, process_id = Environment.ProcessId, phase, at = DateTimeOffset.UtcNow });
     public static IsolatedCSharpJob Create(string root, string checkpoint, string checkpointHash, byte[] assembly,
-        string sourceHash, string operationId, TimeSpan timeout)
+        string sourceHash, string operationId, TimeSpan timeout, string kind = "csharp")
     {
         LocalWorkPolicy.RequireLocal(root);
         string run = Guid.NewGuid().ToString("N"), directory = Path.Combine(root, run);
@@ -41,9 +41,10 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
         File.Copy(checkpoint, Path.Combine(directory, "input.dwg"), overwrite: false);
         string inputHash = HashFile(Path.Combine(directory, "input.dwg"));
         if (!inputHash.Equals(checkpointHash, StringComparison.OrdinalIgnoreCase)) throw new CadFault("CSHARP_ISOLATION_INPUT_CHANGED", "Checkpoint hash changed; no child was started");
-        File.WriteAllBytes(Path.Combine(directory, "script.dll"), assembly);
+        if (kind is not ("csharp" or "lisp")) throw new InvalidDataException("Unknown script kind");
+        File.WriteAllBytes(Path.Combine(directory, kind == "lisp" ? "script.lsp" : "script.dll"), assembly);
         var request = new IsolatedCSharpRequest(run, Convert.ToHexString(RandomNumberGenerator.GetBytes(32)), operationId,
-            Environment.ProcessId, sourceHash, Convert.ToHexString(SHA256.HashData(assembly)), inputHash, DateTimeOffset.UtcNow.Add(timeout));
+            Environment.ProcessId, sourceHash, Convert.ToHexString(SHA256.HashData(assembly)), inputHash, DateTimeOffset.UtcNow.Add(timeout), kind);
         var job = new IsolatedCSharpJob(directory, request); job.Write("request.json", request); job.Phase("prepared"); return job;
     }
     public static IsolatedCSharpJob Load(string path)
@@ -53,7 +54,7 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
         if (request.ParentProcessId == Environment.ProcessId || request.Deadline <= DateTimeOffset.UtcNow || request.Nonce.Length != 64)
             throw new InvalidDataException("Invalid or expired isolated request");
         var job = new IsolatedCSharpJob(Path.GetDirectoryName(Path.GetFullPath(path))!, request);
-        if (HashFile(job.FilePath("input.dwg")) != request.InputSha256 || HashFile(job.FilePath("script.dll")) != request.AssemblySha256)
+        if (HashFile(job.FilePath("input.dwg")) != request.InputSha256 || request.Kind is not ("csharp" or "lisp") || HashFile(job.FilePath(request.Kind == "lisp" ? "script.lsp" : "script.dll")) != request.AssemblySha256)
             throw new InvalidDataException("Isolated input or assembly hash mismatch");
         return job;
     }
@@ -123,7 +124,7 @@ public sealed class IsolatedCSharpJob(string directory, IsolatedCSharpRequest re
             return Outcome("CSHARP_ISOLATION_FAILED", error.Message);
         }
         finally { process?.Dispose(); }
-        IsolatedCSharpOutcome Outcome(string code, string message) => new(false, Directory, pid, exit, LastPhase(), null, new(code, message), unknown, stillRunning);
+        IsolatedCSharpOutcome Outcome(string code, string message) => new(false, Directory, pid, exit, LastPhase(), null, new(Request.Kind == "lisp" ? code.Replace("CSHARP", "LISP", StringComparison.Ordinal) : code, message), unknown, stillRunning);
     }
     private string? LastPhase()
     {

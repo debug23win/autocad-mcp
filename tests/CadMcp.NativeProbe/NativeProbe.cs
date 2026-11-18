@@ -7,16 +7,16 @@ using CadMcp.AutoCAD;
 using App = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 [assembly: CommandClass(typeof(CadMcp.NativeProbe.NativeProbe))]
+[assembly: ExtensionApplication(typeof(CadMcp.NativeProbe.IsolationExtension))]
 namespace CadMcp.NativeProbe;
 
 public static class NativeProbe
 {
     private static Dispatcher? dispatcher;
     [LispFunction("CADMCPBEGIN")]
-    public static string? Begin(ResultBuffer args) => dispatcher?.BeginLisp((string)args.AsArray()[0].Value);
+    public static string? Begin(ResultBuffer args) => LispCallbacks.Begin(dispatcher, args);
     [LispFunction("CADMCPFINISH")]
-    public static int Finish(ResultBuffer args)
-    { var v = args.AsArray(); dispatcher?.FinishLisp((string)v[0].Value, Convert.ToInt32(v[1].Value) == 1, (string)v[2].Value); return 0; }
+    public static int Finish(ResultBuffer args) => LispCallbacks.Finish(dispatcher, args);
     [CommandMethod("CADMCPPROBE", CommandFlags.Session)]
     public static async void Run()
     {
@@ -32,13 +32,13 @@ public static class NativeProbe
         using var documents = new Documents(); dispatcher = new(documents); dispatcher.Start();
         var checks = new List<string>();
         string? failure = null, document = null; long revision = 0;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         void Assert(bool condition, string message)
         { if (!condition) throw new System.Exception(message); checks.Add(message); File.WriteAllText(output + ".progress", JsonSerializer.Serialize(checks)); }
         async Task<Response> Call(string operation, object data, long? expected = null)
         {
             var response = await dispatcher!.Enqueue(new(Guid.NewGuid().ToString("N"), operation, documents.SessionId, document,
-                operation == "cad_context" ? null : expected ?? revision, Wire.Element(data), DateTimeOffset.UtcNow.AddSeconds(20)), timeout.Token);
+                operation == "cad_context" ? null : expected ?? revision, Wire.Element(data), DateTimeOffset.UtcNow.AddSeconds(20), OwnerId: "native-probe"), timeout.Token);
             if (response.Revision is { } current) revision = current;
             return response;
         }
@@ -128,20 +128,22 @@ public static class NativeProbe
             var stale = await Call("cad_edit", new { operation_id = "stale", operations_json = "[{\"op\":\"erase\",\"handle\":\"" + line + "\"}]" }, revision - 1);
             Assert(stale.Error?.Code == "REVISION_CONFLICT", "Stale native mutation rejected");
             Data(await Call("cad_lisp", new { operation_id = "lisp_math", code = "(+ 1 2)" }));
-            for (int i = 0; i < 100; i++)
+            for (int i = 0; i < 1200; i++)
             {
                 await Task.Delay(100, timeout.Token);
                 var state = Data(await Call("cad_operation_status", new { operation_id = "lisp_math" }));
                 if (state.Text("state") is not ("completed" or "failed")) continue;
                 var result = state.GetProperty("result");
                 Assert(!result.TryGetProperty("error", out _), "Real AutoLISP wrapper completed without errors");
-                Assert(result.GetProperty("data").Text("return_value") == "3", "AutoLISP result returned through managed callback");
+                Assert(result.GetProperty("data").GetProperty("result").GetProperty("value").Text("return_value") == "3", "AutoLISP result returned through managed callback");
                 break;
             }
             Assert(Data(await Call("cad_operation_status", new { operation_id = "lisp_math" })).Text("state") == "completed", "LISP journal reached terminal state");
+            doc = App.DocumentManager.MdiActiveDocument;
+            Data(await Call("cad_context", new { }));
             async Task<JsonElement> WaitForLisp(string id)
             {
-                for (int i = 0; i < 100; i++)
+                for (int i = 0; i < 1200; i++)
                 {
                     await Task.Delay(100, timeout.Token);
                     var operation = Data(await Call("cad_operation_status", new { operation_id = id }));
@@ -151,24 +153,12 @@ public static class NativeProbe
             }
             Data(await Call("cad_lisp", new { operation_id = "lisp_error", code = "(/ 1 0)" }));
             var lispError = await WaitForLisp("lisp_error");
-            Assert(lispError.Text("state") == "failed" && lispError.GetProperty("result").GetProperty("error").Text("code") == "LISP_FAILED", "AutoLISP evaluator error persisted as failed");
-            bool cancelSent = false;
-            CommandEventHandler cancelLine = (_, e) =>
-            {
-                if (e.GlobalCommandName != "LINE") return;
-                cancelSent = true;
-                // Escape characters target only this probe's own scratch document.
-                doc.SendStringToExecute("\u0003\u0003", false, false, false);
-            };
-            await OnIdle(() => doc.CommandWillStart += cancelLine);
-            try
-            {
-                Data(await Call("cad_lisp", new { operation_id = "lisp_cancel", code = "(command \"_.LINE\" '(900 900 0) pause)" }));
-                var cancelled = await WaitForLisp("lisp_cancel");
-                Assert(cancelSent && cancelled.Text("state") == "failed", "Esc interrupts real AutoLISP and persists failed state");
-                Assert(cancelled.GetProperty("result").GetProperty("data").GetProperty("partial_changes_possible").GetBoolean(), "Interrupted AutoLISP reports possible partial changes");
-            }
-            finally { await OnIdle(() => doc.CommandWillStart -= cancelLine); }
+            Assert(lispError.Text("state") == "failed" && lispError.GetProperty("result").GetProperty("error").Text("code") == "LISP_EXECUTION_FAILED", "AutoLISP evaluator error persisted as failed");
+            Data(await Call("cad_lisp", new { operation_id = "lisp_cancel", code = "(while T (princ))" }));
+            Data(await Call("cad_cancel", new { operation_id = "lisp_cancel" }));
+            var cancelled = await WaitForLisp("lisp_cancel");
+            Assert(cancelled.Text("state") == "failed", "Cancellation terminates isolated AutoLISP");
+            Assert(!cancelled.GetProperty("result").GetProperty("data").GetProperty("applied_to_original").GetBoolean(), "Cancelled child output never replaces the original");
             Data(await Call("cad_context", new { }));
             Document? other = null;
             await OnIdle(() => { other = Autodesk.AutoCAD.ApplicationServices.DocumentCollectionExtension.Add(App.DocumentManager, "acadiso.dwt"); App.DocumentManager.MdiActiveDocument = other; });
@@ -192,4 +182,10 @@ public static class NativeProbe
             }, null);
         }
     }
+}
+
+public sealed class IsolationExtension : IExtensionApplication
+{
+    public void Initialize() => IsolatedCSharpWorker.TryStart();
+    public void Terminate() { }
 }
