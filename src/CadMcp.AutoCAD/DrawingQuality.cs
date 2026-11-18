@@ -9,29 +9,40 @@ namespace CadMcp.AutoCAD;
 internal static class DrawingQuality
 {
     internal sealed record Issue(string Code,string Severity,string[] Handles,string Message);
-    internal sealed record Report(string State,int Entities,int SolidPairs,IReadOnlyList<Issue> Issues,string[] Limitations);
+    internal sealed record Limits(int Entities,int SolidChecks,int TableCells,int CurvePoints,int Findings);
+    internal sealed record Coverage(bool Complete,ReviewPairCoverage Solids,int SolidBoundsUnreadable,ReviewPairCoverage Texts,int TextBoundsUnreadable,
+        long TableCellsAttempted,long TableCellsSkipped,int TablesSkippedByLimit,int CurvePointsSampled,int CurvesSkippedByLimit,Limits Limits);
+    internal sealed record Report(string State,int Entities,int SolidPairs,IReadOnlyList<Issue> Issues,string[] Limitations,
+        Coverage? Coverage=null,IReadOnlyDictionary<string,int>? Counts=null,bool Truncated=false);
     internal static Report Review(Database db,Transaction tr,IEnumerable<ObjectId> ids,CancellationToken ct=default)
     {
-        var selected=ids.Distinct().Where(id=>!id.IsNull&&!id.IsErased).Take(251).ToArray();
-        if(selected.Length>250)throw new CadFault("REVIEW_TOO_LARGE","Review up to 250 entities per scope");
+        var selected=ids.Distinct().Where(id=>!id.IsNull&&!id.IsErased).Take(StandardReviewLimits.MaxEntities+1).ToArray();
+        StandardReviewLimits.CheckScope(selected.Length);
         var entities=selected.Select(id=>tr.GetObject(id,OpenMode.ForRead)).OfType<Entity>().Where(e=>!e.IsErased).ToArray();
-        var issues=new List<Issue>();int pairs=0;
+        var issues=new ReviewFindings<Issue>(issue=>(issue.Code,issue.Severity));
         void Add(string code,string severity,string message,params Entity[] affected)=>issues.Add(new(code,severity,affected.Select(e=>e.Handle.ToString()).ToArray(),message));
-        var solids=entities.OfType<Solid3d>().ToArray();
-        for(int i=0;i<solids.Length;i++)for(int j=i+1;j<solids.Length;j++)
+        var solids=new List<ReviewBox<Solid3d>>();int solidBoundsUnreadable=0,textBoundsUnreadable=0;
+        foreach(var solid in entities.OfType<Solid3d>())
         {
             ct.ThrowIfCancellationRequested();
-            if(!Overlap(solids[i].GeometricExtents,solids[j].GeometricExtents,true))continue;
-            if(++pairs>2000){issues.Add(new("SOLID_REVIEW_LIMIT","unverified",[],"Split scope to check remaining pairs"));break;}
-            try{if(solids[i].CheckInterference(solids[j]))Add("SOLID_INTERFERENCE","warning","Native solid volumes intersect; review whether the joint is intentional",solids[i],solids[j]);}
-            catch(System.Exception e){Add("INTERFERENCE_UNVERIFIED","unverified",e.Message,solids[i],solids[j]);}
+            try{solids.Add(new(solid,Bounds(solid)));}
+            catch(System.Exception e) when(e is not OperationCanceledException){solidBoundsUnreadable++;Add("SOLID_EXTENTS_UNVERIFIED","unverified","Solid pairs involving this entity were not checked: "+e.Message,solid);}
         }
+        var solidPairs=StandardReviewPairs.Scan(solids,true,StandardReviewLimits.MaxSolidChecks,(a,b)=>
+        {
+            try{if(a.CheckInterference(b))Add("SOLID_INTERFERENCE","warning","Native solid volumes intersect; review whether the joint is intentional",a,b);}
+            catch(System.Exception e) when(e is not OperationCanceledException){Add("INTERFERENCE_UNVERIFIED","unverified",e.Message,a,b);}
+        },ct);
+        if(solidPairs.SkippedByLimit>0)Add("SOLID_REVIEW_LIMIT","unverified",solidPairs.SkippedByLimit+" overlapping solid-bound pairs were not checked after the "+StandardReviewLimits.MaxSolidChecks+" native-check budget; review narrower interacting groups. Separate groups do not verify their cross-group pairs.");
         // A check that cannot run must be reported as unverified, never silently counted as passed.
-        var texts=new List<(Entity Text,Extents3d Box)>();
+        var texts=new List<ReviewBox<Entity>>();
         foreach(var text in entities.Where(e=>e is DBText or MText))
-            try{texts.Add((text,text.GeometricExtents));}catch(System.Exception e){Add("TEXT_EXTENTS_UNVERIFIED","unverified","Text overlap not checked: "+e.Message,text);}
-        for(int i=0;i<texts.Count;i++)for(int j=i+1;j<texts.Count;j++)
-            if(texts[i].Text.OwnerId==texts[j].Text.OwnerId&&Overlap(texts[i].Box,texts[j].Box,false))Add("TEXT_OVERLAP","warning","Annotation bounding boxes overlap; inspect actual glyphs",texts[i].Text,texts[j].Text);
+        {
+            ct.ThrowIfCancellationRequested();
+            try{texts.Add(new(text,Bounds(text),text.OwnerId));}
+            catch(System.Exception e) when(e is not OperationCanceledException){textBoundsUnreadable++;Add("TEXT_EXTENTS_UNVERIFIED","unverified","Text overlap not checked: "+e.Message,text);}
+        }
+        var textPairs=StandardReviewPairs.Scan(texts,false,int.MaxValue,(a,b)=>Add("TEXT_OVERLAP","warning","Annotation bounding boxes overlap; inspect actual glyphs",a,b),ct);
         foreach(var dimension in entities.OfType<Dimension>())
         {
             ct.ThrowIfCancellationRequested();
@@ -39,28 +50,41 @@ internal static class DrawingQuality
             catch(System.Exception e) when (e is not OperationCanceledException){Add("DIMENSION_CHECK_UNVERIFIED","unverified","Dimension text not checked: "+e.Message,dimension);}
         }
         // These checks describe the result; a failure inside one is reported, never allowed to undo the edit under review.
-        try{GlyphCoverage(db,tr,entities,issues);}
+        try{GlyphCoverage(db,tr,entities,issues,ct);}
         catch(System.Exception e) when (e is not OperationCanceledException){issues.Add(new("TEXT_GLYPHS_UNVERIFIED","unverified",[],"Fonts not checked: "+e.Message));}
-        try{TopologyLite(entities,issues,ct);}
+        int curvePoints=0,curvesSkipped=0;
+        try{TopologyLite(entities,issues,ct,out curvePoints,out curvesSkipped);}
         catch(System.Exception e) when (e is not OperationCanceledException){issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",[],"Curve geometry not checked: "+e.Message));}
+        var tableBudget=new ReviewWorkBudget(StandardReviewLimits.MaxTableCells);int tablesSkipped=0;long tableCellsAttempted=0;
         foreach(var entity in entities)
         {
             ct.ThrowIfCancellationRequested();
             if(entity is Table table)
             {
-                var merges=NativeTables.MergedRanges(table);
-                for(int r=0;r<table.Rows.Count;r++)for(int c=0;c<table.Columns.Count;c++)
+                long cells=(long)table.Rows.Count*table.Columns.Count;
+                if(!tableBudget.TryReserve(cells))
                 {
-                    var cell=table.Cells[r,c];if(string.IsNullOrWhiteSpace(cell.TextString))continue;
-                    var range=merges.FirstOrDefault(m=>r>=m.TopRow&&r<=m.BottomRow&&c>=m.LeftColumn&&c<=m.RightColumn);
-                    if(range is not null&&(range.TopRow!=r||range.LeftColumn!=c))continue;
-                    double width=range is null?table.Columns[c].Width:Enumerable.Range(range.LeftColumn,range.RightColumn-range.LeftColumn+1).Sum(n=>table.Columns[n].Width);
-                    double height=range is null?table.Rows[r].Height:Enumerable.Range(range.TopRow,range.BottomRow-range.TopRow+1).Sum(n=>table.Rows[n].Height);
-                    using var text=new MText();text.SetDatabaseDefaults(db);text.TextStyleId=cell.TextStyleId??db.Textstyle;
-                    text.TextHeight=cell.TextHeight??2.5;text.Width=Math.Max(width-1.6,.01);text.Contents=cell.TextString;
-                    try{if(text.ActualHeight>height-1+1e-6||text.ActualWidth>width-1.6+1e-6)Add("TABLE_TEXT_OVERFLOW","warning","Text exceeds usable cell "+DraftingPlan.Address(r,c),table);}
-                    catch(System.Exception e){Add("TABLE_FIT_UNVERIFIED","unverified",e.Message,table);}
+                    tablesSkipped++;Add("TABLE_REVIEW_LIMIT","unverified",cells+" table cells not checked: standard review takes up to "+StandardReviewLimits.MaxTableCells+" table cells in total; review this table separately or inspect its cells and rendered output",table);
                 }
+                else try
+                {
+                    // Each cell supplies its own merge range: avoid rescanning all merged ranges for every cell.
+                    for(int r=0;r<table.Rows.Count;r++)for(int c=0;c<table.Columns.Count;c++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        tableCellsAttempted++;
+                        var cell=table.Cells[r,c];if(string.IsNullOrWhiteSpace(cell.TextString))continue;
+                        var range=cell.IsMerged==true?cell.GetMergeRange():null;
+                        if(range is not null&&(range.TopRow!=r||range.LeftColumn!=c))continue;
+                        double width=range is null?table.Columns[c].Width:Enumerable.Range(range.LeftColumn,range.RightColumn-range.LeftColumn+1).Sum(n=>table.Columns[n].Width);
+                        double height=range is null?table.Rows[r].Height:Enumerable.Range(range.TopRow,range.BottomRow-range.TopRow+1).Sum(n=>table.Rows[n].Height);
+                        using var text=new MText();text.SetDatabaseDefaults(db);text.TextStyleId=cell.TextStyleId??db.Textstyle;
+                        text.TextHeight=cell.TextHeight??2.5;text.Width=Math.Max(width-1.6,.01);text.Contents=cell.TextString;
+                        try{if(text.ActualHeight>height-1+1e-6||text.ActualWidth>width-1.6+1e-6)Add("TABLE_TEXT_OVERFLOW","warning","Text exceeds usable cell "+DraftingPlan.Address(r,c),table);}
+                        catch(System.Exception e) when(e is not OperationCanceledException){Add("TABLE_FIT_UNVERIFIED","unverified",e.Message,table);}
+                    }
+                }
+                catch(System.Exception e) when(e is not OperationCanceledException){Add("TABLE_FIT_UNVERIFIED","unverified","Table fit check did not complete: "+e.Message,table);}
             }
             var owner=tr.GetObject(entity.OwnerId,OpenMode.ForRead) as BlockTableRecord;
             if(owner?.IsLayout==true)
@@ -77,12 +101,16 @@ internal static class DrawingQuality
             }
         }
         // Notes (severity info) describe the drawing without requiring action.
-        return new(issues.Any(i=>i.Severity=="unverified")?"unverified":issues.Any(i=>i.Severity=="warning")?"review_required":"passed",entities.Length,pairs,issues,
+        return new(issues.State,entities.Length,solidPairs.ChecksAttempted,issues.Items,
             ["Bounding boxes are conservative for rotated text", "Intentional structural intersections require reviewer judgement", "Only the explicitly selected scope is checked; normative structural design is not verified",
-             "Glyph coverage is checked for regular and Unicode SHX and TrueType fonts; big fonts and inline MText font changes are not checked"]);
+             "Glyph coverage is checked for regular and Unicode SHX and TrueType fonts; big fonts and inline MText font changes are not checked",
+             "Curve geometry checks apply to curves parallel to XY at each elevation; separate review scopes do not check interactions between them",
+             "Counts include findings omitted from the bounded issues list; coverage.complete is false when an applicable check could not finish"],
+            new(issues.State!="unverified",solidPairs,solidBoundsUnreadable,textPairs,textBoundsUnreadable,tableCellsAttempted,tableBudget.Skipped,tablesSkipped,curvePoints,curvesSkipped,
+                new(StandardReviewLimits.MaxEntities,StandardReviewLimits.MaxSolidChecks,StandardReviewLimits.MaxTableCells,StandardReviewLimits.MaxCurvePoints,StandardReviewLimits.MaxFindings)),issues.Counts,issues.Truncated);
     }
     // Characters the style's font cannot draw are shown as "?" on the sheet although the stored text is correct.
-    private static void GlyphCoverage(Database db,Transaction tr,IReadOnlyList<Entity> entities,List<Issue> issues)
+    private static void GlyphCoverage(Database db,Transaction tr,IReadOnlyList<Entity> entities,ReviewFindings<Issue> issues,CancellationToken ct)
     {
         var byStyle=new Dictionary<ObjectId,(HashSet<char> Characters,List<string> Handles)>();
         void Collect(ObjectId style,string text,Entity owner)
@@ -95,16 +123,21 @@ internal static class DrawingQuality
         }
         foreach(var entity in entities)
         {
+            ct.ThrowIfCancellationRequested();
             if(FontCoverage.TextOf(entity) is {} text)Collect(text.Style,text.Text,entity);
             else if(entity is BlockReference reference)
                 foreach(ObjectId id in reference.AttributeCollection)
+                {
+                    ct.ThrowIfCancellationRequested();
                     if(!id.IsErased&&tr.GetObject(id,OpenMode.ForRead) is AttributeReference{Invisible:false} attribute)
                         Collect(attribute.TextStyleId,CadText.Normalize(attribute.TextString,attribute.IsMTextAttribute),entity);
+                }
         }
         if(byStyle.Count==0)return;
         int codePage=FontCoverage.DrawingCodePage();
         foreach(var (styleId,(characters,handles)) in byStyle)
         {
+            ct.ThrowIfCancellationRequested();
             if(tr.GetObject(styleId,OpenMode.ForRead) is not TextStyleTableRecord style)continue;
             IReadOnlyList<char>? missing;
             try{missing=FontCoverage.Missing(db,style,new string(characters.ToArray()),codePage);}
@@ -119,25 +152,32 @@ internal static class DrawingQuality
     // Duplicates, zero-length curves, self-intersections and overlaps among the reviewed curves (no network rules).
     // Only curves lying in a plane parallel to XY are checked, each elevation on its own: a vertical line or a
     // circle standing in the XZ plane is valid 3D geometry, not a zero-length or self-overlapping curve.
-    private static void TopologyLite(IReadOnlyList<Entity> entities,List<Issue> issues,CancellationToken ct)
+    private static void TopologyLite(IReadOnlyList<Entity> entities,ReviewFindings<Issue> issues,CancellationToken ct,out int sampledPoints,out int skippedByLimit)
     {
+        sampledPoints=0;skippedByLimit=0;
         var curves=entities.Where(CurveSampler.IsCurve).ToArray();
         if(curves.Length==0)return;
         double diagonal=Diagonal(curves),tolerance=Math.Max(1e-9,diagonal*1e-9);
         var levels=new Dictionary<long,List<TopologyCurve>>();
-        var unreadable=new List<string>();int spatial=0;
+        var unreadable=new List<string>();int spatial=0;bool samplingExhausted=false;
         foreach(var curve in curves)
         {
             ct.ThrowIfCancellationRequested();
+            if(samplingExhausted){skippedByLimit++;continue;}
             double? elevation;
             try{elevation=Elevation(curve,tolerance);}catch(Autodesk.AutoCAD.Runtime.Exception){unreadable.Add(curve.Handle.ToString());continue;}
             if(elevation is not {} z){spatial++;continue;}
-            if(CurveSampler.Sample(curve,Math.Max(tolerance,diagonal*1e-4)) is not {} sample){unreadable.Add(curve.Handle.ToString());continue;}
+            TopologyCurve? sample;
+            try{sample=CurveSampler.Sample(curve,Math.Max(tolerance,diagonal*1e-4),StandardReviewLimits.MaxCurvePoints-sampledPoints,ct);}
+            catch(CadFault e) when(e.Code=="REVIEW_SAMPLING_LIMIT"){skippedByLimit++;samplingExhausted=true;continue;}
+            if(sample is null){unreadable.Add(curve.Handle.ToString());continue;}
+            sampledPoints+=sample.Points.Count;
             long level=(long)Math.Round(z/Math.Max(tolerance*16,1e-6));
             if(!levels.TryGetValue(level,out var list))levels[level]=list=new();
             list.Add(sample);
         }
         if(unreadable.Count>0)issues.Add(new("TOPOLOGY_UNVERIFIED","unverified",unreadable.Take(20).ToArray(),"Geometry of "+unreadable.Count+" curve(s) could not be read; duplicates and self-intersections not checked for them"));
+        if(skippedByLimit>0)issues.Add(new("TOPOLOGY_REVIEW_LIMIT","unverified",[],skippedByLimit+" curve(s) were not checked because their samples exceed the "+StandardReviewLimits.MaxCurvePoints+" point budget; interactions involving those curves remain unverified"));
         if(spatial>0)issues.Add(new("TOPOLOGY_3D_SKIPPED","info",[],spatial+" curve(s) not parallel to the XY plane were not checked for duplicates and self-intersections"));
         foreach(var level in levels.Values)
         {
@@ -147,6 +187,10 @@ internal static class DrawingQuality
             foreach(var finding in report.Findings)
                 issues.Add(finding.Code=="TOPOLOGY_LIMIT"?new("TOPOLOGY_UNVERIFIED","unverified",[],"Curves too dense for the duplicate and self-intersection check; run cad_review with options_json {\"checks\":[\"topology\"]} on parts of them")
                     :new(finding.Code,finding.Severity,finding.Handles,finding.Message));
+            // The topology engine counts all findings even when its own response page fills up.
+            foreach(var (code,count) in report.Counts)
+                issues.AddOmitted(code=="TOPOLOGY_LIMIT"?"TOPOLOGY_UNVERIFIED":code,code=="TOPOLOGY_LIMIT"?"unverified":"warning",
+                    Math.Max(0,count-report.Findings.Count(f=>f.Code==code)));
         }
     }
     /// <summary>
@@ -180,7 +224,13 @@ internal static class DrawingQuality
             catch(Autodesk.AutoCAD.Runtime.Exception){}
         return maxX<minX?0:Math.Sqrt((maxX-minX)*(maxX-minX)+(maxY-minY)*(maxY-minY));
     }
-    private static bool Overlap(Extents3d a,Extents3d b,bool volume)=>a.MaxPoint.X>b.MinPoint.X+1e-7&&b.MaxPoint.X>a.MinPoint.X+1e-7&&a.MaxPoint.Y>b.MinPoint.Y+1e-7&&b.MaxPoint.Y>a.MinPoint.Y+1e-7&&(!volume||a.MaxPoint.Z>b.MinPoint.Z+1e-7&&b.MaxPoint.Z>a.MinPoint.Z+1e-7);
+    private static ReviewBounds Bounds(Entity entity)
+    {
+        var box=entity.GeometricExtents;
+        var result=new ReviewBounds(box.MinPoint.X,box.MinPoint.Y,box.MinPoint.Z,box.MaxPoint.X,box.MaxPoint.Y,box.MaxPoint.Z);
+        if(!result.IsValid)throw new InvalidOperationException("Entity returned non-finite or inverted geometric extents");
+        return result;
+    }
     internal static object Release(Database db,Transaction tr,string[] names)
     {
         var errors=new List<object>();var warnings=new List<object>();var notes=new List<object>();var designation=new List<object>();

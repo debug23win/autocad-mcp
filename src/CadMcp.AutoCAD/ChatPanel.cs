@@ -51,6 +51,10 @@ internal sealed class ChatPanel : UserControl
     private readonly PasswordBox perplexityApiKey = new() { MaxLength = 4096, Padding = new Thickness(5, 4, 5, 4) };
     private readonly StackPanel perplexityConnection = new();
     private readonly TextBlock accountCliHint = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) };
+    private readonly WrapPanel accountCliSetup = new();
+    private readonly Button findAccountCli = new() { Content = UiText.T("Найти CLI") };
+    private readonly Button installAccountCli = new() { Content = UiText.T("Установить CLI"),
+        ToolTip = UiText.T("Открыть официальный установщик выбранного CLI в PowerShell. После установки нажмите «Найти CLI».") };
     private readonly Button login = new() { Content = UiText.T("Войти") };
     private readonly Button diagnose = new() { Content = UiText.T("Диагностика") };
     private readonly TextBox host = new() { Text = UiText.T("Полный путь к CadMcp.Host.exe") };
@@ -89,7 +93,7 @@ internal sealed class ChatPanel : UserControl
     private readonly StringBuilder streamedText = new();
     private readonly System.Windows.Threading.DispatcherTimer flushTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private string codexExecutable = "codex.exe", claudeExecutable = "claude.exe";
-    private string qwenExecutable = "qwen.cmd", kimiExecutable = "kimi.cmd";
+    private string qwenExecutable = "qwen", kimiExecutable = "kimi";
     private ChatState? restored;
     private CancellationTokenSource? running;
     private IChatProvider? adapter;
@@ -127,7 +131,7 @@ internal sealed class ChatPanel : UserControl
         if (File.Exists(codexPath)) codexExecutable = codexPath;
         if (File.Exists(bundledCodex)) codexExecutable = bundledCodex;
         if (File.Exists(claudePath)) claudeExecutable = claudePath;
-        qwenExecutable = FindAccountCli("qwen"); kimiExecutable = FindAccountCli("kimi");
+        qwenExecutable = SubscriptionCliSetup.FindExecutable("qwen"); kimiExecutable = SubscriptionCliSetup.FindExecutable("kimi");
         executable.Text = codexExecutable;
         try { if (store.Load() is { } state) Restore(File.Exists(bundledCodex) ? ChatStateStore.UseBundledCodex(state, bundledCodex, codexPath) : state, imported: false); }
         catch (System.Exception e) { activity.Text = UiText.T("История не восстановлена: ") + e.Message; }
@@ -177,6 +181,9 @@ internal sealed class ChatPanel : UserControl
         var connection = new StackPanel();
         connection.Children.Add(executableLabel); connection.Children.Add(executable);
         connection.Children.Add(accountCliHint);
+        findAccountCli.Click += (_, _) => FindAccountCli(); accountCliSetup.Children.Add(findAccountCli);
+        installAccountCli.Click += (_, _) => InstallAccountCli(); accountCliSetup.Children.Add(installAccountCli);
+        connection.Children.Add(accountCliSetup);
         authenticationConnection.Children.Add(new TextBlock { Text = UiText.T("Авторизация") });
         authenticationConnection.Children.Add(authenticationMode);
         codexApiConnection.Children.Add(new TextBlock { Text = "OpenAI API key" });
@@ -300,8 +307,8 @@ internal sealed class ChatPanel : UserControl
         // The policy may have been changed elsewhere (CADMCPLISP, another panel): show the stored one before the user picks.
         lispPolicy.DropDownOpened += (_, _) => LoadLispPolicy();
         refreshModels.Click += async (_, _) => await RefreshModels();
-        executable.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
-        directory.LostKeyboardFocus += async (_, _) => { if (running is null) await RefreshModels(); };
+        executable.LostKeyboardFocus += async (_, e) => { if (running is null && e.NewFocus != findAccountCli && e.NewFocus != installAccountCli) await RefreshModels(); };
+        directory.LostKeyboardFocus += async (_, e) => { if (running is null && e.NewFocus != findAccountCli && e.NewFocus != installAccountCli) await RefreshModels(); };
         Loaded += async (_, _) => { if (!firstLoad) { firstLoad = true; await RefreshModels(); } };
         Loaded += async (_, _) => { ApplyTheme(); if (!documentClosed) { contextTimer.Start(); await RefreshCad(); } };
         Unloaded += (_, _) => contextTimer.Stop();
@@ -583,18 +590,40 @@ internal sealed class ChatPanel : UserControl
     {
         Codex => codexExecutable, Claude => claudeExecutable, Qwen => qwenExecutable, Kimi => kimiExecutable, _ => ""
     };
-    private static string FindAccountCli(string name)
+    private void FindAccountCli()
     {
-        var folders = new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin") }
-            .Concat((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
-        foreach (string folder in folders)
-            foreach (string extension in new[] { ".exe", ".cmd", "" })
+        if (!AccountCliSelected || running is not null) return;
+        try
+        {
+            string path = SubscriptionCliSetup.FindExecutable(provider.SelectedIndex == Qwen ? "qwen" : "kimi");
+            if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
             {
-                try { string candidate = Path.Combine(folder.Trim('"'), name + extension); if (File.Exists(candidate)) return candidate; }
-                catch (ArgumentException) { }
+                activity.Text = UiText.T("CLI не найден. Нажмите «Установить CLI» или укажите полный путь вручную.");
+                return;
             }
-        return name + ".cmd";
+            if (!executable.Text.Equals(path, StringComparison.OrdinalIgnoreCase))
+            {
+                // Switching installations also starts a new provider session; keep visible messages.
+                executable.Text = path; RememberExecutable(provider.SelectedIndex);
+                adapter = null; adapterKey = adapterSelection = null; restored = null;
+                if (provider.SelectedIndex == Qwen) qwenCatalog = Array.Empty<SubscriptionModel>();
+                else kimiCatalog = Array.Empty<SubscriptionModel>();
+                ApplyProviderChoices(); Persist();
+            }
+            activity.Text = UiText.T("CLI найден: ") + path + UiText.T(". Нажмите «Войти» или «Проверить вход и подключение».");
+        }
+        catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Поиск CLI: ") + error.Message; }
+    }
+    private void InstallAccountCli()
+    {
+        if (!AccountCliSelected || running is not null) return;
+        try
+        {
+            using var process = Process.Start(SubscriptionCliSetup.CreateInstallStartInfo(provider.SelectedIndex == Qwen ? "qwen" : "kimi"))
+                ?? throw new IOException(UiText.T("Не удалось открыть официальный установщик CLI."));
+            activity.Text = UiText.T("Завершите установку в открывшемся PowerShell, затем нажмите «Найти CLI». Вход в аккаунт выполняется отдельно через «Войти».");
+        }
+        catch (System.Exception error) { LogError(error); activity.Text = UiText.T("Установка CLI: ") + error.Message; }
     }
     private bool AccountCliSelected => provider.SelectedIndex is Qwen or Kimi;
     private bool ApiKeyMode => provider.SelectedIndex == Codex && codexApiKeyMode || provider.SelectedIndex == Claude && claudeApiKeyMode;
@@ -661,6 +690,7 @@ internal sealed class ChatPanel : UserControl
         reasoning.Visibility = reasoningLabel.Visibility = account ? Visibility.Collapsed : Visibility.Visible;
         perplexityConnection.Visibility = api ? Visibility.Visible : Visibility.Collapsed;
         accountCliHint.Visibility = account ? Visibility.Visible : Visibility.Collapsed;
+        accountCliSetup.Visibility = account ? Visibility.Visible : Visibility.Collapsed;
         accountCliHint.Text = provider.SelectedIndex == Kimi
             ? UiText.T("Подписка Kimi Code. Для CAD MCP нужен отдельный вход через «Войти». Модель берётся из настроек CLI.")
             : UiText.T("Подписка Qwen Account. Вход выполняется в официальном CLI через /auth. Модель берётся из настроек CLI.");
@@ -787,6 +817,7 @@ internal sealed class ChatPanel : UserControl
         provider.IsEnabled = executable.IsEnabled = host.IsEnabled = directory.IsEnabled = !busy;
         perplexityApiKey.IsEnabled = login.IsEnabled = diagnose.IsEnabled = !busy;
         authenticationMode.IsEnabled = codexApiKey.IsEnabled = claudeApiKey.IsEnabled = !busy;
+        findAccountCli.IsEnabled = installAccountCli.IsEnabled = !busy;
         model.IsEnabled = reasoning.IsEnabled = !busy;
         refreshModels.IsEnabled = !busy;
         computerUseAccess.IsEnabled = provider.SelectedIndex == 0 && !readingComputerTarget;

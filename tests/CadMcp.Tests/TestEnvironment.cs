@@ -55,6 +55,8 @@ internal sealed class McpHostProcess : IAsyncDisposable
     private McpHostProcess(Process process) { this.process = process; stderr = ProviderProcess.DrainErrors(process); }
     /// <summary>The server's initialize result (capabilities, serverInfo, instructions).</summary>
     public JsonElement Initialize { get; private set; }
+    /// <summary>Bounded stderr, complete after this host has been disposed.</summary>
+    public Task<string> ErrorOutput => stderr;
     public static async Task<McpHostProcess> StartAsync(string brokerPipe, IReadOnlyDictionary<string, string>? environment = null)
     {
         var info = ProviderProcess.StartInfo(new(TestEnvironment.HostExecutable, "unused", Path.GetTempPath()), ["--broker-pipe", brokerPipe]);

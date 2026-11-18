@@ -157,17 +157,18 @@ internal static class NativeTables
     private static void Bounds(Table table,int row,int column)
     {if(row<0||row>=table.Rows.Count||column<0||column>=table.Columns.Count)throw new CadFault("CELL_OUT_OF_RANGE",DraftingPlan.Address(row,column));}
     public static object Read(Table table,Transaction tr,int firstRow=0,int firstColumn=0,int rowCount=20,int columnCount=20)
+        => Read(table, tr, TableReadPage.Create(table.Rows.Count, table.Columns.Count, firstRow, firstColumn, rowCount, columnCount));
+    internal static object Read(Table table, Transaction tr, TableReadPage page)
     {
-        if(firstRow<0||firstColumn<0||rowCount is <1 or >100||columnCount is <1 or >50||rowCount*columnCount>500)throw new CadFault("INVALID_TABLE_RANGE","Read at most 500 cells; paginate by row/column");
-        int endRow=Math.Min(table.Rows.Count,firstRow+rowCount),endCol=Math.Min(table.Columns.Count,firstColumn+columnCount);
-        var cells=new List<object>();var mergedRanges=MergedRanges(table);
-        for(int r=firstRow;r<endRow;r++)for(int c=firstColumn;c<endCol;c++)
+        var cells=new List<object>(page.RowCount*page.ColumnCount);
+        for(int r=page.FirstRow;r<page.EndRow;r++)for(int c=page.FirstColumn;c<page.EndColumn;c++)
         {
             var cell=table.Cells[r,c];var fieldId=cell.FieldId;string? code=null;object? value=cell.Value;
             if(!fieldId.IsNull&&tr.GetObject(fieldId,OpenMode.ForRead) is Field field)code=field.GetFieldCode(FieldCodeFlags.AddMarkers);
             string? formula=cell.Contents.Count>0&&cell.Contents[0].HasFormula?cell.Contents[0].Formula:null;
             if(formula is not null&&!formula.StartsWith('='))formula="="+formula;
-            var merged=mergedRanges.FirstOrDefault(m=>r>=m.TopRow&&r<=m.BottomRow&&c>=m.LeftColumn&&c<=m.RightColumn);
+            // Inspect only returned cells; scanning all merge ranges defeats a bounded read page.
+            var merged=cell.IsMerged==true?cell.GetMergeRange():null;
             cells.Add(new {cell=DraftingPlan.Address(r,c),row=r,column=c,text=cell.TextString,value,
                 formula,field_code=code,
                 alignment=cell.Alignment.ToString(),text_height=cell.TextHeight,merged=merged is null?null:new[]{merged.TopRow,merged.LeftColumn,merged.BottomRow,merged.RightColumn}});
@@ -176,8 +177,11 @@ internal static class NativeTables
         string? layout=owner?.IsLayout==true?((Layout)tr.GetObject(owner.LayoutId,OpenMode.ForRead)).LayoutName:null;
         return new {handle=table.Handle.ToString(),layout,rows=table.Rows.Count,columns=table.Columns.Count,
             position=new[]{table.Position.X,table.Position.Y,table.Position.Z},width=table.Width,height=table.Height,
-            column_widths=table.Columns.Select(c=>c.Width).ToArray(),row_heights=table.Rows.Select(r=>r.Height).ToArray(),
-            table_style=table.TableStyleName,cells,next_row=endRow<table.Rows.Count?(int?)endRow:null,source="native_AutoCAD_Table"};
+            column_widths=Enumerable.Range(page.FirstColumn,page.ColumnCount).Select(c=>table.Columns[c].Width).ToArray(),
+            row_heights=Enumerable.Range(page.FirstRow,page.RowCount).Select(r=>table.Rows[r].Height).ToArray(),
+            sizes_scope="page",column_widths_first_column=page.FirstColumn,row_heights_first_row=page.FirstRow,
+            table_style=table.TableStyleName,cells,pagination=page.Metadata(),partial=!page.CompleteTable,
+            next_row=page.NextRow,next_column=page.NextColumn,next_page=page.NextPage,source="native_AutoCAD_Table"};
     }
     internal static CellRange[] MergedRanges(Table table)
     {

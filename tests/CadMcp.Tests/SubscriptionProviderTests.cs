@@ -247,7 +247,7 @@ public sealed class SubscriptionProviderTests
         string package = Path.Combine(folder, "node_modules", "@qwen-code", "qwen-code");
         Directory.CreateDirectory(package);
         File.WriteAllText(Path.Combine(folder, "qwen.cmd"), "never execute this batch file");
-        File.WriteAllText(Path.Combine(package, "package.json"), "{\"bin\":{\"qwen\":\"cli-entry.js\"}}");
+        File.WriteAllText(Path.Combine(package, "package.json"), "{\"name\":\"@qwen-code/qwen-code\",\"bin\":{\"qwen\":\"cli-entry.js\"}}");
         File.WriteAllText(Path.Combine(package, "cli-entry.js"), "");
         string node = Path.Combine(folder, OperatingSystem.IsWindows() ? "node.exe" : "node");
         File.WriteAllText(node, "");
@@ -261,7 +261,7 @@ public sealed class SubscriptionProviderTests
         Assert.DoesNotContain("--yolo", info.ArgumentList);
         Assert.Contains("--exclude-tools", info.ArgumentList);
         foreach (string tool in new[] { "read_file", "edit", "notebook_edit", "run_shell_command" }) Assert.Contains(tool, info.ArgumentList);
-        File.WriteAllText(Path.Combine(package, "package.json"), "{\"bin\":{\"qwen\":\"../../../escape.js\"}}");
+        File.WriteAllText(Path.Combine(package, "package.json"), "{\"name\":\"@qwen-code/qwen-code\",\"bin\":{\"qwen\":\"../../../escape.js\"}}");
         Assert.Throws<IOException>(() => new QwenProvider(options).StartInfo());
     }
 

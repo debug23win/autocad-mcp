@@ -39,6 +39,23 @@ internal static class Program
         ComboBox Field(string name) => (ComboBox)typeof(ChatPanel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
         var model = Field("model"); var reasoning = Field("reasoning");
+        var accountCliSetup = (WrapPanel)typeof(ChatPanel).GetField("accountCliSetup", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
+        var findAccountCli = (Button)typeof(ChatPanel).GetField("findAccountCli", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
+        var installAccountCli = (Button)typeof(ChatPanel).GetField("installAccountCli", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
+        void AssertAccountCliSetup(bool visible, string name)
+        {
+            Assert(accountCliSetup.Visibility == (visible ? Visibility.Visible : Visibility.Collapsed), name + " has incorrect CLI setup visibility");
+            if (!visible) return;
+            Assert(accountCliSetup.Children.Contains(findAccountCli) && accountCliSetup.Children.Contains(installAccountCli) && findAccountCli.IsEnabled && installAccountCli.IsEnabled,
+                name + " is missing available Find/Install CLI controls");
+            // Inspect state only: an installer or real CLI must never be started by the UI probe.
+            typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, new object[] { true });
+            Assert(accountCliSetup.Visibility == Visibility.Visible && !findAccountCli.IsEnabled && !installAccountCli.IsEnabled,
+                name + " allows CLI setup during an active operation");
+            typeof(ChatPanel).GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, new object[] { false });
+            Assert(findAccountCli.IsEnabled && installAccountCli.IsEnabled, name + " did not restore CLI setup after completion");
+        }
+        AssertAccountCliSetup(false, "Codex");
         var csharp = (System.Windows.Controls.CheckBox)typeof(ChatPanel).GetField("allowCSharp", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         Assert(csharp.IsChecked == false && !CadMcp.Core.CSharpExecutionPolicy.Read().Allowed, "C# must start disabled");
         csharp.IsChecked = true;
@@ -86,6 +103,7 @@ internal static class Program
         var projectPath = (System.Windows.Controls.TextBox)typeof(ChatPanel).GetField("directory", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(newProject)!;
         Assert(projectPath.Text == projectDirectory, "Global model preferences displaced the new drawing working directory");
         Field("provider").SelectedIndex = 1;
+        AssertAccountCliSetup(false, "Claude Code");
         int Items(ComboBox box) => ((System.Collections.IEnumerable)box.ItemsSource).Cast<object>().Count();
         string Label(ComboBox box, int index) => (string)box.Items[index].GetType().GetProperty("Label")!.GetValue(box.Items[index])!;
         // Until Claude Code lists its models, the aliases are offered with every level.
@@ -103,6 +121,7 @@ internal static class Program
         var executable = (System.Windows.Controls.TextBox)typeof(ChatPanel).GetField("executable", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         string claudeExecutable = executable.Text;
         Field("provider").SelectedIndex = 2;
+        AssertAccountCliSetup(false, "Perplexity");
         var apiKey = (PasswordBox)typeof(ChatPanel).GetField("perplexityApiKey", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         var apiConnection = (StackPanel)typeof(ChatPanel).GetField("perplexityConnection", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
         var computerUse = (Button)typeof(ChatPanel).GetField("computerUseAccess", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(panel)!;
@@ -122,6 +141,7 @@ internal static class Program
         var restoredApiModel = (ComboBox)typeof(ChatPanel).GetField("model", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(apiRestored)!;
         Assert(restoredApiKey.Password.Length == 0 && (string)restoredApiModel.SelectedValue == "vendor/api-model", "Perplexity restored a secret or lost the saved model without an online catalog");
         Field("provider").SelectedIndex = 3;
+        AssertAccountCliSetup(true, "Qwen Code");
         executable.Text = @"C:\CAD tools\qwen.cmd";
         Assert(executable.Visibility == Visibility.Visible && apiConnection.Visibility == Visibility.Collapsed && reasoning.Visibility == Visibility.Collapsed && Field("agentCount").Visibility == Visibility.Collapsed,
             "Qwen subscription controls show API key, unsupported reasoning or helpers");
@@ -130,6 +150,7 @@ internal static class Program
         Assert(Items(model) == 3 && Label(model, 0).Contains("Qwen account default"), "Qwen models were not taken from the CLI catalog");
         model.SelectedValue = "qwen/selected";
         Field("provider").SelectedIndex = 4;
+        AssertAccountCliSetup(true, "Kimi Code");
         executable.Text = @"C:\CAD tools\kimi.cmd";
         Assert(reasoning.Visibility == Visibility.Collapsed && computerUse.Visibility == Visibility.Collapsed, "Kimi shows unsupported controls");
         panel.ApplySubscriptionModels(4, new[] { new SubscriptionModel("kimi-code/default", "Kimi account default", true), new SubscriptionModel("kimi-code/selected", "Kimi account alternative", false) });

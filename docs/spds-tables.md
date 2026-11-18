@@ -6,6 +6,33 @@ Since 0.8.0, the native C# adapter performs these operations. Tables remain `Tab
 
 `table_create` creates a matrix; `table_cells` edits values/formulas; `table_merge` merges/unmerges cells; `table_rows`/`table_columns` insert/delete rows/columns; `table_recalculate` recalculates dependents. Cell addresses use A1; range/insertion indices are zero-based. `cad_table_get` returns values, formulas, field codes, merged ranges, sizes, and layout name, up to 500 cells per page. Edits target current space; explicitly pass `layout` for another paper layout.
 
+### Reading table pages
+
+Start a complete read with `first_row=0`, `first_column=0`. Both counts default to
+20. Positive oversized counts are capped at **100 rows, 50 columns and 500 cells**;
+the cell budget can reduce the effective row count further. For example, a request
+for 100 rows and 50 columns returns at most 10 rows by 50 columns. The `pagination`
+object reports requested and effective counts, limits, returned/total cells and
+whether this single page covers the whole table. Counts of zero or less, negative
+offsets and offsets past the actual table boundary return `INVALID_TABLE_RANGE`.
+An offset exactly at a boundary returns an empty page without a continuation.
+
+To continue, copy **all four fields of `next_page`** into the next request, retaining
+the same handle/session/document. It reads column stripes across a fixed row band,
+then resets `first_column` to zero for the next row band. Stop when `next_page` is
+absent/null. The older `next_row` remains a vertical hint; following it alone can
+miss columns. `next_column` is a horizontal hint. Keep the response revision
+consistent across pages before claiming a complete table read; if the drawing
+changes, the collected pages are not one consistent snapshot. A nonzero initial
+offset leaves the preceding cells unread.
+
+`rows`, `columns`, `width` and `height` describe the whole table. The arrays
+`row_heights` and `column_widths` describe only the returned page (`sizes_scope` is
+`page`); their global origins are `row_heights_first_row` and
+`column_widths_first_column`. Each returned cell retains its global A1 address,
+value, formula, field code and complete merged range. Merge lookup and size reads
+are bounded by the page. Read pagination does not change table creation/edit limits.
+
 Example `operations_json` batch:
 
 ```json

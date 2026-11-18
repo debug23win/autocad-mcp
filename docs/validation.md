@@ -10,9 +10,13 @@ Run `scripts/build.ps1`, then `scripts/test.ps1` (or `dotnet test tests/CadMcp.T
 - operation journals, lost-response recovery without duplicate writes, large-result archives, cancellation isolation;
 - edit/acceptance parsing, geometry checks, image calibration, AutoLISP wrappers;
 - chat history/attachments, Markdown, Word export;
+- bounded DOCX text extraction, stable attachment snapshots, read-error diagnostics and Unicode-safe result paging;
+- complete multi-column table page traversal, actual MCP schema/large counts, and standard-review pair coverage/budget reporting for 470/500 entities;
 - Codex/Claude protocols with fake processes in `tests/CadMcp.TestCli`: streaming, follow-ups, cancellation, model selection, refusal of interactive requests, command-line length;
+- explicit OpenAI/Anthropic API authentication with synthetic keys: official routing, session isolation, redaction and non-persistence;
 - Perplexity HTTP/SSE and local MCP execution: continuation, tool schemas, sources, token accounting, cancellation and incomplete responses;
 - Qwen/Kimi ACP fixtures: subscription-only model selection, session restoration, exact CAD permissions, denied shell/filesystem RPCs and operation IDs for durable duplicate suppression;
+- Qwen/Kimi executable discovery, native/standalone/npm layouts, bounded launcher resolution, argument preservation and fixed official installer commands without executing installers;
 - real MCP SDK over built `CadMcp.Host` stdio: tool listing/read-only annotations, drawing pinning, assistant restrictions.
 
 These tests do not run AutoCAD, real CLIs, or models. Tests run serially because they launch processes/brokers and measure time.
@@ -40,7 +44,7 @@ On Windows with installed AutoCAD, use a separate test DWG only:
 2. Restores packages in locked mode.
 3. Builds every `.github/ci-projects.txt` project, including .NET 10 adapters/native probes, with warnings as errors.
 4. Runs tests and retains TRX results.
-5. Runs the native WPF theme probe, including saved provider/model settings, API key controls for Codex/Claude/Perplexity, and subscription controls for Qwen/Kimi. This exercises the UI without authenticated model requests or AutoCAD geometry changes.
+5. Runs the native WPF theme probe, including saved provider/model settings, API key controls for Codex/Claude/Perplexity, and subscription/setup controls for Qwen/Kimi, including disabled installation/discovery during an active operation. This exercises the UI without running installers, authenticated model requests or AutoCAD geometry changes.
 
 ## Releases
 

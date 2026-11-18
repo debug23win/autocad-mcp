@@ -6,7 +6,7 @@ Version 0.11.16-preview. An open-source MCP server and chat interface for a runn
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes and validation results, and [docs/validation.md](docs/validation.md) for the validation procedure. Detailed documentation linked below is in English.
 
-Version 0.11.16 adds **OpenAI and Anthropic API key modes**, reads attached **DOCX** text inside the panel, fixes read-only error diagnostics and paginated result reads, and bundles Codex **0.169.1** with current model discovery, including GPT-6.2 Sol and Astra when offered by the CLI catalog. See [API key setup](docs/api-keys.md), [attachments](docs/attachments.md), and [changes and validation](CHANGELOG.md#01116-preview).
+Version 0.11.16 adds **OpenAI and Anthropic API key modes**, reads attached **DOCX** text inside the panel, fixes read-only diagnostics and paginated result/table reads, and supports standard review of **up to 500 entities** with explicit coverage. It fixes Windows discovery of standalone **Qwen/Kimi** and adds install/find actions. The bundled Codex **0.169.1** discovers current models, including GPT-6.2 Sol and Astra when offered by the CLI catalog. See [API key setup](docs/api-keys.md), [attachments](docs/attachments.md), [CLI setup](docs/subscription-providers.md), and [changes and validation](CHANGELOG.md#01116-preview).
 
 Version 0.11.15 adds **Perplexity API**, **Qwen Code** and **Kimi Code**
 to the chat provider selector. Perplexity uses a separately billed API key;
