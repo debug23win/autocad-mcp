@@ -44,7 +44,7 @@ public sealed class SubscriptionProcessDiscoveryTests
         try
         {
             Environment.SetEnvironmentVariable(variable, command == "qwen" ? bin : Path.GetDirectoryName(bin));
-            Assert.Equal(executable, SubscriptionCliSetup.FindExecutable(command));
+            Assert.Equal(Path.GetFullPath(executable), SubscriptionCliSetup.FindExecutable(command));
         }
         finally { Environment.SetEnvironmentVariable(variable, previous); }
     }
@@ -55,7 +55,7 @@ public sealed class SubscriptionProcessDiscoveryTests
         using var folder = new TempFolder(); string native = Write(folder.File("native & % path/kimi.exe"), "never executed");
         string[] arguments = ["acp", "--argument", "a path with spaces & percent%"];
         var info = SubscriptionProcess.Create(Options(folder, native), arguments, "@moonshot-ai/kimi-code", "kimi");
-        Assert.Equal(native, info.FileName); Assert.Equal(arguments, info.ArgumentList);
+        Assert.Equal(Path.GetFullPath(native), info.FileName); Assert.Equal(arguments, info.ArgumentList);
         Assert.False(info.UseShellExecute); Assert.True(info.RedirectStandardInput); Assert.True(info.RedirectStandardOutput);
     }
 
